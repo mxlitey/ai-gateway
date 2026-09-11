@@ -531,8 +531,8 @@ async function handleModels(store, allowedChannelIds) {
     ? new Set(allowedChannelIds)
     : null;
 
-  // 从渠道的 model_map 汇总公开模型名：
-  // 仅统计启用 + 有 key + 且在客户端 key 允许范围内、且已配置至少一个上游模型映射的渠道。
+  // 从渠道汇总公开模型名（model_map 的公开名 + models 里的同名透传）：
+  // 仅统计启用 + 有 key + 且在客户端 key 允许范围内的渠道。
   const modelMap = new Map(); // 公开模型名 -> { id, owned_by }
   for (const c of channels) {
     if (c.enabled === false || !c.keys || c.keys.length === 0) continue;
@@ -544,6 +544,16 @@ async function handleModels(store, allowedChannelIds) {
       if (!p || !um) continue;
       if (!modelMap.has(p)) {
         modelMap.set(p, { id: p, owned_by: c.name || c.id });
+      }
+    }
+    // 无显式映射的模型（同名透传）
+    if (Array.isArray(c.models)) {
+      for (const pub of c.models) {
+        const p = String(pub || '').trim();
+        if (!p) continue;
+        if (!modelMap.has(p)) {
+          modelMap.set(p, { id: p, owned_by: c.name || c.id });
+        }
       }
     }
   }

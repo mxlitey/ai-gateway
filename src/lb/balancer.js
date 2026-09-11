@@ -29,11 +29,15 @@ export class LoadBalancer {
       : null;
 
     // 依渠道存储顺序，找出能提供该公开模型的渠道
+    // 解析顺序：先查 model_map（公开模型 → 上游模型）；若无映射，则回退到 models（同名透传）
     const targetRows = [];
     for (const ch of channels) {
       if (ch.enabled === false || !ch.keys || ch.keys.length === 0) continue;
       if (allowedSet && !allowedSet.has(ch.id)) continue;
-      const um = (ch.model_map && ch.model_map[requested]);
+      let um = (ch.model_map && typeof ch.model_map === 'object') ? ch.model_map[requested] : null;
+      if (!um && Array.isArray(ch.models) && ch.models.includes(requested)) {
+        um = requested; // 无显式映射，公开名=上游名（同名透传）
+      }
       if (!um) continue;
       targetRows.push({ channel: ch, upstream_model: String(um).trim() || requested, publicModel: requested });
     }

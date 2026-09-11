@@ -461,10 +461,10 @@ const I18N = {
     urlPlaceholder: '例如 https://integrate.api.nvidia.com/v1',
     urlHelp: '需包含版本路径，例如 /v1',
     keysLabel: 'API 密钥（每行一个）',
+    modelsLabel: '模型列表（无映射的模型，公开名=上游名；每行一个）',
     keysPlaceholder: 'sk-xxx\\nsk-yyy',
-    modelsLabel: '模型列表（每行一个，留空表示接受所有模型）',
     modelsPlaceholder: 'gpt-4o\\nclaude-3-opus',
-    modelsHelp: '仅匹配这些模型的请求会路由到此渠道。留空则接受任何模型。',
+    modelsHelp: '无映射的模型，请求同名模型时直接透传到此渠道。留空则无同名透传，仅映射生效。',
     cancel: '取消',
     save: '保存',
     generateKey: '生成密钥',
@@ -835,16 +835,8 @@ function toggleChannelModel(cb, model) {
   const ta = document.getElementById('f-models');
   const lines = ta.value.split('\\n').map(s=>s.trim()).filter(Boolean);
   const set = new Set(lines);
-  if (cb.checked) {
-    set.add(model);
-    // 勾选模型时，若映射中尚无该公开模型，自动补一条「公开名=上游名」的默认映射
-    if (!modelMapRows.some(r => (r.public || '').trim() === model)) {
-      modelMapRows.push({ public: model, upstream: model });
-      renderModelMapRows();
-    }
-  } else {
-    set.delete(model);
-  }
+  if (cb.checked) set.add(model);
+  else set.delete(model);
   ta.value = Array.from(set).join('\\n');
 }
 
@@ -934,8 +926,8 @@ function renderRoutes() {
 
   const tb = document.getElementById('routes-tbody');
 
-  // 汇总所有启用且有密钥渠道的 model_map，公开模型按首次出现顺序排列
-  const rows = [];     // { public, channel, upstream }
+  // 汇总所有启用且有密钥渠道的模型（model_map 显式映射 + models 同名透传），按首次出现顺序排列
+  const rows = [];     // { public, channel, upstream, direct }
   const order = [];    // 公开模型唯一顺序
   const idx = new Map();
   for (const ch of channels) {
@@ -946,7 +938,16 @@ function renderRoutes() {
       const um = String(mm[pub]).trim();
       if (!p) continue;
       if (!idx.has(p)) { idx.set(p, order.length); order.push(p); }
-      rows.push({ public: p, channel: ch, upstream: um || p });
+      rows.push({ public: p, channel: ch, upstream: um || p, direct: false });
+    }
+    // models 同名透传（不应与 model_map 的公开名重复，仅补充未映射的）
+    if (Array.isArray(ch.models)) {
+      for (const pub of ch.models) {
+        const p = String(pub || '').trim();
+        if (!p || rows.some(r => r.channel.id === ch.id && r.public === p)) continue;
+        if (!idx.has(p)) { idx.set(p, order.length); order.push(p); }
+        rows.push({ public: p, channel: ch, upstream: p, direct: true });
+      }
     }
   }
 
@@ -961,7 +962,8 @@ function renderRoutes() {
       return '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border)">' +
         '<span>' + esc(r.channel.name || r.channel.id) +
           ' <span style="color:var(--text-2);font-size:12px">(' + esc(shortHost(r.channel.base_url)) + ')</span></span>' +
-        '<span><code style="background:var(--bg-0);padding:2px 8px;border-radius:4px;font-size:12px;color:var(--primary)">' + esc(r.upstream) + '</code></span>' +
+        '<span><code style="background:var(--bg-0);padding:2px 8px;border-radius:4px;font-size:12px;color:var(--primary)">' + esc(r.upstream) + '</code>' +
+        (r.direct ? ' <span style="color:var(--text-2);font-size:12px">透传</span>' : '') + '</span>' +
       '</div>';
     }).join('');
 

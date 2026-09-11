@@ -148,6 +148,15 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 .map-arrow{color:var(--text-2);font-size:14px;flex:0 0 auto}
 .map-del{flex:0 0 auto;width:32px;height:32px;padding:0;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(239,68,68,.3);color:var(--danger);background:transparent;border-radius:6px;cursor:pointer}
 .map-del:hover{background:var(--danger);color:#fff}
+.key-row{display:flex;align-items:center;gap:8px;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px}
+.key-row input.key-val{flex:1;min-width:0}
+.key-row.key-disabled{opacity:.5}
+.key-switch{position:relative;flex:0 0 auto;width:36px;height:20px}
+.key-switch input{position:absolute;opacity:0;width:0;height:0}
+.key-slider{position:relative;display:block;width:36px;height:20px;background:var(--border);border-radius:10px;cursor:pointer;transition:background .2s}
+.key-slider::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:transform .2s}
+.key-switch input:checked + .key-slider{background:var(--success)}
+.key-switch input:checked + .key-slider::after{transform:translateX(16px)}
 
 /* 竖屏小屏补充适配 */
 @media (max-width: 640px){
@@ -172,6 +181,8 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
   .map-row .map-arrow{display:none}
   .map-row input{flex:1 1 45%}
   .map-del{flex:1 0 auto;margin-top:4px}
+  .key-row{flex-wrap:wrap}
+  .key-row input.key-val{flex:1 1 45%}
 }
 </style>
 </head>
@@ -310,9 +321,8 @@ const I18N = {
     addChannel: 'Add Channel',
     editChannel: 'Edit Channel',
     name: 'Name',
-    baseUrl: 'API Base URL',
-    pathLabel: 'Protocol Interface (optional)',
-    pathHelp: 'Interface path appended to the API base URL. Empty defaults to /chat/completions, e.g. /chat/completions',
+    baseUrl: 'API Host',
+    pathLabel: 'API Path (optional)',
     keys: 'Keys',
     models: 'Models',
     priority: 'Priority',
@@ -329,11 +339,10 @@ const I18N = {
     noChannels: 'No channels yet. Click "Add Channel" to get started.',
     namePlaceholder: 'e.g. NVIDIA NIM',
     urlPlaceholder: 'e.g. https://integrate.api.nvidia.com/v1',
-    urlHelp: 'Include the version path, e.g. /v1',
-    keysLabel: 'API Keys (one per line)',
-    keysPlaceholder: 'sk-xxx\\nsk-yyy',
-    modelsLabel: 'Models (one per line, empty = accept all)',
-    modelsPlaceholder: 'gpt-4o\\nclaude-3-opus',
+    keysLabel: 'API Keys',
+    addKey: 'Add Key',
+    modelsLabel: 'Models',
+    modelsPlaceholder: 'gpt-4o',
     modelsHelp: 'Only requests for these models will route to this channel. Leave empty to accept any model.',
     priorityHelp: 'Lower = higher priority. Tried first.',
     weightHelp: 'Relative weight within same priority group.',
@@ -371,6 +380,7 @@ const I18N = {
     channelBindHelp: 'Only route to selected channels. Empty = all channels.',
     editKey: 'Edit Key',
     errorLogs: 'Error Logs',
+    logs: 'Logs',
     errorDate: 'Date',
     refreshError: 'Refresh',
     noErrors: 'No errors today.',
@@ -402,7 +412,6 @@ const I18N = {
     routesInfo: 'Model routing paths across all enabled channels (try in channel order, keys rotate with random start). Edit mappings in Channels.',
     routesNone: 'No model routes yet. Configure a "public model → upstream model" mapping in Channels.',
     modelMapLabel: 'Public Model → Upstream Model',
-    modelMapHelp: "Left is the public model name clients use; right is the real upstream model. If left empty, defaults to the public name. After selecting models above, you can set each model's upstream here.",
     addMapping: 'Add Mapping',
     mapPublicModelPh: 'Public model',
     mapUpstreamPh: 'Upstream model',
@@ -429,10 +438,10 @@ const I18N = {
     addChannel: '添加渠道',
     editChannel: '编辑渠道',
     name: '名称',
-    baseUrl: 'API 地址',
-    pathLabel: '协议接口（可选）',
-    pathHelp: '拼接在 API 地址后的协议接口路径，留空则默认 /chat/completions。例如 /chat/completions',
-    keys: '密钥数',
+    baseUrl: 'API 主机',
+    pathLabel: 'API 路径',
+    keysLabel: 'API 密钥',
+    addKey: '新增密钥',
     models: '模型',
     status: '状态',
     actions: '操作',
@@ -446,11 +455,8 @@ const I18N = {
     noChannels: '暂无渠道，点击「添加渠道」开始配置。',
     namePlaceholder: '例如 NVIDIA NIM',
     urlPlaceholder: '例如 https://integrate.api.nvidia.com/v1',
-    urlHelp: '需包含版本路径，例如 /v1',
-    keysLabel: 'API 密钥（每行一个）',
-    modelsLabel: '模型列表（无映射的模型，公开名=上游名；每行一个）',
-    keysPlaceholder: 'sk-xxx\\nsk-yyy',
-    modelsPlaceholder: 'gpt-4o\\nclaude-3-opus',
+    modelsLabel: '模型列表',
+    modelsPlaceholder: 'gpt-4o',
     modelsHelp: '无映射的模型，请求同名模型时直接透传到此渠道。留空则无同名透传，仅映射生效。',
     cancel: '取消',
     save: '保存',
@@ -486,6 +492,7 @@ const I18N = {
     channelBindHelp: '仅路由到选中的渠道。不选则使用全部渠道。',
     editKey: '编辑密钥',
     errorLogs: '错误日志',
+    logs: '日志',
     errorDate: '日期',
     refreshError: '刷新',
     noErrors: '今日暂无错误。',
@@ -528,11 +535,9 @@ const I18N = {
     routesInfo: '以下为各公开模型在当前所有启用渠道中的路由路径（按渠道存储顺序尝试，渠道内密钥随机起点轮换）。如需调整映射，请前往「渠道管理」编辑。',
     routesNone: '暂无任何模型路由。请在「渠道管理」中为渠道配置「公开模型 → 上游模型」映射。',
     modelMapLabel: '公开模型 → 上游模型　映射',
-    modelMapHelp: '每行左侧为客户端使用的公开模型名，右侧为该模型实际转发给上游的真实模型名。留空映射会默认公开名=上游名。勾选上方模型后，可在这里补充或修改每个模型对应的上游模型。',
     addMapping: '添加映射',
     mapPublicModelPh: '公开模型名',
     mapUpstreamPh: '上游模型名',
-    modelPickerNone: '尚无映射。点击上方「获取上游模型」勾选模型，或直接「添加映射」按公开名=上游名填写。',
   },
 };
 
@@ -551,6 +556,9 @@ let lastFetchedModels = [];
 
 // 渠道弹窗中「公开模型 → 上游模型」映射（用于编辑，未保存前暂存于此）
 let modelMapRows = [];
+
+// 渠道弹窗中的 API 密钥列表（{ key, enabled }，未保存前暂存于此）
+let keyRows = [];
 
 // ============ API ============
 async function api(path, opts = {}) {
@@ -631,7 +639,7 @@ function renderLogin() {
 }
 
 function renderSidebar() {
-  const navMap = { dashboard: 'dashboard', channels: 'channels', routes: 'modelRoutes', apikeys: 'apiKeys', errors: 'errorLogs' };
+  const navMap = { dashboard: 'dashboard', channels: 'channels', routes: 'modelRoutes', apikeys: 'apiKeys', errors: 'logs' };
   document.querySelectorAll('#sidebar-nav .nav-item').forEach(el => {
     el.textContent = t(navMap[el.dataset.section]);
     el.classList.toggle('active', el.dataset.section === curSection);
@@ -732,16 +740,15 @@ function showChModal(id) {
     <div class="form-group">
       <label>\${t('baseUrl')}</label>
       <input id="f-url" value="\${ch ? esc(ch.base_url) : ''}" placeholder="\${t('urlPlaceholder')}">
-      <div class="form-help">\${t('urlHelp')}</div>
     </div>
     <div class="form-group">
       <label>\${t('pathLabel')}</label>
       <input id="f-path" value="\${ch ? esc(ch.path || '') : ''}" placeholder="/chat/completions">
-      <div class="form-help">\${t('pathHelp')}</div>
     </div>
     <div class="form-group">
       <label>\${t('keysLabel')}</label>
-      <textarea id="f-keys" placeholder="\${t('keysPlaceholder')}">\${ch ? (ch.keys||[]).join('\\n') : ''}</textarea>
+      <div class="key-list" id="f-keys-list"></div>
+      <button type="button" class="btn btn-sm btn-ghost" style="margin-top:4px;width:100%" onclick="addKeyRow()">+ \${t('addKey')}</button>
     </div>
     <div class="form-group">
       <label>\${t('modelsLabel')}</label>
@@ -753,8 +760,8 @@ function showChModal(id) {
     <div class="form-group">
       <label>\${t('modelMapLabel')}</label>
       <div id="f-modelmap"></div>
+      <datalist id="f-upstream-datalist"></datalist>
       <button type="button" class="btn btn-sm btn-ghost" style="width:100%" onclick="addModelMapRow()">+ \${t('addMapping')}</button>
-      <div class="form-help">\${t('modelMapHelp')}</div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal()">\${t('cancel')}</button>
@@ -764,19 +771,25 @@ function showChModal(id) {
   modelMapRows = ch && ch.model_map && typeof ch.model_map === 'object'
     ? Object.entries(ch.model_map).map(([p, u]) => ({ public: p, upstream: String(u) }))
     : [];
+  keyRows = (ch ? ch.keys || [] : []).map(k =>
+    typeof k === 'string' ? { key: k, enabled: true } : { key: String(k.key || ''), enabled: k.enabled !== false }
+  );
+  if (keyRows.length === 0) keyRows.push({ key: '', enabled: true });
   lastFetchedModels = [];
   openModal(html);
+  renderKeyRows();
   renderModelMapRows();
 }
 
 // 获取上游模型并渲染勾选列表（多选，勾选即加入该渠道模型）
 async function fetchUpstreamChannelModels(btn) {
   const id = document.getElementById('f-ch-id').value;
+  const keys = keyRows.filter(r => r.enabled !== false).map(r => r.key.trim()).filter(Boolean);
   const body = id
     ? JSON.stringify({ channel_id: id })
     : JSON.stringify({
         base_url: document.getElementById('f-url').value.trim(),
-        keys: document.getElementById('f-keys').value.split('\\n').map(s=>s.trim()).filter(Boolean),
+        keys,
       });
   const old = btn.textContent;
   btn.disabled = true; btn.textContent = t('fetchingModels');
@@ -815,19 +828,60 @@ function toggleChannelModel(cb, model) {
   ta.value = Array.from(set).join('\\n');
 }
 
+// ---- 渠道 API 密钥（支持逐条启用 / 禁用） ----
+function renderKeyRows() {
+  const box = document.getElementById('f-keys-list');
+  if (!box) return;
+  box.innerHTML = keyRows.map((row, i) =>
+    '<div class="key-row" data-i="' + i + '">' +
+      '<label class="key-switch"><input type="checkbox" class="key-en" data-i="' + i + '"' + (row.enabled ? ' checked' : '') + ' onchange="toggleKeyRow(this)"><span class="key-slider"></span></label>' +
+      '<input class="key-val" value="' + esc(row.key) + '" placeholder="sk-..." oninput="updateKeyRow(' + i + ')">' +
+      '<button type="button" class="map-del" onclick="removeKeyRow(' + i + ')">✕</button>' +
+    '</div>'
+  ).join('');
+  box.querySelectorAll('.key-row').forEach(el => {
+    const idx = Number(el.dataset.i);
+    el.classList.toggle('key-disabled', keyRows[idx] ? keyRows[idx].enabled === false : false);
+  });
+}
+
+function updateKeyRow(i) {
+  const el = document.querySelector('.key-row[data-i="' + i + '"]');
+  if (!el) return;
+  keyRows[i].key = el.querySelector('.key-val').value.trim();
+}
+
+function toggleKeyRow(cb) {
+  const i = Number(cb.dataset.i);
+  keyRows[i].enabled = cb.checked;
+  const el = document.querySelector('.key-row[data-i="' + i + '"]');
+  if (el) el.classList.toggle('key-disabled', !cb.checked);
+}
+
+function addKeyRow() {
+  keyRows.push({ key: '', enabled: true });
+  renderKeyRows();
+}
+
+function removeKeyRow(i) {
+  keyRows.splice(i, 1);
+  renderKeyRows();
+}
+
 // ---- 公开模型 → 上游模型 映射编辑 ----
 function renderModelMapRows() {
   const box = document.getElementById('f-modelmap');
-  if (!box) return;
-  if (modelMapRows.length === 0) {
-    box.innerHTML = '<div class="model-picker-empty">' + t('modelPickerNone') + '</div>';
-    return;
+  const dl = document.getElementById('f-upstream-datalist');
+  if (dl) {
+    dl.innerHTML = lastFetchedModels.map(m => '<option value="' + esc(String(m)) + '"></option>').join('');
   }
+  if (!box) return;
+  if (modelMapRows.length === 0) { box.innerHTML = ''; return; }
   box.innerHTML = modelMapRows.map((row, i) =>
     '<div class="map-row" data-i="' + i + '">' +
       '<input class="map-pub" value="' + esc(row.public) + '" placeholder="' + t('mapPublicModelPh') + '" oninput="updateModelMapRow(' + i + ')">' +
       '<span class="map-arrow">→</span>' +
-      '<input class="map-up" value="' + esc(row.upstream) + '" placeholder="' + t('mapUpstreamPh') + '" oninput="updateModelMapRow(' + i + ')">' +
+      '<input class="map-up" list="f-upstream-datalist" value="' + esc(row.upstream) + '" placeholder="' + t('mapUpstreamPh') + '" oninput="updateModelMapRow(' + i + ')">' +
       '<button type="button" class="map-del" onclick="removeModelMapRow(' + i + ')">✕</button>' +
     '</div>'
   ).join('');
@@ -854,7 +908,7 @@ async function saveCh(id) {
   const name = document.getElementById('f-name').value.trim();
   const base_url = document.getElementById('f-url').value.trim();
   const path = document.getElementById('f-path').value.trim();
-  const keys = document.getElementById('f-keys').value.split('\\n').map(s=>s.trim()).filter(Boolean);
+  const keys = keyRows.map(r => ({ key: r.key.trim(), enabled: r.enabled })).filter(r => r.key);
   const models = document.getElementById('f-models').value.split('\\n').map(s=>s.trim()).filter(Boolean);
 
   if (!name || !base_url) { toast(t('nameUrlRequired'), 'error'); return; }

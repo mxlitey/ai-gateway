@@ -1,3 +1,5 @@
+import { enabledKeys } from '../lb/balancer.js';
+
 /** 北京时区日期（用于用量/错误日志的读写保持一致，避免 UTC 跨日错位）。 */
 function beijingToday() {
   return new Date(new Date().getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -162,7 +164,7 @@ export async function handleAdminApi(request, env, store) {
           keys: Array.isArray(data.keys) ? data.keys.filter(Boolean) : [],
         };
       }
-      if (!ch.base_url || !(ch.keys || []).length) {
+      if (!ch.base_url || enabledKeys(ch).length === 0) {
         return jsonRes({ error: '基础 URL 和密钥不能为空' }, 400);
       }
       const { models, error } = await fetchUpstreamModels(ch);
@@ -179,7 +181,7 @@ export async function handleAdminApi(request, env, store) {
 
       const testChannels = channelId
         ? channels.filter(ch => ch.id === channelId)
-        : channels.filter(ch => ch.enabled && ch.keys?.length > 0);
+        : channels.filter(ch => ch.enabled && enabledKeys(ch).length > 0);
 
       if (testChannels.length === 0) {
         return jsonRes({ error: 'No matching channels found' }, 404);
@@ -187,7 +189,7 @@ export async function handleAdminApi(request, env, store) {
 
       const results = [];
       for (const ch of testChannels) {
-        for (const key of (ch.keys || [])) {
+        for (const key of enabledKeys(ch)) {
           const keyHint = key.length > 12 ? key.slice(0, 7) + '...' + key.slice(-4) : key;
           const baseUrl = ch.base_url.replace(/\/+$/, '');
           const testUrl = baseUrl + resolveChatPath(ch);
@@ -278,7 +280,7 @@ function resolveChatPath(channel) {
 async function fetchUpstreamModels(ch) {
   const baseUrl = String(ch.base_url || '').replace(/\/+$/, '');
   let lastErr = null;
-  const keys = ch.keys || [];
+  const keys = enabledKeys(ch);
   for (const key of keys) {
     try {
       const resp = await fetch(baseUrl + '/models', {

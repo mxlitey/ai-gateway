@@ -1,5 +1,5 @@
 import { verifyApiKey } from './auth.js';
-import { LoadBalancer } from '../lb/balancer.js';
+import { LoadBalancer, enabledKeys } from '../lb/balancer.js';
 import { claudeToOpenAI, openAIToClaude, openAIStreamToClaudeStream } from './claude.js';
 import { responsesToChatCompletions, chatCompletionsToResponses, chatCompletionsStreamToResponsesStream } from './responses.js';
 
@@ -464,7 +464,7 @@ async function handleModels(store, allowedChannelIds) {
   // 仅统计启用 + 有 key + 且在客户端 key 允许范围内的渠道。
   const modelMap = new Map(); // 公开模型名 -> { id, owned_by }
   for (const c of channels) {
-    if (c.enabled === false || !c.keys || c.keys.length === 0) continue;
+    if (c.enabled === false || enabledKeys(c).length === 0) continue;
     if (allowedSet && !allowedSet.has(c.id)) continue;
     const mm = (c.model_map && typeof c.model_map === 'object') ? c.model_map : {};
     for (const pub of Object.keys(mm)) {

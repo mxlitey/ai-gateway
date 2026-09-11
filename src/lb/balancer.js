@@ -4,13 +4,29 @@
  * 渠道集成模式（不再有独立路由实体）：
  *   - 每个渠道维护 model_map = { 公开模型名: 真实上游模型名 }
  *   - 公开模型可与请求 model 完全一致（trim 后比较）才命中
- *   - 仅启用、且渠道启用且有 key 的渠道参与
+ *   - 仅启用、且渠道启用且有已启用的 key 的渠道参与
  *   - 客户端 key 的 channel_ids 限定时，非允许渠道被过滤
  *   - 一个公开模型可被多个渠道提供，按渠道存储顺序作为尝试顺序
- *   - 每个渠道按自身 key 顺序（随机起点轮换）展开，key 与上游模型组合去重
+ *   - 每个渠道按自身已启用 key 顺序（随机起点轮换）展开，key 与上游模型组合去重
  *
  * 返回 target 结构：{ channel, key, model（上游模型名）, publicModel（公开名） }。
  */
+
+/** 单条密钥归一化：兼容旧版 string[] 与新版 { key, enabled }[] */
+export function normalizeKey(k) {
+  if (k == null) return null;
+  if (typeof k === 'string') return { key: k.trim(), enabled: true };
+  return { key: String(k.key || '').trim(), enabled: k.enabled !== false };
+}
+
+/** 渠道中启用的密钥列表（纯字符串） */
+export function enabledKeys(channel) {
+  return (channel.keys || [])
+    .map(normalizeKey)
+    .filter(k => k && k.key && k.enabled)
+    .map(k => k.key);
+}
+
 export class LoadBalancer {
   constructor(store) {
     this.store = store;
@@ -32,7 +48,7 @@ export class LoadBalancer {
     // 解析顺序：先查 model_map（公开模型 → 上游模型）；若无映射，则回退到 models（同名透传）
     const targetRows = [];
     for (const ch of channels) {
-      if (ch.enabled === false || !ch.keys || ch.keys.length === 0) continue;
+      if (ch.enabled === false || enabledKeys(ch).length === 0) continue;
       if (allowedSet && !allowedSet.has(ch.id)) continue;
       let um = (ch.model_map && typeof ch.model_map === 'object') ? ch.model_map[requested] : null;
       if (!um && Array.isArray(ch.models) && ch.models.includes(requested)) {
@@ -88,7 +104,7 @@ export class LoadBalancer {
    * still returns keys in a deterministic cyclic order for failover.
    */
   async getOrderedKeys(channel) {
-    const keys = channel.keys || [];
+    const keys = enabledKeys(channel);
     if (keys.length === 0) return [];
 
     // Random start index — concurrency-safe, no shared counter read-modify-write

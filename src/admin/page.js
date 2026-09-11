@@ -897,27 +897,26 @@ function routeTargetRowHtml(target) {
   '</div>';
 }
 
-// 选择渠道后自动带出该渠道的上游模型列表（下拉选择，仅可选择）
-async function loadChannelModels(sel) {
+// 选择渠道后，用该渠道里已配置的模型列表填充上游模型下拉（仅可选择）
+function loadChannelModels(sel) {
   const row = sel.closest('.rt-target-row');
   const chId = sel.value;
   const upSel = row.querySelector('.rt-trg-up');
   const prev = upSel.value; // 编辑回带时若已保存模型，保留为可选项
+  const ch = channels.find(c => c.id === chId);
+  const models = (ch && Array.isArray(ch.models) && ch.models.length) ? ch.models : [];
   upSel.innerHTML = '<option value="">' + t('selectUpstream') + '</option>';
-  if (!chId) { upSel.value = ''; return; }
-  const r = await api('/fetch-models', { method: 'POST', body: JSON.stringify({ channel_id: chId }) });
+  if (models.length === 0) { upSel.value = ''; return; }
   let hasPrev = false;
-  if (r && !r.error && Array.isArray(r.models) && r.models.length) {
-    r.models.forEach(m => {
-      const opt = document.createElement('option');
-      opt.value = m;
-      opt.textContent = m;
-      if (m === prev) { opt.selected = true; hasPrev = true; }
-      upSel.appendChild(opt);
-    });
-  }
+  models.forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    if (m === prev) { opt.selected = true; hasPrev = true; }
+    upSel.appendChild(opt);
+  });
   if (prev && !hasPrev) {
-    // 保存的上游模型不在当前渠道模型列表中时，仍保留以方便编辑
+    // 保存的上游模型不在该渠道配置的模型列表中时，仍保留以方便编辑
     const opt = document.createElement('option');
     opt.value = prev; opt.textContent = prev; opt.selected = true;
     upSel.appendChild(opt);

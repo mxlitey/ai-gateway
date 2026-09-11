@@ -43,7 +43,7 @@ export class MysqlKV {
     return this.pool;
   }
 
-  /** 惰性建表（幂等），首次任何操作前调用一次。 */
+  /** 惰性建表/补列（幂等），首次任何操作前调用一次。 */
   _ensureTable() {
     if (!this.tableReady) {
       this.tableReady = this._getPool().query(`
@@ -51,14 +51,34 @@ export class MysqlKV {
           pk VARCHAR(255) NOT NULL PRIMARY KEY,
           cnt INT UNSIGNED NOT NULL DEFAULT 0,
           prompt_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0,
-          completion_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0
+          completion_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0,
+          cached_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-      `).then(() => true).catch(err => {
-        console.error('[mysql-kv] ensureTable failed:', err);
-        throw err;
-      });
+      `)
+        // 兼容旧表：若表已存在（无 cached_tokens 列），幂等补列
+        .then(() => this._ensureCachedTokensColumn())
+        .then(() => true)
+        .catch(err => {
+          console.error('[mysql-kv] ensureTable failed:', err);
+          throw err;
+        });
     }
     return this.tableReady;
+  }
+
+  /** 检查并补齐 cached_tokens 列（对已按旧 schema 建表的数据库生效）。 */
+  async _ensureCachedTokensColumn() {
+    const [cols] = await this._getPool().query(
+      `SELECT COLUMN_NAME FROM information_schema.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'usage_counter' AND COLUMN_NAME = 'cached_tokens'`,
+    );
+    if (cols.length === 0) {
+      await this._getPool().query(
+        `ALTER TABLE usage_counter
+         ADD COLUMN cached_tokens BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER completion_tokens`,
+      );
+      console.log('[mysql-kv] added missing cached_tokens column to usage_counter');
+    }
   }
 
   async _run(sql, params) {

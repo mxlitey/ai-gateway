@@ -711,12 +711,18 @@ function renderChannels() {
     tb.innerHTML = '<tr><td colspan="6" class="empty">' + t('noChannels') + '</td></tr>';
     return;
   }
-  tb.innerHTML = channels.map(c => \`
+  tb.innerHTML = channels.map(c => {
+    const mn = channelModelNames(c);
+    const modelCell = mn.length
+      ? esc(mn.slice(0, 5).join(', ') + (mn.length > 5 ? '…' : '')) +
+        (mn.length > 5 ? ' <span style="color:var(--text-2);font-size:12px">(' + mn.length + ')</span>' : '')
+      : '<span style="color:var(--text-2)">' + t('all') + '</span>';
+    return \`
     <tr>
       <td><strong>\${esc(c.name)}</strong></td>
       <td class="cell-truncate" title="\${esc(c.base_url + (c.path || '/chat/completions'))}">\${esc(c.base_url)}\${c.path ? ' <span style="color:var(--text-2);font-size:12px">' + esc(c.path) + '</span>' : ''}</td>
       <td>\${c.keys?.length || 0}</td>
-      <td>\${c.models?.length || '<span style="color:var(--text-2)">' + t('all') + '</span>'}</td>
+      <td class="cell-truncate" title="\${esc(mn.join(', '))}">\${modelCell}</td>
       <td><span class="badge \${c.enabled ? 'badge-on' : 'badge-off'}">\${c.enabled ? t('on') : t('off')}</span></td>
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-ghost" onclick="showChModal('\${c.id}')">\${t('edit')}</button>
@@ -724,7 +730,17 @@ function renderChannels() {
         <button class="btn btn-sm btn-danger" onclick="confirmDel('channel','\${c.id}','\${esc(c.name)}')">\${t('delete')}</button>
       </td>
     </tr>
-  \`).join('');
+  \`}).join('');
+}
+
+// 合并渠道的「模型列表」与「模型映射」，按上游模型名去重后返回
+function channelModelNames(c) {
+  const names = new Set();
+  (c.models || []).forEach(m => { if (m) names.add(String(m)); });
+  if (c.model_map && typeof c.model_map === 'object') {
+    Object.keys(c.model_map).forEach(p => { const u = c.model_map[p]; if (u) names.add(String(u)); });
+  }
+  return Array.from(names);
 }
 
 function showChModal(id) {
@@ -823,9 +839,17 @@ function toggleChannelModel(cb, model) {
   const ta = document.getElementById('f-models');
   const lines = ta.value.split('\\n').map(s=>s.trim()).filter(Boolean);
   const set = new Set(lines);
-  if (cb.checked) set.add(model);
-  else set.delete(model);
-  ta.value = Array.from(set).join('\\n');
+  if (cb.checked) {
+    set.add(model);
+    // 选中的上游模型同步纳入映射（公开名=上游名），已存在则跳过
+    if (!modelMapRows.some(r => (r.public || '').trim() === model)) {
+      modelMapRows.push({ public: model, upstream: model });
+      renderModelMapRows();
+    }
+  } else {
+    set.delete(model);
+  }
+  ta.value = Array.from(set).join('\n');
 }
 
 // ---- 渠道 API 密钥（支持逐条启用 / 禁用） ----

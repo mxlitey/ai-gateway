@@ -16,7 +16,6 @@ export async function handleProxy(request, env, store) {
   const path = url.pathname;
 
   const allowedChannelIds = authResult.apiKey.channel_ids || null;
-  const clientKeyId = authResult.apiKey.id;
 
   // GET /v1/models
   if (path.endsWith('/models') && request.method === 'GET') {
@@ -37,21 +36,21 @@ export async function handleProxy(request, env, store) {
 
   // ---- Claude Messages API (/v1/messages) ----
   if (path.endsWith('/messages')) {
-    return handleClaudeMessages(request, url, body, store, allowedChannelIds, clientKeyId);
+    return handleClaudeMessages(request, url, body, store, allowedChannelIds);
   }
 
   // ---- OpenAI Responses API (/v1/responses) ----
   if (path.endsWith('/responses')) {
-    return handleResponses(request, url, body, store, allowedChannelIds, clientKeyId);
+    return handleResponses(request, url, body, store, allowedChannelIds);
   }
 
   // ---- OpenAI-compatible passthrough ----
-  return handleOpenAIProxy(request, url, path, body, store, allowedChannelIds, clientKeyId);
+  return handleOpenAIProxy(request, url, path, body, store, allowedChannelIds);
 }
 
 // ─── Claude Messages API handler ───────────────────────────────────
 
-async function handleClaudeMessages(request, url, claudeBody, store, allowedChannelIds, clientKeyId) {
+async function handleClaudeMessages(request, url, claudeBody, store, allowedChannelIds) {
   const model = claudeBody.model || '';
   const isStream = claudeBody.stream || false;
 
@@ -85,7 +84,7 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
     for (const target of targets) {
       try {
         const baseUrl = target.channel.base_url.replace(/\/+$/, '');
-        const targetUrl = baseUrl + '/chat/completions' + url.search;
+        const targetUrl = baseUrl + resolveChatPath(target.channel) + url.search;
 
         console.log(`[proxy][claude] -> ${target.channel.name} ${targetUrl}${round > 0 ? ` (retry #${round})` : ''}`);
 
@@ -133,23 +132,8 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
             (resp.headers.get('Content-Type') || '').includes('text/event-stream');
 
           if (upstreamIsSSE) {
-            // 渠道用量立即记录（仅计数）
-            store.incrementUsage(target.channel.id, target.key, model).catch(e =>
-              console.error('[usage] increment failed:', e));
-
-            // 参考 one-api：先通过 processStream 捕获流式 usage，再转换为 Claude 格式
-            const { stream: processedStream, usagePromise } = processStream(resp.body);
+            const processedStream = processStream(resp.body);
             const claudeStream = openAIStreamToClaudeStream(processedStream, model);
-
-            // 流结束后异步记录 API 密钥用量（含 token 数）
-            usagePromise.then(usage => {
-              const pt = usage?.prompt_tokens || 0;
-              const ct = usage?.completion_tokens || 0;
-              store.incrementApiKeyUsage(clientKeyId, model, pt, ct).catch(e =>
-                console.error('[apikey-usage] increment failed:', e));
-            }).catch(() => {
-              store.incrementApiKeyUsage(clientKeyId, model, 0, 0).catch(() => {});
-            });
 
             return new Response(claudeStream, {
               status: 200,
@@ -175,14 +159,7 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
             continue;
           }
 
-          // 非流式：从响应中提取 token 用量
-          const pt = openaiData.usage?.prompt_tokens || 0;
-          const ct = openaiData.usage?.completion_tokens || 0;
-          store.incrementUsage(target.channel.id, target.key, model).catch(e =>
-            console.error('[usage] increment failed:', e));
-          store.incrementApiKeyUsage(clientKeyId, model, pt, ct).catch(e =>
-            console.error('[apikey-usage] increment failed:', e));
-
+          // 非流式：转换回 Claude 格式
           const claudeResponse = openAIToClaude(openaiData, model);
           return jsonRes(claudeResponse, 200);
         }
@@ -204,7 +181,7 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
 
 // ─── OpenAI Responses API handler ──────────────────────────────────
 
-async function handleResponses(request, url, body, store, allowedChannelIds, clientKeyId) {
+async function handleResponses(request, url, body, store, allowedChannelIds) {
   const model = body.model || '';
   const isStream = body.stream || false;
 
@@ -235,7 +212,7 @@ async function handleResponses(request, url, body, store, allowedChannelIds, cli
     for (const target of targets) {
       try {
         const baseUrl = target.channel.base_url.replace(/\/+$/, '');
-        const targetUrl = baseUrl + '/chat/completions' + url.search;
+        const targetUrl = baseUrl + resolveChatPath(target.channel) + url.search;
 
         console.log(`[proxy][responses] -> ${target.channel.name} ${targetUrl}${round > 0 ? ` (retry #${round})` : ''}`);
 
@@ -281,19 +258,7 @@ async function handleResponses(request, url, body, store, allowedChannelIds, cli
             (resp.headers.get('Content-Type') || '').includes('text/event-stream');
 
           if (upstreamIsSSE) {
-            store.incrementUsage(target.channel.id, target.key, model).catch(e =>
-              console.error('[usage] increment failed:', e));
-
-            const { stream, usagePromise } = chatCompletionsStreamToResponsesStream(resp.body, model);
-
-            usagePromise.then(usage => {
-              const pt = usage?.prompt_tokens || 0;
-              const ct = usage?.completion_tokens || 0;
-              store.incrementApiKeyUsage(clientKeyId, model, pt, ct).catch(e =>
-                console.error('[apikey-usage] increment failed:', e));
-            }).catch(() => {
-              store.incrementApiKeyUsage(clientKeyId, model, 0, 0).catch(() => {});
-            });
+            const { stream } = chatCompletionsStreamToResponsesStream(resp.body, model);
 
             return new Response(stream, {
               status: 200,
@@ -318,13 +283,6 @@ async function handleResponses(request, url, body, store, allowedChannelIds, cli
             continue;
           }
 
-          const pt = openaiData.usage?.prompt_tokens || 0;
-          const ct = openaiData.usage?.completion_tokens || 0;
-          store.incrementUsage(target.channel.id, target.key, model).catch(e =>
-            console.error('[usage] increment failed:', e));
-          store.incrementApiKeyUsage(clientKeyId, model, pt, ct).catch(e =>
-            console.error('[apikey-usage] increment failed:', e));
-
           const responsesData = chatCompletionsToResponses(openaiData, model);
           return jsonRes(responsesData, 200);
         }
@@ -346,7 +304,7 @@ async function handleResponses(request, url, body, store, allowedChannelIds, cli
 
 // ─── OpenAI passthrough handler ────────────────────────────────────
 
-async function handleOpenAIProxy(request, url, path, body, store, allowedChannelIds, clientKeyId) {
+async function handleOpenAIProxy(request, url, path, body, store, allowedChannelIds) {
   const model = body.model || '';
   const lb = new LoadBalancer(store);
   const { targets, error } = await lb.selectTarget(model, allowedChannelIds);
@@ -383,7 +341,9 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
     for (const target of targets) {
       try {
         const baseUrl = target.channel.base_url.replace(/\/+$/, '');
-        const targetUrl = baseUrl + upstreamPath + url.search;
+        // 对话接口可被渠道协议接口覆盖（如 /chat/completions）；其他端点（embeddings 等）沿用请求路径
+        const opPath = upstreamPath.includes('/chat/completions') ? resolveChatPath(target.channel) : upstreamPath;
+        const targetUrl = baseUrl + opPath + url.search;
 
         console.log(`[proxy] -> ${target.channel.name} ${targetUrl}${round > 0 ? ` (retry #${round})` : ''}`);
 
@@ -445,23 +405,8 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
             respHeaders.set('Connection', 'keep-alive');
             respHeaders.set('X-Accel-Buffering', 'no');
 
-            // 处理流：修复 id 字段 + 捕获 usage（参考 one-api 流式 token 统计方案）
-            const { stream, usagePromise } = processStream(resp.body);
-
-            if (resp.ok) {
-              // 渠道用量立即记录（仅计数）
-              store.incrementUsage(target.channel.id, target.key, model).catch(e =>
-                console.error('[usage] increment failed:', e));
-              // API 密钥用量在流结束后记录（含 token 数）
-              usagePromise.then(usage => {
-                const pt = usage?.prompt_tokens || 0;
-                const ct = usage?.completion_tokens || 0;
-                store.incrementApiKeyUsage(clientKeyId, model, pt, ct).catch(e =>
-                  console.error('[apikey-usage] increment failed:', e));
-              }).catch(() => {
-                store.incrementApiKeyUsage(clientKeyId, model, 0, 0).catch(() => {});
-              });
-            }
+            // 处理流：修复 id 字段（参考 one-api 流式处理方案）
+            const stream = processStream(resp.body);
 
             return new Response(stream, { status: resp.status, headers: respHeaders });
           }
@@ -474,7 +419,6 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
           // Non-streaming: validate chat/completions responses
           if (resp.ok && upstreamPath.includes('/chat/completions')) {
             const respText = await resp.text();
-            let promptTokens = 0, completionTokens = 0;
             try {
               const data = JSON.parse(respText);
               if (!Array.isArray(data.choices)) {
@@ -482,23 +426,8 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
                 logError(store, target, model, 200, lastError);
                 continue;
               }
-              promptTokens = data.usage?.prompt_tokens || 0;
-              completionTokens = data.usage?.completion_tokens || 0;
             } catch { /* not valid JSON — pass through as-is */ }
-            // 非流式：记录请求次数和 token 用量
-            store.incrementUsage(target.channel.id, target.key, model).catch(e =>
-              console.error('[usage] increment failed:', e));
-            store.incrementApiKeyUsage(clientKeyId, model, promptTokens, completionTokens).catch(e =>
-              console.error('[apikey-usage] increment failed:', e));
             return new Response(respText, { status: resp.status, headers: respHeaders });
-          }
-
-          // 其他非流式路径（embeddings 等）
-          if (resp.ok) {
-            store.incrementUsage(target.channel.id, target.key, model).catch(e =>
-              console.error('[usage] increment failed:', e));
-            store.incrementApiKeyUsage(clientKeyId, model, 0, 0, 0).catch(e =>
-              console.error('[apikey-usage] increment failed:', e));
           }
 
           return new Response(resp.body, { status: resp.status, headers: respHeaders });
@@ -569,21 +498,6 @@ async function handleModels(store, allowedChannelIds) {
   });
 }
 
-/**
- * 从上游 usage 中拆分 token 用量（OpenAI 规范）：
- * - input:  未命中缓存的输入 token（prompt_tokens - cached_tokens）
- * - cached: 命中缓存的输入 token（prompt_tokens_details.cached_tokens）
- * - output: 输出 token（completion_tokens）
- */
-function extractTokenUsage(usage) {
-  const prompt = usage?.prompt_tokens || 0;
-  const cached = usage?.prompt_tokens_details?.cached_tokens
-    || usage?.input_tokens_details?.cached_tokens
-    || 0;
-  const output = usage?.completion_tokens || 0;
-  return { input: Math.max(0, prompt - cached), cached, output };
-}
-
 function extractRateLimitHeaders(headers) {
   const intOrNull = (v) => {
     if (v == null) return null;
@@ -643,6 +557,12 @@ async function classifyAndRecord429(store, target, model, resp, rateHeaders) {
 
   await store.markRateLimitedTemporary(target.channel.id, target.key, model, 90 * 1000);
   return 'temporary cooldown 90s';
+}
+
+/** 渠道对话接口路径：未配置协议接口时默认 /chat/completions */
+function resolveChatPath(channel) {
+  const trimmed = ((channel && channel.path) || '').trim();
+  return trimmed ? (trimmed.startsWith('/') ? trimmed : '/' + trimmed) : '/chat/completions';
 }
 
 function jsonRes(body, status = 200) {
@@ -724,25 +644,20 @@ function calc429Delay(rateHeaders, attempt) {
 }
 
 /**
- * 处理 SSE 流：修复 id 字段 + 捕获 usage（参考 one-api 流式 token 统计方案）。
+ * 处理 SSE 流。
  *
  * 功能：
  * 1. 修复上游返回 id: null 的问题（国内模型如 GLM 不遵循 OpenAI 规范）
- * 2. 配合 stream_options.include_usage=true，从最后一个 chunk 捕获 token 用量
+ * 2. 过滤掉 choices 为 null 的无效 chunk（国内 API 常见异常）
  *
- * 返回 { stream, usagePromise }：
- * - stream: 修复后的 ReadableStream，可直接返回给客户端
- * - usagePromise: 流结束后 resolve 为 { prompt_tokens, completion_tokens } 或 null
+ * 返回修复后的 ReadableStream，可直接返回给客户端。
  */
 function processStream(body) {
   const dec = new TextDecoder();
   const enc = new TextEncoder();
   let buf = '';
-  let capturedUsage = null;
-  let resolveUsage;
-  const usagePromise = new Promise(resolve => { resolveUsage = resolve; });
 
-  const stream = body.pipeThrough(new TransformStream({
+  return body.pipeThrough(new TransformStream({
     transform(chunk, ctrl) {
       buf += dec.decode(chunk, { stream: true });
       const parts = buf.split('\n\n');
@@ -755,15 +670,10 @@ function processStream(body) {
             const data = JSON.parse(trimmed.slice(6));
             // 过滤掉 choices 为 null 的无效 chunk（国内 API 常见异常）
             if ('choices' in data && !Array.isArray(data.choices)) {
-              if (data.usage) capturedUsage = data.usage;
               continue;
             }
             if (typeof data.id !== 'string') {
               data.id = data.id != null ? String(data.id) : ('chatcmpl-' + Date.now());
-            }
-            // 捕获 usage（stream_options.include_usage=true 时上游在末尾 chunk 返回）
-            if (data.usage) {
-              capturedUsage = data.usage;
             }
             ctrl.enqueue(enc.encode('data: ' + JSON.stringify(data) + '\n\n'));
             continue;
@@ -774,9 +684,6 @@ function processStream(body) {
     },
     flush(ctrl) {
       if (buf.trim()) ctrl.enqueue(enc.encode(buf));
-      resolveUsage(capturedUsage);
     },
   }));
-
-  return { stream, usagePromise };
 }

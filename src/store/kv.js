@@ -4,11 +4,9 @@ const DEFAULT_COOLDOWN_MS = 90 * 1000;
 class KVStore {
   /**
    * @param {object} kv   Blob/File 适配层（config、ratelimit、errors）
-   * @param {object} [mysql]  MySQL 适配层（usage、apikey-usage 原子计数）；缺省时不启用用量统计
    */
-  constructor(kv, mysql) {
+  constructor(kv) {
     this.kv = kv;
-    this.mysql = mysql;
     this.cache = new Map();
   }
 
@@ -56,60 +54,13 @@ class KVStore {
     await this.set('config:routes', routes);
   }
 
-  // ── Per-key usage tracking (MySQL 原子计数；无 MySQL 时回退 KV 读-改-写) ──
-  // 存储格式（MySQL）：usage_counter 表扁平计数，见 mysql-kv.js
-  // 兼容格式（KV 回退）：usage:{channelId}:{date} → { "keyId1": { total, models: { m: N } }, ... }
+  // ── Error logs (per-channel, per-day, last 100 entries) ──
 
   _todayKey() {
     const now = new Date();
     const beijing = new Date(now.getTime() + 8 * 60 * 60 * 1000);
     return beijing.toISOString().slice(0, 10);
   }
-
-  _keyId(apiKey) {
-    return apiKey.slice(-8);
-  }
-
-  async getUsage(channelId, date) {
-    date = date || this._todayKey();
-    if (this.mysql) {
-      return this.mysql.getUsage(channelId, date);
-    }
-    // KV 回退：保证未配置 MySQL 时用量依然可见
-    const key = `usage:${channelId}:${date}`;
-    try { return (await this.kv.get(key, 'json')) || {}; } catch { return {}; }
-  }
-
-  async incrementUsage(channelId, apiKey, model) {
-    // 仅在有数据库时记录用量；未配置时不做 KV 读-改-写（避免无状态下并发竞态写 blob）
-    if (!this.mysql) return;
-    const date = this._todayKey();
-    const kid = this._keyId(apiKey);
-    await this.mysql.incrementUsage(channelId, date, kid, model);
-  }
-
-  // ── 客户端 API Key 用量统计（仅 MySQL 可用；未配置时统计禁用）──
-  // Storage: apikey-usage:{date} → { "keyId": { requests, prompt_tokens, completion_tokens, cached_tokens, models: { m: { requests, prompt_tokens, completion_tokens, cached_tokens } } } }
-  // prompt_tokens = 未命中缓存的输入；cached_tokens = 命中缓存的输入；completion_tokens = 输出
-
-  async getApiKeyUsage(date) {
-    date = date || this._todayKey();
-    if (this.mysql) {
-      return this.mysql.getApiKeyUsage(date);
-    }
-    // KV 回退
-    const key = `apikey-usage:${date}`;
-    try { return (await this.kv.get(key, 'json')) || {}; } catch { return {}; }
-  }
-
-  async incrementApiKeyUsage(apiKeyId, model, promptTokens = 0, completionTokens = 0, cachedTokens = 0) {
-    // 仅在有数据库时记录用量；未配置时不做 KV 读-改-写（避免无状态下并发竞态写 blob）
-    if (!this.mysql) return;
-    const date = this._todayKey();
-    await this.mysql.incrementApiKeyUsage(apiKeyId, model, promptTokens, completionTokens, cachedTokens);
-  }
-
-  // ── Error logs (per-channel, per-day, last 100 entries) ──
 
   async appendError(channelId, entry) {
     const date = this._todayKey();
@@ -260,6 +211,6 @@ class KVStore {
   }
 }
 
-export function createStore(kv, mysql) {
-  return new KVStore(kv, mysql);
+export function createStore(kv) {
+  return new KVStore(kv);
 }

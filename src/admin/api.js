@@ -24,6 +24,7 @@ export async function handleAdminApi(request, env, store) {
         id: crypto.randomUUID(),
         name: data.name.trim(),
         base_url: data.base_url.trim(),
+        path: (data.path || '').trim(),
         keys: Array.isArray(data.keys) ? data.keys.filter(Boolean) : [],
         models: Array.isArray(data.models) ? data.models.filter(Boolean) : [],
         model_map: normalizeModelMap(data),
@@ -51,6 +52,7 @@ export async function handleAdminApi(request, env, store) {
           ...ch,
           name: data.name?.trim() ?? ch.name,
           base_url: data.base_url?.trim() ?? ch.base_url,
+          path: data.path?.trim() ?? ch.path,
           keys: Array.isArray(data.keys) ? data.keys.filter(Boolean) : ch.keys,
           models: Array.isArray(data.models) ? data.models.filter(Boolean) : ch.models,
           model_map: (data.model_map !== undefined)
@@ -83,46 +85,6 @@ export async function handleAdminApi(request, env, store) {
       channels[idx].enabled = !channels[idx].enabled;
       await store.saveChannels(channels);
       return jsonRes(channels[idx]);
-    }
-
-    // --- Usage ---
-    if (path === '/usage' && method === 'GET') {
-      const date = url.searchParams.get('date') || beijingToday();
-      const channels = await store.getChannels();
-      const usageData = await Promise.all(
-        channels.map(async ch => {
-          const rawUsage = await store.getUsage(ch.id, date);
-          const rawRate = await store.getRateLimits(ch.id, date);
-          const keys = (ch.keys || []).map(k => {
-            const kid = k.slice(-8);
-            const usage = rawUsage[kid] || { total: 0, models: {} };
-            const rateInfo = store.getRateLimitInfoWithData(k, rawRate);
-            return {
-              key_id: kid,
-              key_hint: k.length > 12 ? k.slice(0, 7) + '...' + k.slice(-4) : k,
-              usage,
-              rate_state: {
-                daily_models: rateInfo?.daily_models || [],
-                cooldowns: rateInfo?.cooldowns || {},
-              },
-            };
-          });
-          return {
-            channel_id: ch.id,
-            channel_name: ch.name,
-            enabled: ch.enabled,
-            keys,
-          };
-        })
-      );
-      return jsonRes({ date, channels: usageData });
-    }
-
-    // --- API Key Usage (客户端密钥用量统计) ---
-    if (path === '/apikeys/usage' && method === 'GET') {
-      const date = url.searchParams.get('date') || beijingToday();
-      const rawUsage = await store.getApiKeyUsage(date);
-      return jsonRes({ date, keys: rawUsage });
     }
 
     // --- Error Logs ---
@@ -228,7 +190,7 @@ export async function handleAdminApi(request, env, store) {
         for (const key of (ch.keys || [])) {
           const keyHint = key.length > 12 ? key.slice(0, 7) + '...' + key.slice(-4) : key;
           const baseUrl = ch.base_url.replace(/\/+$/, '');
-          const testUrl = baseUrl + '/chat/completions';
+          const testUrl = baseUrl + resolveChatPath(ch);
           const start = Date.now();
           try {
             const resp = await fetch(testUrl, {
@@ -277,39 +239,6 @@ export async function handleAdminApi(request, env, store) {
       });
     }
 
-    // --- MySQL 诊断（只读）：确认用量计数是否真正走数据库并落行 ---
-    if (path === '/mysql-status' && method === 'GET') {
-      const info = { enabled: !!store.mysql };
-      if (store.mysql) {
-        const m = store.mysql;
-        info.host = m.url ? m.url.replace(/\/\/.*@/, '//***:***@').split('?')[0] : null;
-        info.date = beijingToday();
-        try {
-          if (!m.pool) m.pool = m._getPool();
-          await m._ensureTable();
-          const [rows] = await m.pool.query('SELECT COUNT(*) AS n FROM usage_counter');
-          info.row_count = rows[0].n;
-          const [today] = await m.pool.query(
-            "SELECT COUNT(*) AS n FROM usage_counter WHERE pk LIKE ?",
-            [`%:${beijingToday()}:%`],
-          );
-          info.today_row_count = today[0].n;
-          // 返回几条样本 pk，便于核对 key 格式
-          const [sample] = await m.pool.query(
-            'SELECT pk, cnt FROM usage_counter ORDER BY pk DESC LIMIT 10',
-          );
-          info.sample = sample;
-          info.status = 'ok';
-        } catch (err) {
-          info.status = 'error';
-          info.error = String(err.message || err);
-        }
-      } else {
-        info.status = 'disabled';
-      }
-      return jsonRes(info);
-    }
-
     return jsonRes({ error: 'Not found' }, 404);
   } catch (err) {
     console.error('Admin API error:', err);
@@ -336,6 +265,13 @@ function normalizeModelMap(data) {
     out[pub] = um || pub;
   }
   return out;
+}
+
+/** 渠道对话接口路径：未配置协议接口时默认 /chat/completions */
+function resolveChatPath(channel) {
+  const p = (channel && channel.path) || '';
+  const trimmed = p.trim();
+  return trimmed ? (trimmed.startsWith('/') ? trimmed : '/' + trimmed) : '/chat/completions';
 }
 
 /** 调用上游 base_url + /models 拉取模型列表（兼容 OpenAI / Claude 响应格式）。 */

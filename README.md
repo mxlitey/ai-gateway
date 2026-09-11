@@ -11,7 +11,6 @@ OpenAI 兼容的 API 代理网关。支持多上游服务、多 Key 负载均衡
 - **API Key 鉴权**：生成客户端 API Key，控制代理访问权限
 - **OpenAI 兼容**：支持 `/v1/chat/completions`、`/v1/embeddings`、`/v1/models`
 - **流式支持**：完整支持 SSE 流式响应
-- **Token 用量细分**（可选）：配置 MySQL 后启用，分别统计未命中输入、缓存命中输入与输出 token（OpenAI `prompt_tokens_details.cached_tokens` 规范）
 
 ## 快速部署
 
@@ -46,11 +45,8 @@ cloud-functions/
 | 变量 | 必填 | 说明 |
 |------|------|------|
 | `ADMIN_PASSWORD` | 是 | 管理面板登录密码 |
-| `MYSQL_URL` | 否 | MySQL 连接串（`mysql://user:pass@host:port/db`），存请求次数与 Token 用量统计；不配置则统计功能关闭，其余功能正常 |
 
-> 存储双后端：
-> - **MySQL**（`MYSQL_URL`）：usage / apikey-usage 请求次数与 Token 统计（细分未命中输入 / 缓存命中输入 / 输出），原子 SQL 计数（`INSERT ... ON DUPLICATE KEY UPDATE`），首次调用自动建表、旧表自动补列，无需手动初始化；未配置 `MYSQL_URL` 时统计功能关闭，代理不受影响
-> - **EdgeOne Blob**（[`@edgeone/pages-blob`](https://www.npmjs.com/package/@edgeone/pages-blob)）：渠道配置 / 客户端 Key / 限流状态 / 错误日志，**强一致读取**，命名空间固定为 `ai-gateway`，函数内自动鉴权、首次调用自动创建
+> 存储后端：**EdgeOne Blob**（[`@edgeone/pages-blob`](https://www.npmjs.com/package/@edgeone/pages-blob)）：渠道配置 / 客户端 Key / 限流状态 / 错误日志，**强一致读取**，命名空间固定为 `ai-gateway`，函数内自动鉴权、首次调用自动创建
 
 4. 执行时长已通过 `edgeone.json` 配置为 120 秒（默认 30 秒，LLM 调用需要）。如需调整：
 
@@ -163,7 +159,6 @@ curl -X POST https://<你的Makers域名>/v1/chat/completions \
 | 变量 | 说明 |
 |------|------|
 | `ADMIN_PASSWORD` | 管理面板登录密码（在 Makers 控制台配置） |
-| `MYSQL_URL` | MySQL 连接串，存请求次数与 Token 用量统计（原子计数） |
 
 ## 架构
 

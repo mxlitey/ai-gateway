@@ -8,7 +8,6 @@
     "deploy": "edgeone makers deploy"
   },
   "dependencies": {
-    "@edgeone/pages-blob": "^0.0.16",
-    "mysql2": "^3.11.0"
+    "@edgeone/pages-blob": "^0.0.16"
   }
 }

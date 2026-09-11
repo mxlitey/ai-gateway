@@ -11,29 +11,18 @@
  *
  * 存储：
  *   - EdgeOne Blob（@edgeone/pages-blob），强一致读取 → config / ratelimit / errors
- *   - MySQL（MYSQL_URL，原子计数）→ usage / apikey-usage 请求次数与 Token 统计
  *   - 命名空间固定为 ai-gateway，函数内自动鉴权，首次调用自动创建
  */
 import worker from '../src/index.js';
 import { BlobKV } from '../src/store/blob-kv.js';
-import { MysqlKV } from '../src/store/mysql-kv.js';
 
 let kvPromise = null;
-let mysqlPromise = null;
 
 function getKv() {
   if (!kvPromise) {
     kvPromise = Promise.resolve(new BlobKV());
   }
   return kvPromise;
-}
-
-function getMysql(env) {
-  if (!env.MYSQL_URL) return null;
-  if (!mysqlPromise) {
-    mysqlPromise = Promise.resolve(new MysqlKV({ url: env.MYSQL_URL }));
-  }
-  return mysqlPromise;
 }
 
 /**
@@ -44,10 +33,8 @@ function getMysql(env) {
 export async function handleRequest(context) {
   const env = context.env || {};
   const kv = await getKv(env);
-  const mysql = await getMysql(env);
   return worker.fetch(context.request, {
     ADMIN_PASSWORD: env.ADMIN_PASSWORD || '',
     KV: kv,
-    MYSQL: mysql,
   });
 }

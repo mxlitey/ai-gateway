@@ -118,18 +118,8 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 /* Empty state */
 .empty{text-align:center;color:var(--text-2);padding:48px 20px;font-size:14px}
 
-/* Usage monitor */
-.usage-card{background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:16px}
-.usage-card h4{font-size:16px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
-.usage-row{margin-bottom:14px}
-.usage-row:last-child{margin-bottom:0}
-.usage-label{display:flex;justify-content:space-between;margin-bottom:5px;font-size:13px;color:var(--text-1)}
-.usage-label .usage-val{font-weight:600;color:var(--text-0)}
-.progress-bar{height:8px;background:var(--bg-0);border-radius:4px;overflow:hidden}
-.progress-fill{height:100%;border-radius:4px;transition:width .4s ease}
-.progress-ok{background:linear-gradient(90deg,#22c55e,#4ade80)}
-.progress-warn{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
-.progress-danger{background:linear-gradient(90deg,#ef4444,#f87171)}
+/* 渠道模型勾选 */
+.model-picker{background:var(--bg-0);border:1px solid var(--border);border-radius:6px;padding:12px;max-height:220px;overflow-y:auto;margin-bottom:8px}
 .date-picker{display:flex;gap:8px;align-items:center;margin-bottom:20px}
 .date-picker input[type="date"]{width:180px}
 
@@ -172,7 +162,6 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
   .modal-overlay{align-items:flex-end}
   .login-card{width:100%;max-width:92vw;padding:32px 24px}
   .info-card{padding:16px}
-  .usage-card{padding:16px}
   .toast-container{top:auto;right:12px;left:12px;bottom:12px}
   .toast{min-width:0;width:100%}
   .date-picker{flex-wrap:wrap}
@@ -212,9 +201,8 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
       <a class="nav-item active" data-section="dashboard" onclick="navigate('dashboard')"></a>
       <a class="nav-item" data-section="channels" onclick="navigate('channels')"></a>
       <a class="nav-item" data-section="routes" onclick="navigate('routes')"></a>
-      <a class="nav-item" data-section="usage" onclick="navigate('usage')"></a>
       <a class="nav-item" data-section="apikeys" onclick="navigate('apikeys')"></a>
-      <a class="nav-item" data-section="mysql" onclick="navigate('mysql')"></a>
+      <a class="nav-item" data-section="errors" onclick="navigate('errors')"></a>
     </nav>
   </aside>
 
@@ -259,21 +247,17 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
       </div>
     </section>
 
-    <!-- Usage -->
-    <section id="section-usage" class="section" style="display:none">
+    <!-- Error Logs -->
+    <section id="section-errors" class="section" style="display:none">
       <div class="section-header">
-        <h2 id="usage-title"></h2>
-        <button class="btn btn-ghost" onclick="loadUsage()" id="usage-refresh-btn"></button>
+        <h2 id="error-title"></h2>
+        <button class="btn btn-ghost" onclick="loadErrors()" id="error-refresh-btn"></button>
       </div>
       <div class="date-picker">
-        <label id="usage-date-label" style="margin:0;white-space:nowrap"></label>
-        <input type="date" id="usage-date" onchange="loadUsage()">
+        <label id="error-date-label" style="margin:0;white-space:nowrap"></label>
+        <input type="date" id="error-date" onchange="loadErrors()">
       </div>
-      <div id="usage-container"></div>
-      <div style="margin-top:32px">
-        <div class="section-header"><h2 id="error-title"></h2></div>
-        <div id="error-container"></div>
-      </div>
+      <div id="error-container"></div>
     </section>
 
     <!-- API Keys -->
@@ -286,22 +270,6 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
         <table>
           <thead><tr id="ak-thead"></tr></thead>
           <tbody id="ak-tbody"></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- MySQL 诊断 -->
-    <section id="section-mysql" class="section" style="display:none">
-      <div class="section-header">
-        <h2 id="mysql-title"></h2>
-        <button class="btn btn-ghost" onclick="loadMysqlStatus(false)" id="mysql-refresh-btn"></button>
-      </div>
-      <div class="info-card" id="mysql-status-card"></div>
-      <div class="table-container" style="margin-top:16px">
-        <div class="section-header"><h3 id="mysql-sample-title"></h3></div>
-        <table>
-          <thead><tr><th>pk</th><th>cnt</th></tr></thead>
-          <tbody id="mysql-sample"></tbody>
         </table>
       </div>
     </section>
@@ -342,7 +310,9 @@ const I18N = {
     addChannel: 'Add Channel',
     editChannel: 'Edit Channel',
     name: 'Name',
-    baseUrl: 'Base URL',
+    baseUrl: 'API Base URL',
+    pathLabel: 'Protocol Interface (optional)',
+    pathHelp: 'Interface path appended to the API base URL. Empty defaults to /chat/completions, e.g. /chat/completions',
     keys: 'Keys',
     models: 'Models',
     priority: 'Priority',
@@ -395,28 +365,14 @@ const I18N = {
     failed: 'Failed',
     copied: 'Copied!',
     copyFailed: 'Copy failed',
-    usageMonitor: 'Usage Monitor',
-    totalUsage: 'Daily Total',
-    perModelUsage: 'Per Model',
-    noQuotaChannels: 'No usage data for the selected date.',
-    remaining: 'remaining',
-    unlimited: 'Unlimited',
-    usageDate: 'Date',
-    refreshUsage: 'Refresh',
-    noModelUsageYet: 'No requests yet',
-    requests: 'Requests',
-    tokens: 'Tokens',
-    estimatedCost: 'Cost',
-    promptTokens: 'Input',
-    completionTokens: 'Output',
-    usage: 'Usage',
-    noUsageYet: 'No usage yet',
     boundChannels: 'Bound Channels',
     allChannels: 'All Channels',
     selectChannels: 'Select Channels',
     channelBindHelp: 'Only route to selected channels. Empty = all channels.',
     editKey: 'Edit Key',
     errorLogs: 'Error Logs',
+    errorDate: 'Date',
+    refreshError: 'Refresh',
     noErrors: 'No errors today.',
     errorTime: 'Time',
     errorModel: 'Model',
@@ -428,17 +384,7 @@ const I18N = {
     copied: 'Copied',
     copyFail: 'Copy failed',
     errorsToday: 'errors today',
-    keysTotal: 'keys',
-    cooldown: 'Cooldown',
     modelRoutes: 'Model Routes',
-    mysql: 'Database Diagnosis',
-    mysqlConn: 'Connection',
-    mysqlRows: 'Total rows',
-    mysqlToday: 'Rows today',
-    mysqlSample: 'Sample records (latest)',
-    mysqlEmpty: 'No records yet',
-    mysqlEnabled: 'MySQL enabled:',
-    mysqlDisabled: 'MySQL is not configured. Data is stored in KV instead.',
     direct: 'Passthrough',
     addRoute: 'Add Route',
     editRoute: 'Edit Route',
@@ -483,7 +429,9 @@ const I18N = {
     addChannel: '添加渠道',
     editChannel: '编辑渠道',
     name: '名称',
-    baseUrl: '基础 URL',
+    baseUrl: 'API 地址',
+    pathLabel: '协议接口（可选）',
+    pathHelp: '拼接在 API 地址后的协议接口路径，留空则默认 /chat/completions。例如 /chat/completions',
     keys: '密钥数',
     models: '模型',
     status: '状态',
@@ -532,29 +480,14 @@ const I18N = {
     failed: '操作失败',
     copied: '已复制！',
     copyFailed: '复制失败',
-    usageMonitor: '用量监控',
-    totalUsage: '每日总量',
-    perModelUsage: '单模型用量',
-    noQuotaChannels: '所选日期暂无用量数据。',
-    remaining: '剩余',
-    unlimited: '不限制',
-    usageDate: '日期',
-    refreshUsage: '刷新',
-    noModelUsageYet: '暂无请求记录',
-    requests: '请求',
-    tokens: 'Tokens',
-    estimatedCost: '费用',
-    promptTokens: '输入',
-    completionTokens: '输出',
-    cachedTokens: '缓存',
-    usage: '用量',
-    noUsageYet: '暂无用量',
     boundChannels: '绑定渠道',
     allChannels: '全部渠道',
     selectChannels: '选择渠道',
     channelBindHelp: '仅路由到选中的渠道。不选则使用全部渠道。',
     editKey: '编辑密钥',
     errorLogs: '错误日志',
+    errorDate: '日期',
+    refreshError: '刷新',
     noErrors: '今日暂无错误。',
     errorTime: '时间',
     errorModel: '模型',
@@ -566,17 +499,7 @@ const I18N = {
     copied: '已复制',
     copyFail: '复制失败',
     errorsToday: '个错误',
-    keysTotal: '个密钥',
-    cooldown: '冷却倒计时',
     modelRoutes: '模型路由',
-    mysql: '数据库诊断',
-    mysqlConn: '连接状态',
-    mysqlRows: '总记录数',
-    mysqlToday: '今日记录数',
-    mysqlSample: '样本记录（最新）',
-    mysqlEmpty: '暂无数据',
-    mysqlEnabled: '已开启 MySQL：',
-    mysqlDisabled: '未配置 MySQL，数据存储于 KV。',
     direct: '透传',
     addRoute: '添加路由',
     editRoute: '编辑路由',
@@ -648,17 +571,13 @@ async function api(path, opts = {}) {
   }
 }
 
-let apiKeyUsage = {};
-
 async function loadData() {
-  const [ch, ak, aku] = await Promise.all([
+  const [ch, ak] = await Promise.all([
     api('/channels'),
     api('/apikeys'),
-    api('/apikeys/usage?date=' + todayBeijing()),
   ]);
   channels = ch || [];
   apiKeys = ak || [];
-  apiKeyUsage = (aku && aku.keys) || {};
 }
 
 // ============ Auth ============
@@ -712,7 +631,7 @@ function renderLogin() {
 }
 
 function renderSidebar() {
-  const navMap = { dashboard: 'dashboard', channels: 'channels', routes: 'modelRoutes', usage: 'usageMonitor', apikeys: 'apiKeys', mysql: 'mysql' };
+  const navMap = { dashboard: 'dashboard', channels: 'channels', routes: 'modelRoutes', apikeys: 'apiKeys', errors: 'errorLogs' };
   document.querySelectorAll('#sidebar-nav .nav-item').forEach(el => {
     el.textContent = t(navMap[el.dataset.section]);
     el.classList.toggle('active', el.dataset.section === curSection);
@@ -720,7 +639,6 @@ function renderSidebar() {
 }
 
 function navigate(section) {
-  if (section !== 'usage') syncUsageCooldownTicker(false);
   curSection = section;
   document.querySelectorAll('.nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.section === section);
@@ -737,9 +655,8 @@ function render() {
   renderApiKeyHeaders();
   if (curSection === 'channels') renderChannels();
   if (curSection === 'routes') renderRoutes();
-  if (curSection === 'usage') { renderUsageHeaders(); loadUsage(); }
+  if (curSection === 'errors') { renderErrorHeaders(); loadErrors(); }
   if (curSection === 'apikeys') renderApiKeys();
-  if (curSection === 'mysql') loadMysqlStatus(false);
 }
 
 function renderChannelHeaders() {
@@ -751,44 +668,7 @@ function renderChannelHeaders() {
 function renderApiKeyHeaders() {
   document.getElementById('ak-title').textContent = t('apiKeys');
   document.getElementById('ak-gen-btn').textContent = t('generateKey');
-  document.getElementById('ak-thead').innerHTML = '<th>'+[t('name'),t('key'),t('boundChannels'),t('usage'),t('created'),t('status'),t('actions')].join('</th><th>')+'</th>';
-}
-
-// ============ MySQL 诊断 ============
-let mysqlStatus = null;
-async function loadMysqlStatus(force) {
-  document.getElementById('mysql-title').textContent = t('mysql');
-  document.getElementById('mysql-refresh-btn').textContent = t('refreshUsage');
-  document.getElementById('mysql-sample-title').textContent = t('mysqlSample');
-  const card = document.getElementById('mysql-status-card');
-  const tb = document.getElementById('mysql-sample');
-  const data = await api('/mysql-status');
-  if (!data) return;
-  mysqlStatus = data;
-  if (data.status === 'disabled') {
-    card.innerHTML = '<p>' + t('mysqlDisabled') + '</p>';
-    tb.innerHTML = '';
-    return;
-  }
-  let rows = '<p><strong>' + t('mysqlEnabled') + '</strong>' +
-    (data.host ? ' <code>' + esc(data.host) + '</code>' : '') + '</p>';
-  if (data.status === 'ok') {
-    const rowsN = (data.row_count != null ? data.row_count : '-') + '';
-    const todayN = (data.today_row_count != null ? data.today_row_count : '-') + '';
-    rows +=
-      '<div class="stats-grid" style="margin-top:12px">' +
-      '<div class="stat-card"><div class="label">' + t('mysqlConn') + '</div><div class="value" style="color:var(--success)">' + t('enabled') + '</div></div>' +
-      '<div class="stat-card"><div class="label">' + t('mysqlRows') + '</div><div class="value">' + rowsN + '</div></div>' +
-      '<div class="stat-card"><div class="label">' + t('mysqlToday') + ' (' + esc(data.date || '') + ')</div><div class="value">' + todayN + '</div></div>' +
-      '</div>';
-    tb.innerHTML = (data.sample && data.sample.length)
-      ? data.sample.map(s => '<tr><td>' + esc(s.pk) + '</td><td>' + esc(s.cnt) + '</td></tr>').join('')
-      : '<tr><td colspan="2" class="empty">' + t('mysqlEmpty') + '</td></tr>';
-  } else {
-    rows += '<p style="margin-top:12px"><span class="badge badge-off">' + t('error') + '</span> <code>' + esc(data.error || '') + '</code></p>';
-    tb.innerHTML = '';
-  }
-  card.innerHTML = rows;
+  document.getElementById('ak-thead').innerHTML = '<th>'+[t('name'),t('key'),t('boundChannels'),t('created'),t('status'),t('actions')].join('</th><th>')+'</th>';
 }
 
 // ============ Dashboard ============
@@ -826,7 +706,7 @@ function renderChannels() {
   tb.innerHTML = channels.map(c => \`
     <tr>
       <td><strong>\${esc(c.name)}</strong></td>
-      <td class="cell-truncate" title="\${esc(c.base_url)}">\${esc(c.base_url)}</td>
+      <td class="cell-truncate" title="\${esc(c.base_url + (c.path || '/chat/completions'))}">\${esc(c.base_url)}\${c.path ? ' <span style="color:var(--text-2);font-size:12px">' + esc(c.path) + '</span>' : ''}</td>
       <td>\${c.keys?.length || 0}</td>
       <td>\${c.models?.length || '<span style="color:var(--text-2)">' + t('all') + '</span>'}</td>
       <td><span class="badge \${c.enabled ? 'badge-on' : 'badge-off'}">\${c.enabled ? t('on') : t('off')}</span></td>
@@ -853,6 +733,11 @@ function showChModal(id) {
       <label>\${t('baseUrl')}</label>
       <input id="f-url" value="\${ch ? esc(ch.base_url) : ''}" placeholder="\${t('urlPlaceholder')}">
       <div class="form-help">\${t('urlHelp')}</div>
+    </div>
+    <div class="form-group">
+      <label>\${t('pathLabel')}</label>
+      <input id="f-path" value="\${ch ? esc(ch.path || '') : ''}" placeholder="/chat/completions">
+      <div class="form-help">\${t('pathHelp')}</div>
     </div>
     <div class="form-group">
       <label>\${t('keysLabel')}</label>
@@ -968,6 +853,7 @@ function removeModelMapRow(i) {
 async function saveCh(id) {
   const name = document.getElementById('f-name').value.trim();
   const base_url = document.getElementById('f-url').value.trim();
+  const path = document.getElementById('f-path').value.trim();
   const keys = document.getElementById('f-keys').value.split('\\n').map(s=>s.trim()).filter(Boolean);
   const models = document.getElementById('f-models').value.split('\\n').map(s=>s.trim()).filter(Boolean);
 
@@ -981,7 +867,7 @@ async function saveCh(id) {
     model_map[p] = ((row.upstream || '').trim()) || p;
   }
 
-  const body = JSON.stringify({ name, base_url, keys, models, model_map });
+  const body = JSON.stringify({ name, base_url, path, keys, models, model_map });
   const r = id
     ? await api('/channels/' + id, { method: 'PUT', body })
     : await api('/channels', { method: 'POST', body });
@@ -1058,8 +944,9 @@ function renderRoutes() {
 
     return '<tr>' +
       '<td style="vertical-align:top;white-space:nowrap">' +
-        (targets.some(r => r.direct) ? '<span class="tag-direct">' + t('direct') + '</span> ' : '') +
-        '<code style="background:var(--bg-0);padding:3px 8px;border-radius:4px;font-size:13px">' + esc(p) + '</code></td>' +
+        '<code style="background:var(--bg-0);padding:3px 8px;border-radius:4px;font-size:13px">' + esc(p) + '</code>' +
+        (targets.some(r => r.direct) ? ' <span class="tag-direct">' + t('direct') + '</span>' : '') +
+      '</td>' +
       '<td style="padding-top:4px;padding-bottom:4px">' + targetHtml + '</td>' +
     '</tr>';
   }).join('');
@@ -1069,7 +956,7 @@ function renderRoutes() {
 function renderApiKeys() {
   const tb = document.getElementById('ak-tbody');
   if (!apiKeys.length) {
-    tb.innerHTML = '<tr><td colspan="7" class="empty">' + t('noApiKeys') + '</td></tr>';
+    tb.innerHTML = '<tr><td colspan="6" class="empty">' + t('noApiKeys') + '</td></tr>';
     return;
   }
   tb.innerHTML = apiKeys.map(k => {
@@ -1078,24 +965,6 @@ function renderApiKeys() {
       ? chIds.map(id => { const ch = channels.find(c => c.id === id); return ch ? esc(ch.name) : '?'; }).join(', ')
       : '<span style="color:var(--text-2)">' + t('allChannels') + '</span>';
 
-    // API 密钥用量统计
-    const u = apiKeyUsage[k.id];
-    let usageHtml;
-    if (u && u.requests > 0) {
-      const totalTokens = (u.prompt_tokens || 0) + (u.completion_tokens || 0);
-      const cost = calcKeyTotalCost(u);
-      usageHtml = '<div style="font-size:12px;line-height:1.6">' +
-        '<span style="color:var(--text-0)">' + fmtNum(u.requests) + '</span> <span style="color:var(--text-2)">' + t('requests') + '</span>' +
-        ' <span style="color:var(--border);margin:0 4px">·</span> ' +
-        '<span style="color:var(--text-0)">' + fmtNum(totalTokens) + '</span> <span style="color:var(--text-2)">' + t('tokens') + '</span>' +
-        (totalTokens > 0 ? ' <span style="font-size:11px;color:var(--text-2)">(' + fmtNum(u.prompt_tokens||0) + '↑ ' + fmtNum(u.completion_tokens||0) + '↓)</span>' : '') +
-        ' <span style="color:var(--border);margin:0 4px">·</span> ' +
-        '<span style="color:var(--success);font-weight:500">' + fmtCost(cost) + '</span>' +
-      '</div>';
-    } else {
-      usageHtml = '<span style="font-size:12px;color:var(--text-2)">' + t('noUsageYet') + '</span>';
-    }
-
     return \`
     <tr>
       <td>\${esc(k.name)}</td>
@@ -1103,7 +972,6 @@ function renderApiKeys() {
         <button class="btn btn-sm btn-ghost" style="margin-left:8px" data-key="\${esc(k.key)}" onclick="copyKey(this)">\${t('copy')}</button>
       </td>
       <td>\${chNames}</td>
-      <td>\${usageHtml}</td>
       <td>\${fmtDate(k.created_at)}</td>
       <td><span class="badge \${k.enabled?'badge-on':'badge-off'}">\${k.enabled?t('on'):t('off')}</span></td>
       <td style="white-space:nowrap">
@@ -1219,166 +1087,20 @@ async function saveEditAk(id) {
   }
 }
 
-// ============ Usage Monitor ============
-let usageData = null;
-const USAGE_PAGE_SIZE = 10;
-const usageKeyPages = {};  // { channelId: currentPage(从1开始) }
-let usageCooldownTicker = null;
-
-function formatCooldownLeft(untilMs) {
-  const sec = Math.max(0, Math.ceil((untilMs - Date.now()) / 1000));
-  return sec + 's';
-}
-
-function syncUsageCooldownTicker(hasActiveCooldown) {
-  if (hasActiveCooldown) {
-    if (!usageCooldownTicker) {
-      usageCooldownTicker = setInterval(() => {
-        if (curSection !== 'usage' || !usageData) return;
-        renderUsage();
-      }, 1000);
-    }
-    return;
-  }
-  if (usageCooldownTicker) {
-    clearInterval(usageCooldownTicker);
-    usageCooldownTicker = null;
-  }
-}
-
-function renderUsageHeaders() {
-  document.getElementById('usage-title').textContent = t('usageMonitor');
-  document.getElementById('usage-refresh-btn').textContent = t('refreshUsage');
-  document.getElementById('usage-date-label').textContent = t('usageDate');
+// ============ Error Logs ============
+function renderErrorHeaders() {
   document.getElementById('error-title').textContent = t('errorLogs');
-  const dateInput = document.getElementById('usage-date');
-  if (!dateInput.value) {
-    dateInput.value = todayBeijing();
-  }
+  document.getElementById('error-refresh-btn').textContent = t('refreshError');
+  document.getElementById('error-date-label').textContent = t('errorDate');
+  const dateInput = document.getElementById('error-date');
+  if (!dateInput.value) dateInput.value = todayBeijing();
 }
 
-async function loadUsage() {
-  const date = document.getElementById('usage-date').value || todayBeijing();
-  const [data, errData] = await Promise.all([api('/usage?date=' + date), api('/errors?date=' + date)]);
-  if (data) { usageData = data; renderUsage(); }
+async function loadErrors() {
+  const date = document.getElementById('error-date').value || todayBeijing();
+  const errData = await api('/errors?date=' + date);
   renderErrors(errData);
 }
-
-function renderUsage() {
-  const container = document.getElementById('usage-container');
-  if (!usageData || !usageData.channels || usageData.channels.length === 0) {
-    container.innerHTML = '<div class="empty">' + t('noQuotaChannels') + '</div>';
-    syncUsageCooldownTicker(false);
-    return;
-  }
-
-  // 按有无用量排序：有用量的渠道排在前面
-  const sorted = [...usageData.channels].sort((a, b) => {
-    const aTotal = (a.keys || []).reduce((s, k) => s + (k.usage?.total || 0), 0);
-    const bTotal = (b.keys || []).reduce((s, k) => s + (k.usage?.total || 0), 0);
-    return bTotal - aTotal;
-  });
-
-  let hasAnyActiveCooldown = false;
-  container.innerHTML = sorted.map(ch => {
-    const statusDot = ch.enabled
-      ? '<span style="width:8px;height:8px;border-radius:50%;background:var(--success);display:inline-block"></span>'
-      : '<span style="width:8px;height:8px;border-radius:50%;background:var(--danger);display:inline-block"></span>';
-
-    const allKeys = ch.keys || [];
-    const totalKeys = allKeys.length;
-    const totalPages = Math.max(1, Math.ceil(totalKeys / USAGE_PAGE_SIZE));
-    const curPage = Math.min(usageKeyPages[ch.channel_id] || 1, totalPages);
-    usageKeyPages[ch.channel_id] = curPage;
-
-    const startIdx = (curPage - 1) * USAGE_PAGE_SIZE;
-    const pageKeys = allKeys.slice(startIdx, startIdx + USAGE_PAGE_SIZE);
-
-    const keyCards = pageKeys.map(k => {
-      const u = k.usage;
-      const rateState = k.rate_state || {};
-      const cooldowns = rateState.cooldowns || {};
-      const activeCooldownItems = Object.entries(cooldowns)
-        .filter(([, until]) => Number(until) > Date.now())
-        .sort((a, b) => Number(a[1]) - Number(b[1]));
-      if (activeCooldownItems.length > 0) hasAnyActiveCooldown = true;
-
-      const cooldownHtml = activeCooldownItems.length > 0
-        ? '<div style="margin:8px 0 12px 0;font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:8px">' +
-            '<div style="font-weight:600;margin-bottom:4px">' + t('cooldown') + '</div>' +
-            activeCooldownItems.map(([m, until]) => {
-              const modelTag = m === '*' ? 'all' : esc(m);
-              return '<div style="display:flex;justify-content:space-between;gap:8px">' +
-                '<span style="font-family:monospace">' + modelTag + '</span>' +
-                '<span>' + formatCooldownLeft(Number(until)) + '</span>' +
-              '</div>';
-            }).join('') +
-          '</div>'
-        : '';
-
-      const modelNames = Object.keys(u.models || {}).sort();
-
-      const modelRows = modelNames.map(m => {
-        const count = u.models[m] || 0;
-        return '<div class="usage-row">' +
-          '<div class="usage-label"><span style="font-family:monospace;font-size:12px">' + esc(m) + '</span><span class="usage-val">' + count + '</span></div>' +
-          '<div class="progress-bar"><div class="progress-fill progress-ok" style="width:' + Math.min(count / 5, 100) + '%"></div></div>' +
-          '</div>';
-      }).join('');
-
-      return '<div style="background:var(--bg-1);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:10px">' +
-        '<div style="font-family:monospace;font-size:13px;color:var(--primary);margin-bottom:10px">' + esc(k.key_hint) + '</div>' +
-        cooldownHtml +
-        '<div class="usage-row">' +
-          '<div class="usage-label"><span>' + t('totalUsage') + '</span><span class="usage-val">' + u.total + '</span></div>' +
-          '<div class="progress-bar"><div class="progress-fill progress-ok" style="width:' + Math.min(u.total / 20, 100) + '%"></div></div>' +
-        '</div>' +
-        (modelRows
-          ? '<div style="margin-top:12px"><div style="font-size:12px;color:var(--text-2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">' + t('perModelUsage') + '</div>' + modelRows + '</div>'
-          : '<div style="margin-top:8px;font-size:12px;color:var(--text-2)">' + t('noModelUsageYet') + '</div>') +
-      '</div>';
-    }).join('');
-
-    // 分页控件（仅在超过一页时显示）
-    let paginationHtml = '';
-    if (totalPages > 1) {
-      const cid = ch.channel_id;
-      const prevDisabled = curPage <= 1 ? ' disabled' : '';
-      const nextDisabled = curPage >= totalPages ? ' disabled' : '';
-
-      // 页码按钮（最多显示5个，当前页居中）
-      let pageStart = Math.max(1, curPage - 2);
-      let pageEnd = Math.min(totalPages, pageStart + 4);
-      if (pageEnd - pageStart < 4) pageStart = Math.max(1, pageEnd - 4);
-
-      let pageButtons = '';
-      for (let p = pageStart; p <= pageEnd; p++) {
-        const activeClass = p === curPage ? ' pg-active' : '';
-        pageButtons += '<button class="' + activeClass + '" onclick="window._usagePage(\\\'' + cid + '\\\',' + p + ')">' + p + '</button>';
-      }
-
-      paginationHtml = '<div class="pagination">' +
-        '<button' + prevDisabled + ' onclick="window._usagePage(\\\'' + cid + '\\\',' + (curPage - 1) + ')">&laquo;</button>' +
-        pageButtons +
-        '<button' + nextDisabled + ' onclick="window._usagePage(\\\'' + cid + '\\\',' + (curPage + 1) + ')">&raquo;</button>' +
-        '<span class="pg-info">' + totalKeys + ' ' + t('keysTotal') + '</span>' +
-      '</div>';
-    }
-
-    return '<div class="usage-card">' +
-      '<h4>' + statusDot + ' ' + esc(ch.channel_name) + '</h4>' +
-      keyCards +
-      paginationHtml +
-    '</div>';
-  }).join('');
-  syncUsageCooldownTicker(hasAnyActiveCooldown);
-}
-
-// 分页跳转
-window._usagePage = function(channelId, page) {
-  usageKeyPages[channelId] = page;
-  renderUsage();
-};
 
 function renderErrors(errData) {
   const container = document.getElementById('error-container');
@@ -1414,7 +1136,7 @@ function renderErrors(errData) {
       '</tr>';
     }).join('');
 
-    return '<div class="usage-card">' +
+    return '<div style="background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:16px">' +
       '<h4 style="display:flex;align-items:center;gap:8px">' +
         '<span style="width:8px;height:8px;border-radius:50%;background:var(--danger);display:inline-block"></span> ' +
         esc(ch.channel_name) +
@@ -1513,35 +1235,6 @@ function todayBeijing() {
   return new Date(new Date().getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 function fmtDate(d) { return d ? new Date(d).toLocaleDateString() : '-'; }
-function fmtNum(n) { return n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n); }
-function fmtCost(n) { return n >= 0.01 ? '$' + n.toFixed(2) : n > 0 ? '$' + n.toFixed(4) : '$0'; }
-
-// 模型定价（每百万 token 美元）
-const MODEL_PRICING = {
-  'gpt-4o':{i:2.5,o:10},'gpt-4o-mini':{i:.15,o:.6},'gpt-4-turbo':{i:10,o:30},'gpt-4':{i:30,o:60},
-  'gpt-3.5-turbo':{i:.5,o:1.5},'o1':{i:15,o:60},'o1-mini':{i:3,o:12},'o3-mini':{i:1.1,o:4.4},
-  'claude-opus-4':{i:15,o:75},'claude-sonnet-4':{i:3,o:15},'claude-3-7-sonnet':{i:3,o:15},
-  'claude-3-5-sonnet':{i:3,o:15},'claude-3-5-haiku':{i:.8,o:4},'claude-3-opus':{i:15,o:75},
-  'claude-3-sonnet':{i:3,o:15},'claude-3-haiku':{i:.25,o:1.25},
-  'deepseek-chat':{i:.14,o:.28},'deepseek-reasoner':{i:.55,o:2.19},
-  'gemini-2.0-flash':{i:.1,o:.4},'gemini-2.0-pro':{i:1.25,o:10},'gemini-1.5-pro':{i:1.25,o:5},'gemini-1.5-flash':{i:.075,o:.3},
-  'glm-4':{i:1,o:1},'glm-4-flash':{i:.01,o:.01},'glm-4-plus':{i:.5,o:.5},
-  'qwen-turbo':{i:.3,o:.6},'qwen-plus':{i:.8,o:2},'qwen-max':{i:2,o:6},
-};
-function calcCost(model, pt, ct) {
-  let p = MODEL_PRICING[model];
-  if (!p) { for (const [k,v] of Object.entries(MODEL_PRICING)) { if (model && model.startsWith(k)) { p = v; break; } } }
-  if (!p) return 0;
-  return (pt * p.i + ct * p.o) / 1e6;
-}
-function calcKeyTotalCost(usage) {
-  if (!usage || !usage.models) return 0;
-  let total = 0;
-  for (const [m, d] of Object.entries(usage.models)) {
-    total += calcCost(m, d.prompt_tokens || 0, d.completion_tokens || 0);
-  }
-  return total;
-}
 function copyKey(btn) { copyText(btn.dataset.key); }
 async function copyText(txt) {
   try { await navigator.clipboard.writeText(txt); toast(t('copied'), 'success'); }

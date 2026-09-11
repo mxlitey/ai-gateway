@@ -21,7 +21,7 @@ export default {
       });
     }
 
-    const store = createStore(env.KV, env.MYSQL);
+    const store = createStore(env.KV);
 
     try {
       // ---- Admin routes ----

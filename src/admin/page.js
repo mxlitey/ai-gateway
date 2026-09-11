@@ -135,6 +135,35 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 .pagination button:disabled{opacity:.35;cursor:default}
 .pagination .pg-active{background:var(--primary);color:#fff;border-color:var(--primary);font-weight:600}
 .pagination .pg-info{font-size:12px;color:var(--text-2);margin:0 4px}
+
+/* 竖屏手机端适配 */
+@media (max-width: 640px){
+  .main-view{flex-direction:column}
+  .sidebar{position:fixed;width:100%;height:auto;top:0;left:0;right:0;z-index:50;border-right:none;border-bottom:1px solid var(--border)}
+  .sidebar-header{padding:12px 16px}
+  .sidebar-nav{display:flex;flex-direction:row;gap:4px;overflow-x:auto;padding:6px 8px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  .sidebar-nav::-webkit-scrollbar{display:none}
+  .nav-item{white-space:nowrap;margin-bottom:0;padding:8px 12px;font-size:13px;flex:0 0 auto}
+  .sidebar-footer{padding:8px 16px;display:flex;gap:8px;align-items:center;border-top:1px solid var(--border)}
+  .content{margin-left:0;padding:104px 12px 28px;max-width:none}
+  .section-header{flex-direction:column;align-items:stretch;gap:10px;margin-bottom:16px}
+  .section-header h2{font-size:20px}
+  .stats-grid{grid-template-columns:1fr 1fr;gap:10px}
+  .stat-card{padding:16px}
+  .stat-card .value{font-size:26px}
+  .table-container{-webkit-overflow-scrolling:touch}
+  table{min-width:640px}
+  .form-row{grid-template-columns:1fr;gap:0}
+  .modal{width:100%;max-width:100%;margin:0;border-radius:12px 12px 0 0;padding:20px;max-height:92vh}
+  .modal-overlay{align-items:flex-end}
+  .login-card{width:100%;max-width:92vw;padding:32px 24px}
+  .info-card{padding:16px}
+  .usage-card{padding:16px}
+  .toast-container{top:auto;right:12px;left:12px;bottom:12px}
+  .toast{min-width:0;width:100%}
+  .date-picker{flex-wrap:wrap}
+  .date-picker input[type="date"]{width:100%}
+}
 </style>
 </head>
 <body>
@@ -544,7 +573,7 @@ async function loadData() {
   const [ch, ak, aku, rt] = await Promise.all([
     api('/channels'),
     api('/apikeys'),
-    api('/apikeys/usage'),
+    api('/apikeys/usage?date=' + todayBeijing()),
     api('/routes'),
   ]);
   channels = ch || [];
@@ -1087,12 +1116,12 @@ function renderUsageHeaders() {
   document.getElementById('error-title').textContent = t('errorLogs');
   const dateInput = document.getElementById('usage-date');
   if (!dateInput.value) {
-    dateInput.value = new Date().toISOString().slice(0, 10);
+    dateInput.value = todayBeijing();
   }
 }
 
 async function loadUsage() {
-  const date = document.getElementById('usage-date').value || new Date().toISOString().slice(0, 10);
+  const date = document.getElementById('usage-date').value || todayBeijing();
   const [data, errData] = await Promise.all([api('/usage?date=' + date), api('/errors?date=' + date)]);
   if (data) { usageData = data; renderUsage(); }
   renderErrors(errData);
@@ -1223,7 +1252,7 @@ function renderErrors(errData) {
   container.innerHTML = errData.channels.map(ch => {
     const errors = (ch.errors || []).slice().reverse();
     const rows = errors.map(e => {
-      const time = e.time ? new Date(e.time).toLocaleTimeString() : '-';
+      const time = e.time ? new Date(e.time).toLocaleString() : '-';
       const statusBadge = e.status >= 500
         ? '<span class="badge badge-off">' + e.status + '</span>'
         : e.status === 404
@@ -1231,12 +1260,14 @@ function renderErrors(errData) {
           : e.status > 0
             ? '<span class="badge" style="background:rgba(99,102,241,.12);color:var(--primary)">' + e.status + '</span>'
             : '<span class="badge badge-off">ERR</span>';
+      const modelCell = '<div style="font-family:monospace;font-size:13px">' + esc(e.model || '-') + '</div>' +
+        '<div style="font-family:monospace;font-size:11px;color:var(--text-2);margin-top:2px">\u2192 ' + esc(e.upstream_model || '-') +
+        (e.base_url ? ' @ ' + esc(shortHost(e.base_url)) : '') + '</div>';
       return '<tr>' +
         '<td style="white-space:nowrap;font-size:13px;color:var(--text-2)">' + time + '</td>' +
-        '<td style="font-family:monospace;font-size:13px">' + esc(e.model || '-') + '</td>' +
+        '<td>' + modelCell + '</td>' +
         '<td>' + statusBadge + '</td>' +
         '<td class="cell-truncate" title="' + esc(e.message) + '" style="font-size:13px">' + esc(e.message) + '</td>' +
-        '<td style="font-family:monospace;font-size:12px;color:var(--text-2)">' + esc(e.key_hint || '-') + '</td>' +
       '</tr>';
     }).join('');
 
@@ -1252,7 +1283,6 @@ function renderErrors(errData) {
           '<th>' + t('errorModel') + '</th>' +
           '<th>' + t('errorStatus') + '</th>' +
           '<th>' + t('errorMessage') + '</th>' +
-          '<th>' + t('errorKey') + '</th>' +
         '</tr></thead><tbody>' + rows + '</tbody></table>' +
       '</div>' +
     '</div>';
@@ -1308,6 +1338,13 @@ function esc(s) {
   return d.innerHTML;
 }
 function maskKey(k) { return k && k.length > 12 ? k.slice(0,7) + '...' + k.slice(-4) : k; }
+function shortHost(url) {
+  if (!url) return '';
+  try { const u = new URL(url); return (u.hostname || url).replace(/^www\./, ''); } catch { return url; }
+}
+function todayBeijing() {
+  return new Date(new Date().getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
 function fmtDate(d) { return d ? new Date(d).toLocaleDateString() : '-'; }
 function fmtNum(n) { return n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1000 ? (n / 1000).toFixed(1) + 'K' : String(n); }
 function fmtCost(n) { return n >= 0.01 ? '$' + n.toFixed(2) : n > 0 ? '$' + n.toFixed(4) : '$0'; }

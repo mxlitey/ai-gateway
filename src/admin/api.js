@@ -1,3 +1,8 @@
+/** 北京时区日期（用于用量/错误日志的读写保持一致，避免 UTC 跨日错位）。 */
+function beijingToday() {
+  return new Date(new Date().getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
 export async function handleAdminApi(request, env, store) {
   const url = new URL(request.url);
   const path = url.pathname.replace('/admin/api', '');
@@ -156,7 +161,7 @@ export async function handleAdminApi(request, env, store) {
 
     // --- Usage ---
     if (path === '/usage' && method === 'GET') {
-      const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
+      const date = url.searchParams.get('date') || beijingToday();
       const channels = await store.getChannels();
       const usageData = await Promise.all(
         channels.map(async ch => {
@@ -189,14 +194,14 @@ export async function handleAdminApi(request, env, store) {
 
     // --- API Key Usage (客户端密钥用量统计) ---
     if (path === '/apikeys/usage' && method === 'GET') {
-      const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
+      const date = url.searchParams.get('date') || beijingToday();
       const rawUsage = await store.getApiKeyUsage(date);
       return jsonRes({ date, keys: rawUsage });
     }
 
     // --- Error Logs ---
     if (path === '/errors' && method === 'GET') {
-      const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
+      const date = url.searchParams.get('date') || beijingToday();
       const channels = await store.getChannels();
       const errorData = await Promise.all(
         channels.map(async ch => ({

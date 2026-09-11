@@ -190,8 +190,8 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
         lastError = `HTTP ${resp.status}`;
         logError(store, target, model, resp.status, lastError);
       } catch (err) {
-        lastError = err.message;
-        logError(store, target, model, 0, lastError);
+        lastError = `network error: ${err.message}`;
+        logError(store, target, model, 0, `${lastError}${targetUrl ? ` (${targetUrl})` : ''}`);
       }
     }
 
@@ -332,8 +332,8 @@ async function handleResponses(request, url, body, store, allowedChannelIds, cli
         lastError = `HTTP ${resp.status}`;
         logError(store, target, model, resp.status, lastError);
       } catch (err) {
-        lastError = err.message;
-        logError(store, target, model, 0, lastError);
+        lastError = `network error: ${err.message}`;
+        logError(store, target, model, 0, `${lastError}${targetUrl ? ` (${targetUrl})` : ''}`);
       }
     }
 
@@ -423,7 +423,9 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
 
         if (resp.ok || resp.status < 500) {
           if (!resp.ok) {
-            logError(store, target, model, resp.status, `HTTP ${resp.status}`);
+            let errBody = '';
+            try { errBody = (await resp.text()).slice(0, 300); } catch {}
+            logError(store, target, model, resp.status, errBody || `HTTP ${resp.status}`);
           }
 
           const respHeaders = new Headers();
@@ -505,8 +507,8 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
         lastError = `HTTP ${resp.status}`;
         logError(store, target, model, resp.status, lastError);
       } catch (err) {
-        lastError = err.message;
-        logError(store, target, model, 0, lastError);
+        lastError = `network error: ${err.message}`;
+        logError(store, target, model, 0, `${lastError}${targetUrl ? ` (${targetUrl})` : ''}`);
       }
     }
 
@@ -525,17 +527,22 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
 
 async function handleModels(store, allowedChannelIds) {
   const routes = (await store.getRoutes()) || [];
+  const channels = (await store.getChannels()) || [];
+  const channelMap = new Map(channels.map(c => [c.id, c]));
   const allowedSet = (allowedChannelIds && allowedChannelIds.length > 0)
     ? new Set(allowedChannelIds)
     : null;
 
-  // 返回路由表中公开模型名（去重），而非上游渠道模型
+  // 公开模型名必须至少关联 1 条"可用"上游路由才展示：
+  // 启用 + 目标渠道启用且有 key + 且渠道在客户端 key 的允许范围内。
   const modelMap = new Map(); // 公开模型名 -> { id, owned_by }
   for (const r of routes) {
     if (r.enabled === false) continue;
     const pub = String(r.model || '').trim();
     if (!pub) continue;
     if (allowedSet && !allowedSet.has(r.channel_id)) continue;
+    const ch = channelMap.get(r.channel_id);
+    if (!ch || ch.enabled === false || !ch.keys || ch.keys.length === 0) continue;
     if (!modelMap.has(pub)) {
       modelMap.set(pub, { id: pub, owned_by: r.name || r.channel_id });
     }
@@ -639,9 +646,19 @@ function jsonRes(body, status = 200) {
 }
 
 function logError(store, target, model, status, message) {
-  const hint = target.key.length > 12 ? target.key.slice(0, 7) + '...' + target.key.slice(-4) : target.key;
-  store.appendError(target.channel.id, {
-    model, status, message: String(message).slice(0, 200), key_hint: hint,
+  const ch = target.channel || {};
+  const key = target.key || '';
+  const hint = key.length > 12 ? key.slice(0, 7) + '...' + key.slice(-4) : key;
+  store.appendError(ch.id || '', {
+    channel_id: ch.id || '',
+    channel_name: ch.name || '',
+    base_url: ch.base_url || '',
+    route_id: target.routeId || '',
+    model,
+    upstream_model: target.model || model,
+    status,
+    key_hint: hint,
+    message: String(message).slice(0, 500),
   }).catch(e => console.error('[errorlog] write failed:', e));
 }
 

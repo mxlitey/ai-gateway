@@ -1409,9 +1409,10 @@ async function copyErrMsg(btn) {
   const model = (cells[1].textContent || '').trim();
   const status = (cells[2].textContent || '').trim();
   const msg = textEl.textContent;
-  const text = t('errorTime') + ': ' + time + '\n' +
-    t('errorModel') + ': ' + model + '\n' +
-    t('errorStatus') + ': ' + status + '\n' +
+  const NL = String.fromCharCode(10);
+  const text = t('errorTime') + ': ' + time + NL +
+    t('errorModel') + ': ' + model + NL +
+    t('errorStatus') + ': ' + status + NL +
     t('errorMessage') + ': ' + msg;
   if (!text.trim()) { toast(t('copyFail'), 'error'); return; }
   try {

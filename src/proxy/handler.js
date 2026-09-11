@@ -132,7 +132,10 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
             (resp.headers.get('Content-Type') || '').includes('text/event-stream');
 
           if (upstreamIsSSE) {
-            const processedStream = processStream(resp.body);
+            const processedStream = processStream(resp.body, err => {
+              const msg = (err && (err.message || err.code || err.type)) || 'upstream error';
+              logError(store, target, model, 200, 'HTTP 200 stream error: ' + msg);
+            });
             const claudeStream = openAIStreamToClaudeStream(processedStream, model);
 
             return new Response(claudeStream, {
@@ -153,8 +156,20 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
             console.warn(`[proxy][claude] 上游对 stream:true 返回了非 SSE 响应 (Content-Type: ${resp.headers.get('Content-Type')}), 回退到非流式验证`);
           }
           const openaiData = await resp.json();
+          // 上游可能以 HTTP 200 返回错误（如向非多模态模型发送图片）
+          if (openaiData && openaiData.error && typeof openaiData.error === 'object') {
+            const msg = (openaiData.error.message || openaiData.error.code || openaiData.error.type) || 'upstream error';
+            lastError = `HTTP 200 with error: ${msg}`;
+            logError(store, target, model, 200, lastError);
+            continue;
+          }
           if (!Array.isArray(openaiData.choices)) {
             lastError = `upstream returned invalid response (choices=${openaiData.choices})`;
+            logError(store, target, model, 200, lastError);
+            continue;
+          }
+          if (openaiData.choices.length === 0) {
+            lastError = `upstream returned empty choices (likely error)`;
             logError(store, target, model, 200, lastError);
             continue;
           }
@@ -277,8 +292,20 @@ async function handleResponses(request, url, body, store, allowedChannelIds) {
           }
 
           const openaiData = await resp.json();
+          // 上游可能以 HTTP 200 返回错误（如向非多模态模型发送图片）
+          if (openaiData && openaiData.error && typeof openaiData.error === 'object') {
+            const msg = (openaiData.error.message || openaiData.error.code || openaiData.error.type) || 'upstream error';
+            lastError = `HTTP 200 with error: ${msg}`;
+            logError(store, target, model, 200, lastError);
+            continue;
+          }
           if (!Array.isArray(openaiData.choices)) {
             lastError = `upstream returned invalid response (choices=${openaiData.choices})`;
+            logError(store, target, model, 200, lastError);
+            continue;
+          }
+          if (openaiData.choices.length === 0) {
+            lastError = `upstream returned empty choices (likely error)`;
             logError(store, target, model, 200, lastError);
             continue;
           }
@@ -405,8 +432,12 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
             respHeaders.set('Connection', 'keep-alive');
             respHeaders.set('X-Accel-Buffering', 'no');
 
-            // 处理流：修复 id 字段（参考 one-api 流式处理方案）
-            const stream = processStream(resp.body);
+            // 处理流：修复 id 字段（参考 one-api 流式处理方案）；
+            // 顺带识别 HTTP 200 流中夹带的 error 事件（如向非多模态模型发送图片）并记录日志
+            const stream = processStream(resp.body, err => {
+              const msg = (err && (err.message || err.code || err.type)) || 'upstream error';
+              logError(store, target, model, 200, 'HTTP 200 stream error: ' + msg);
+            });
 
             return new Response(stream, { status: resp.status, headers: respHeaders });
           }
@@ -421,8 +452,21 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
             const respText = await resp.text();
             try {
               const data = JSON.parse(respText);
+              // 上游可能以 HTTP 200 返回错误（如向非多模态模型发送图片）：
+              // 1) 带 error 字段 2) choices 不是数组 3) choices 为空数组
+              if (data && data.error && typeof data.error === 'object') {
+                const msg = (data.error.message || data.error.code || data.error.type) || 'upstream error';
+                lastError = `HTTP 200 with error: ${msg}`;
+                logError(store, target, model, 200, lastError);
+                continue;
+              }
               if (!Array.isArray(data.choices)) {
                 lastError = `upstream returned invalid response (choices=${data.choices})`;
+                logError(store, target, model, 200, lastError);
+                continue;
+              }
+              if (data.choices.length === 0) {
+                lastError = `upstream returned empty choices (likely error)`;
                 logError(store, target, model, 200, lastError);
                 continue;
               }
@@ -652,7 +696,7 @@ function calc429Delay(rateHeaders, attempt) {
  *
  * 返回修复后的 ReadableStream，可直接返回给客户端。
  */
-function processStream(body) {
+function processStream(body, onError) {
   const dec = new TextDecoder();
   const enc = new TextEncoder();
   let buf = '';
@@ -668,6 +712,13 @@ function processStream(body) {
         if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
           try {
             const data = JSON.parse(trimmed.slice(6));
+            // 上游在 HTTP 200 的流里返回 error（如向非多模态模型发送图片）：
+            // 状态码虽是 2xx，但业务上是失败，需要顺带记录错误日志
+            if (data && data.error && typeof data.error === 'object') {
+              if (onError) onError(data.error);
+              ctrl.enqueue(enc.encode(part + '\n\n'));
+              continue;
+            }
             // 过滤掉 choices 为 null 的无效 chunk（国内 API 常见异常）
             if ('choices' in data && !Array.isArray(data.choices)) {
               continue;

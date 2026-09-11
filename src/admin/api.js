@@ -91,18 +91,18 @@ export async function handleAdminApi(request, env, store) {
 
     if (path === '/routes' && method === 'POST') {
       const data = await request.json();
-      if (!data.model || !data.channel_id) {
-        return jsonRes({ error: 'model and channel_id are required' }, 400);
+      const model = (data.model || '').trim();
+      const targets = normalizeRouteTargets(data);
+      // 公开模型名必须关联至少一个上游渠道模型
+      if (!model || targets.length === 0) {
+        return jsonRes({ error: 'model 不能为空，且至少关联一个上游渠道模型' }, 400);
       }
       const routes = await store.getRoutes();
       const route = {
         id: crypto.randomUUID(),
-        name: data.name?.trim() || data.model.trim(),
-        model: data.model.trim(),
-        channel_id: data.channel_id,
-        upstream_model: (data.upstream_model || '').trim() || data.model.trim(),
-        priority: parseInt(data.priority) || 0,
-        weight: Math.max(1, parseInt(data.weight) || 1),
+        name: data.name?.trim() || model,
+        model,
+        targets,
         enabled: data.enabled !== false,
         created_at: new Date().toISOString(),
       };
@@ -123,19 +123,21 @@ export async function handleAdminApi(request, env, store) {
         if (idx === -1) return jsonRes({ error: 'Route not found' }, 404);
 
         const r = routes[idx];
-        routes[idx] = {
-          ...r,
-          name: data.name?.trim() ?? r.name,
-          model: data.model?.trim() ?? r.model,
-          channel_id: data.channel_id ?? r.channel_id,
-          upstream_model: data.upstream_model !== undefined
-            ? ((data.upstream_model || '').trim() || routes[idx].model || '')
-            : r.upstream_model,
-          priority: data.priority !== undefined ? (parseInt(data.priority) || 0) : r.priority,
-          weight: data.weight !== undefined ? Math.max(1, parseInt(data.weight) || 1) : r.weight,
-          enabled: data.enabled ?? r.enabled,
-          id,
-        };
+        const next = { ...r };
+        if (data.name !== undefined) next.name = data.name.trim() || next.model;
+        if (data.model !== undefined) {
+          next.model = data.model.trim();
+          if (!next.name || next.name === r.model) next.name = next.model;
+        }
+        if (data.targets !== undefined || data.channel_id !== undefined) {
+          const targets = normalizeRouteTargets(data, next.model || r.model);
+          if (targets.length === 0) {
+            return jsonRes({ error: '至少关联一个上游渠道模型' }, 400);
+          }
+          next.targets = targets;
+        }
+        if (data.enabled !== undefined) next.enabled = data.enabled;
+        routes[idx] = next;
         await store.saveRoutes(routes);
         return jsonRes(routes[idx]);
       }
@@ -260,6 +262,28 @@ export async function handleAdminApi(request, env, store) {
       }
     }
 
+    // --- Fetch Upstream Models (渠道模型列表：通过上游 /models 获取) ---
+    if (path === '/fetch-models' && method === 'POST') {
+      const data = await request.json();
+      let ch = null;
+      if (data.channel_id) {
+        const channels = await store.getChannels();
+        ch = channels.find(c => c.id === data.channel_id);
+        if (!ch) return jsonRes({ error: 'Channel not found' }, 404);
+      } else {
+        ch = {
+          base_url: (data.base_url || '').trim(),
+          keys: Array.isArray(data.keys) ? data.keys.filter(Boolean) : [],
+        };
+      }
+      if (!ch.base_url || !(ch.keys || []).length) {
+        return jsonRes({ error: '基础 URL 和密钥不能为空' }, 400);
+      }
+      const { models, error } = await fetchUpstreamModels(ch);
+      if (error) return jsonRes({ error }, 400);
+      return jsonRes({ models });
+    }
+
     // --- Test Upstream Connectivity (diagnostic) ---
     if (path === '/test-upstream' && method === 'POST') {
       const data = await request.json();
@@ -341,6 +365,59 @@ function generateApiKeyString() {
   crypto.getRandomValues(bytes);
   const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
   return 'sk-' + hex;
+}
+
+/** 将前端提交的路由数据规范化为 targets 数组（兼容旧单目标格式）。 */
+function normalizeRouteTargets(data, defaultModel = '') {
+  const pub = (data.model || defaultModel || '').trim();
+  const rtrim = s => String(s || '').trim();
+  let targets = [];
+  if (Array.isArray(data.targets)) {
+    targets = data.targets
+      .filter(t => t && t.channel_id)
+      .map(t => ({
+        channel_id: t.channel_id,
+        upstream_model: rtrim(t.upstream_model) || pub,
+        priority: parseInt(t.priority) || 0,
+        weight: Math.max(1, parseInt(t.weight) || 1),
+      }));
+  } else if (data.channel_id) {
+    targets = [{
+      channel_id: data.channel_id,
+      upstream_model: rtrim(data.upstream_model) || pub,
+      priority: parseInt(data.priority) || 0,
+      weight: Math.max(1, parseInt(data.weight) || 1),
+    }];
+  }
+  return targets;
+}
+
+/** 调用上游 base_url + /models 拉取模型列表（兼容 OpenAI / Claude 响应格式）。 */
+async function fetchUpstreamModels(ch) {
+  const baseUrl = String(ch.base_url || '').replace(/\/+$/, '');
+  let lastErr = null;
+  const keys = ch.keys || [];
+  for (const key of keys) {
+    try {
+      const resp = await fetch(baseUrl + '/models', {
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${key}`,
+        },
+      });
+      const text = await resp.text();
+      if (resp.ok) {
+        let data = null;
+        try { data = JSON.parse(text); } catch { data = null; }
+        const ids = Array.isArray(data?.data) ? data.data.map(m => m && m.id).filter(Boolean) : [];
+        return { models: ids };
+      }
+      lastErr = `HTTP ${resp.status}: ${text.slice(0, 200)}`;
+    } catch (e) {
+      lastErr = e.message;
+    }
+  }
+  return { error: lastErr || '获取模型失败' };
 }
 
 function jsonRes(body, status = 200) {

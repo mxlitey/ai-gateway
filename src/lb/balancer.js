@@ -1,3 +1,37 @@
+/**
+ * 展开一条路由的目标集合。
+ *
+ * 新格式：route.targets = [{ channel_id, upstream_model, priority, weight }, ...]，
+ * 一个公开模型可路由到不同渠道的不同模型。
+ * 兼容旧格式：route 顶层持有 channel_id / upstream_model / priority / weight。
+ * 返回原始目标行（不校验渠道可用性）。
+ */
+export function expandRouteTargets(route) {
+  if (Array.isArray(route.targets) && route.targets.length > 0) {
+    return route.targets
+      .filter(t => t && t.channel_id)
+      .map(t => ({
+        channel_id: t.channel_id,
+        upstream_model: String(t.upstream_model || '').trim(),
+        priority: (t.priority !== undefined && t.priority !== null)
+          ? (parseInt(t.priority) || 0)
+          : (parseInt(route.priority) || 0),
+        weight: (t.weight !== undefined && t.weight !== null)
+          ? (Math.max(1, parseInt(t.weight) || 1))
+          : (Math.max(1, parseInt(route.weight) || 1)),
+      }));
+  }
+  if (route.channel_id) {
+    return [{
+      channel_id: route.channel_id,
+      upstream_model: String(route.upstream_model || '').trim(),
+      priority: parseInt(route.priority) || 0,
+      weight: Math.max(1, parseInt(route.weight) || 1),
+    }];
+  }
+  return [];
+}
+
 export class LoadBalancer {
   constructor(store) {
     this.store = store;
@@ -30,23 +64,27 @@ export class LoadBalancer {
 
     const requested = (model || '').trim();
 
-    // 严格只走路由
-    const matched = routes.filter(r => {
-      if (r.enabled === false) return false;
-      if (String(r.model || '').trim() !== requested) return false;
-      const ch = channelMap.get(r.channel_id);
-      if (!ch || ch.enabled === false || !ch.keys || ch.keys.length === 0) return false;
-      if (allowedSet && !allowedSet.has(ch.id)) return false;
-      return true;
-    });
+    // 严格只走路由：逐条展开路由的目标（渠道+上游模型）并过滤可用渠道
+    const targetRows = [];
+    for (const r of routes) {
+      if (r.enabled === false) continue;
+      if (String(r.model || '').trim() !== requested) continue;
+      const rowTargets = expandRouteTargets(r);
+      for (const t of rowTargets) {
+        const ch = channelMap.get(t.channel_id);
+        if (!ch || ch.enabled === false || !ch.keys || ch.keys.length === 0) continue;
+        if (allowedSet && !allowedSet.has(ch.id)) continue;
+        targetRows.push({ ...t, channel: ch, routeId: r.id, publicModel: requested });
+      }
+    }
 
-    if (matched.length === 0) {
+    if (targetRows.length === 0) {
       return { targets: [], error: 'No available route for model: ' + model };
     }
 
     // 预加载相关渠道限流状态
     const rateLimitMap = new Map();
-    const chIds = new Set(matched.map(r => r.channel_id));
+    const chIds = new Set(targetRows.map(t => t.channel.id));
     await Promise.all([...chIds].map(id =>
       this.store.getRateLimits(id).then(d => rateLimitMap.set(id, d))
     ));
@@ -55,10 +93,10 @@ export class LoadBalancer {
 
     // 按优先级分组（数值越小越优先），组内按权重重放
     const groups = {};
-    for (const r of matched) {
-      const p = r.priority ?? 0;
+    for (const t of targetRows) {
+      const p = t.priority ?? 0;
       if (!groups[p]) groups[p] = [];
-      groups[p].push(r);
+      groups[p].push(t);
     }
     const priorities = Object.keys(groups).map(Number).sort((a, b) => a - b);
 
@@ -66,15 +104,14 @@ export class LoadBalancer {
     const seen = new Set(); // 去重：channelId:key:upstreamModel
     for (const p of priorities) {
       const ordered = this.weightedShuffle(groups[p]);
-      for (const route of ordered) {
-        const ch = channelMap.get(route.channel_id);
-        const upstream = String(route.upstream_model || route.model || '').trim() || requested;
-        const keys = await this.getOrderedKeys(ch);
+      for (const tr of ordered) {
+        const upstream = String(tr.upstream_model || '').trim() || requested;
+        const keys = await this.getOrderedKeys(tr.channel);
         for (const key of keys) {
-          const dedupeKey = `${ch.id}:${key}:${upstream}`;
+          const dedupeKey = `${tr.channel.id}:${key}:${upstream}`;
           if (seen.has(dedupeKey)) continue;
           seen.add(dedupeKey);
-          allTargets.push({ channel: ch, key, model: upstream, routeId: route.id, publicModel });
+          allTargets.push({ channel: tr.channel, key, model: upstream, routeId: tr.routeId, publicModel });
         }
       }
     }

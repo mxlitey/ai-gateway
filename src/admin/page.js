@@ -27,17 +27,19 @@ a{color:inherit;text-decoration:none}
 .login-sub{color:var(--text-2);margin-bottom:28px;font-size:14px}
 .login-card input{margin-bottom:16px}
 
-/* Layout */
-.main-view{display:flex;min-height:100vh}
-.sidebar{width:260px;background:var(--bg-1);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;height:100vh;z-index:10}
-.sidebar-header{padding:24px 20px;border-bottom:1px solid var(--border)}
+/* Layout — 顶部导航栏（全设备统一，竖屏/横屏手机、桌面皆同） */
+.main-view{flex-direction:column;min-height:100vh}
+.sidebar{width:100%;background:var(--bg-1);border-right:none;border-bottom:1px solid var(--border);display:flex;flex-direction:column;position:fixed;top:0;left:0;right:0;z-index:50}
+.sidebar-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)}
 .sidebar-header .logo{font-size:20px;font-weight:700;background:linear-gradient(135deg,#6366f1,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.sidebar-nav{flex:1;padding:12px}
-.nav-item{display:block;padding:10px 16px;color:var(--text-1);border-radius:var(--radius);margin-bottom:4px;cursor:pointer;transition:all .15s;font-size:14px;font-weight:500}
+.sidebar-nav{display:flex;flex-direction:row;gap:4px;overflow-x:auto;padding:6px 8px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.sidebar-nav::-webkit-scrollbar{display:none}
+.nav-item{display:block;padding:8px 12px;color:var(--text-1);border-radius:var(--radius);margin-bottom:0;cursor:pointer;transition:all .15s;font-size:14px;font-weight:500;white-space:nowrap;flex:0 0 auto}
 .nav-item:hover{background:var(--bg-hover);color:var(--text-0)}
 .nav-item.active{background:var(--primary);color:#fff}
-.sidebar-footer{padding:16px;border-top:1px solid var(--border)}
-.content{flex:1;margin-left:260px;padding:32px;max-width:1200px}
+.logout-icon{width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--text-1);border-radius:8px;cursor:pointer;transition:all .15s}
+.logout-icon:hover{background:var(--bg-hover);color:var(--danger)}
+.content{flex:1;margin-left:0;padding:110px 16px 32px;max-width:none}
 
 /* Section header */
 .section-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}
@@ -107,12 +109,6 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 /* Empty state */
 .empty{text-align:center;color:var(--text-2);padding:48px 20px;font-size:14px}
 
-/* Language toggle */
-.lang-toggle{display:flex;background:var(--bg-0);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:8px}
-.lang-btn{flex:1;padding:6px 0;text-align:center;font-size:12px;font-weight:500;color:var(--text-2);cursor:pointer;transition:all .15s;border:none;background:transparent}
-.lang-btn:hover{color:var(--text-0)}
-.lang-btn.active{background:var(--primary);color:#fff}
-
 /* Usage monitor */
 .usage-card{background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:16px}
 .usage-card h4{font-size:16px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
@@ -136,23 +132,26 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 .pagination .pg-active{background:var(--primary);color:#fff;border-color:var(--primary);font-weight:600}
 .pagination .pg-info{font-size:12px;color:var(--text-2);margin:0 4px}
 
-/* 竖屏手机端适配 */
+/* 路由多目标编辑 */
+.rt-target-row{display:grid;grid-template-columns:1fr 1fr 90px 90px auto;gap:10px;align-items:end;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px}
+.rt-target-row label{font-size:12px;margin-bottom:4px}
+.rt-trg-rect{min-width:0}
+.rt-add-target{width:100%;margin-bottom:8px}
+
+/* 渠道模型勾选 */
+.model-picker{background:var(--bg-0);border:1px solid var(--border);border-radius:6px;padding:12px;max-height:220px;overflow-y:auto;margin-bottom:8px}
+.model-picker label{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-bottom:6px;color:var(--text-1);font-weight:400}
+.model-picker input[type="checkbox"]{width:auto;flex:0 0 auto}
+.model-picker-empty{color:var(--text-2);font-size:13px;padding:4px 0}
+
+/* 竖屏小屏补充适配 */
 @media (max-width: 640px){
-  .main-view{flex-direction:column}
-  .sidebar{position:fixed;width:100%;height:auto;top:0;left:0;right:0;z-index:50;border-right:none;border-bottom:1px solid var(--border)}
-  .sidebar-header{padding:12px 16px}
-  .sidebar-nav{display:flex;flex-direction:row;gap:4px;overflow-x:auto;padding:6px 8px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
-  .sidebar-nav::-webkit-scrollbar{display:none}
-  .nav-item{white-space:nowrap;margin-bottom:0;padding:8px 12px;font-size:13px;flex:0 0 auto}
-  .sidebar-footer{padding:8px 16px;display:flex;gap:8px;align-items:center;border-top:1px solid var(--border)}
-  .content{margin-left:0;padding:104px 12px 28px;max-width:none}
+  .content{padding-top:104px;padding-left:12px;padding-right:12px}
   .section-header{flex-direction:column;align-items:stretch;gap:10px;margin-bottom:16px}
   .section-header h2{font-size:20px}
   .stats-grid{grid-template-columns:1fr 1fr;gap:10px}
   .stat-card{padding:16px}
   .stat-card .value{font-size:26px}
-  .table-container{-webkit-overflow-scrolling:touch}
-  table{min-width:640px}
   .form-row{grid-template-columns:1fr;gap:0}
   .modal{width:100%;max-width:100%;margin:0;border-radius:12px 12px 0 0;padding:20px;max-height:92vh}
   .modal-overlay{align-items:flex-end}
@@ -163,6 +162,8 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
   .toast{min-width:0;width:100%}
   .date-picker{flex-wrap:wrap}
   .date-picker input[type="date"]{width:100%}
+  .rt-target-row{grid-template-columns:1fr 1fr;gap:8px}
+  .rt-trg-del{grid-column:span 2}
 }
 </style>
 </head>
@@ -176,19 +177,18 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
     <p class="login-sub" id="login-sub"></p>
     <input type="password" id="login-pwd" autofocus>
     <button class="btn btn-primary btn-full" onclick="doLogin()" id="login-btn"></button>
-    <div style="margin-top:16px">
-      <div class="lang-toggle" id="login-lang-toggle">
-        <button class="lang-btn" onclick="setLang('en')">English</button>
-        <button class="lang-btn" onclick="setLang('zh')">中文</button>
-      </div>
-    </div>
   </div>
 </div>
 
 <!-- ====== Main ====== -->
 <div id="main-view" class="main-view" style="display:none">
   <aside class="sidebar">
-    <div class="sidebar-header"><div class="logo">AI Gateway</div></div>
+    <div class="sidebar-header">
+      <div class="logo">AI Gateway</div>
+      <button class="logout-icon" onclick="doLogout()" title="退出登录" aria-label="退出登录">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      </button>
+    </div>
     <nav class="sidebar-nav" id="sidebar-nav">
       <a class="nav-item active" data-section="dashboard" onclick="navigate('dashboard')"></a>
       <a class="nav-item" data-section="channels" onclick="navigate('channels')"></a>
@@ -196,13 +196,6 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
       <a class="nav-item" data-section="usage" onclick="navigate('usage')"></a>
       <a class="nav-item" data-section="apikeys" onclick="navigate('apikeys')"></a>
     </nav>
-    <div class="sidebar-footer">
-      <div class="lang-toggle" id="sidebar-lang-toggle" style="margin-bottom:8px">
-        <button class="lang-btn" onclick="setLang('en')">EN</button>
-        <button class="lang-btn" onclick="setLang('zh')">中文</button>
-      </div>
-      <button class="btn btn-ghost btn-full" onclick="doLogout()" id="logout-btn"></button>
-    </div>
   </aside>
 
   <main class="content">
@@ -531,15 +524,22 @@ const I18N = {
     noRoutes: '暂无路由，点击「添加路由」创建。',
     routeCreated: '路由已创建',
     routeUpdated: '路由已更新',
-    routeModelRequired: '公开模型名和目标渠道不能为空',
+    routeModelRequired: '公开模型名不能为空',
     selectChannel: '选择一个渠道',
+    addTarget: '添加目标渠道',
+    removeTarget: '移除',
+    atLeastOneTarget: '公开模型名不能为空，且至少关联一个上游渠道模型',
+    fetchModels: '获取上游模型',
+    fetchingModels: '获取中…',
+    modelPickerHelp: '勾选模型即添加到该渠道；也可手动在下方输入。',
+    modelPickerEmpty: '未获取到模型，请检查基础 URL 与密钥。',
+    routeTargetCol: '目标渠道 / 上游模型',
   },
 };
 
-let lang = localStorage.getItem('ag_lang') || (navigator.language.startsWith('zh') ? 'zh' : 'en');
-function t(key) { return I18N[lang]?.[key] || I18N.en[key] || key; }
-function setLang(l) { lang = l; localStorage.setItem('ag_lang', l); renderAll(); }
-function renderAll() { renderLogin(); renderSidebar(); render(); }
+// 项目仅保留中文界面
+const lang = 'zh';
+function t(key) { return I18N[lang]?.[key] || key; }
 
 // ============ State ============
 let token = localStorage.getItem('ag_token');
@@ -630,9 +630,6 @@ function renderLogin() {
   document.getElementById('login-sub').textContent = t('loginSub');
   document.getElementById('login-pwd').placeholder = t('loginPlaceholder');
   document.getElementById('login-btn').textContent = t('signIn');
-  document.querySelectorAll('#login-lang-toggle .lang-btn').forEach(b => {
-    b.classList.toggle('active', (b.textContent === 'English' && lang === 'en') || (b.textContent === '中文' && lang === 'zh'));
-  });
 }
 
 function renderSidebar() {
@@ -640,10 +637,6 @@ function renderSidebar() {
   document.querySelectorAll('#sidebar-nav .nav-item').forEach(el => {
     el.textContent = t(navMap[el.dataset.section]);
     el.classList.toggle('active', el.dataset.section === curSection);
-  });
-  document.getElementById('logout-btn').textContent = t('signOut');
-  document.querySelectorAll('#sidebar-lang-toggle .lang-btn').forEach(b => {
-    b.classList.toggle('active', (b.textContent === 'EN' && lang === 'en') || (b.textContent === '中文' && lang === 'zh'));
   });
 }
 
@@ -675,7 +668,7 @@ function renderRouteHeaders() {
   if (!tb) return;
   document.getElementById('rt-title').textContent = t('modelRoutes');
   document.getElementById('rt-add-btn').textContent = t('addRoute');
-  document.getElementById('rt-thead').innerHTML = '<th>'+[t('routeName'),t('publicModel'),t('targetChannel'),t('upstreamModel'),t('priority'),t('weight'),t('status'),t('actions')].join('</th><th>')+'</th>';
+  document.getElementById('rt-thead').innerHTML = '<th>'+[t('routeName'),t('publicModel'),t('routeTargetCol'),t('priority'),t('weight'),t('status'),t('actions')].join('</th><th>')+'</th>';
 }
 
 function renderChannelHeaders() {
@@ -745,6 +738,7 @@ function showChModal(id) {
   const title = ch ? t('editChannel') : t('addChannel');
   const html = \`
     <h3>\${title}</h3>
+    <input type="hidden" id="f-ch-id" value="\${id || ''}">
     <div class="form-group">
       <label>\${t('name')}</label>
       <input id="f-name" value="\${ch ? esc(ch.name) : ''}" placeholder="\${t('namePlaceholder')}">
@@ -760,8 +754,9 @@ function showChModal(id) {
     </div>
     <div class="form-group">
       <label>\${t('modelsLabel')}</label>
+      <button type="button" class="btn btn-sm btn-ghost" style="margin-bottom:8px" onclick="fetchUpstreamChannelModels(this)">\${t('fetchModels')}</button>
+      <div class="model-picker" id="f-models-picker"><div class="model-picker-empty">\${t('modelPickerHelp')}</div></div>
       <textarea id="f-models" style="min-height:80px" placeholder="\${t('modelsPlaceholder')}">\${ch ? (ch.models||[]).join('\\n') : ''}</textarea>
-      <div class="form-help">\${t('modelsHelp')}</div>
     </div>
     <div class="form-row">
       <div class="form-group">
@@ -781,6 +776,44 @@ function showChModal(id) {
     </div>
   \`;
   openModal(html);
+}
+
+// 获取上游模型并渲染勾选列表（多选，勾选即加入该渠道模型）
+async function fetchUpstreamChannelModels(btn) {
+  const box = document.getElementById('f-models-picker');
+  const id = document.getElementById('f-ch-id').value;
+  const body = id
+    ? JSON.stringify({ channel_id: id })
+    : JSON.stringify({
+        base_url: document.getElementById('f-url').value.trim(),
+        keys: document.getElementById('f-keys').value.split('\\n').map(s=>s.trim()).filter(Boolean),
+      });
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = t('fetchingModels');
+  const r = await api('/fetch-models', { method: 'POST', body });
+  btn.disabled = false; btn.textContent = old;
+
+  if (!r || r.error) { toast(r?.error || t('failed'), 'error'); return; }
+  const ta = document.getElementById('f-models');
+  const lines = ta.value.split('\\n').map(s=>s.trim()).filter(Boolean);
+  const set = new Set(lines);
+  const fetched = r.models || [];
+  if (fetched.length === 0) {
+    box.innerHTML = '<div class="model-picker-empty">' + t('modelPickerEmpty') + '</div>';
+    return;
+  }
+  box.innerHTML = fetched.map(m => {
+    const checked = set.has(m) ? ' checked' : '';
+    return '<label><input type="checkbox" class="model-cb" value="' + esc(m) + '"' + checked + ' onclick="toggleChannelModel(this,\\'' + esc(m) + '\\')">' + esc(m) + '</label>';
+  }).join('');
+}
+
+function toggleChannelModel(cb, model) {
+  const ta = document.getElementById('f-models');
+  const lines = ta.value.split('\\n').map(s=>s.trim()).filter(Boolean);
+  const set = new Set(lines);
+  if (cb.checked) set.add(model); else set.delete(model);
+  ta.value = Array.from(set).join('\\n');
 }
 
 async function saveCh(id) {
@@ -822,15 +855,14 @@ function channelNameById(id) {
 function renderRoutes() {
   const tb = document.getElementById('rt-tbody');
   if (!routes.length) {
-    tb.innerHTML = '<tr><td colspan="8" class="empty">' + t('noRoutes') + '</td></tr>';
+    tb.innerHTML = '<tr><td colspan="7" class="empty">' + t('noRoutes') + '</td></tr>';
     return;
   }
   tb.innerHTML = routes.map(r => \`
     <tr>
       <td><strong>\${esc(r.name)}</strong></td>
       <td style="font-family:monospace;font-size:13px">\${esc(r.model)}</td>
-      <td>\${esc(channelNameById(r.channel_id))}</td>
-      <td style="font-family:monospace;font-size:13px">\${esc(r.upstream_model || '-')}</td>
+      <td>\${routeTargetsCell(r)}</td>
       <td>\${r.priority}</td>
       <td>\${r.weight}</td>
       <td><span class="badge \${r.enabled ? 'badge-on' : 'badge-off'}">\${r.enabled ? t('on') : t('off')}</span></td>
@@ -843,19 +875,55 @@ function renderRoutes() {
   \`).join('');
 }
 
-function routeChannelSelect(selectedId) {
-  if (!channels.length) return '<div class="form-help">' + t('noChannels') + '</div>';
-  return '<select id="f-rt-channel">' +
-    '<option value="">' + t('selectChannel') + '</option>' +
-    channels.map(ch =>
-      '<option value="' + ch.id + '"' + (ch.id === selectedId ? ' selected' : '') + '>' + esc(ch.name) + '</option>'
-    ).join('') +
-  '</select>';
+function routeTargetsCell(r) {
+  const targets = (Array.isArray(r.targets) && r.targets.length)
+    ? r.targets
+    : (r.channel_id ? [{ channel_id: r.channel_id, upstream_model: r.upstream_model }] : []);
+  const lines = targets.map(t => {
+    const chName = esc(channelNameById(t.channel_id));
+    const up = (t.upstream_model && t.upstream_model !== r.model) ? (' \u2192 ' + esc(t.upstream_model)) : '';
+    return '<div style="font-size:13px;white-space:nowrap;padding:2px 0">' + chName + up + '</div>';
+  }).join('');
+  return lines || '<span style="color:var(--text-2)">-</span>';
+}
+
+function routeTargetRowHtml(target) {
+  const sel = target && target.channel_id ? target.channel_id : '';
+  const up = (target && target.upstream_model) ? esc(target.upstream_model) : '';
+  const pri = (target && target.priority !== undefined) ? target.priority : 0;
+  const wt = (target && target.weight !== undefined) ? target.weight : 10;
+  const chOptions = ['<option value="">' + t('selectChannel') + '</option>']
+    .concat(channels.map(ch => '<option value="' + ch.id + '"' + (ch.id === sel ? ' selected' : '') + '>' + esc(ch.name) + '</option>'))
+    .join('');
+  return '<div class="rt-target-row">' +
+    '<div class="rt-trg-cell"><label>' + t('targetChannel') + '</label><select class="rt-trg-ch">' + chOptions + '</select></div>' +
+    '<div class="rt-trg-cell"><label>' + t('upstreamModel') + '</label><input class="rt-trg-up" value="' + up + '" placeholder="gpt-4o"></div>' +
+    '<div class="rt-trg-rect"><label>' + t('priority') + '</label><input class="rt-trg-pri" type="number" value="' + pri + '" min="0"></div>' +
+    '<div class="rt-trg-rect"><label>' + t('weight') + '</label><input class="rt-trg-wt" type="number" value="' + wt + '" min="1"></div>' +
+    '<button type="button" class="btn btn-sm btn-danger rt-trg-del" onclick="removeRouteTarget(this)">' + t('removeTarget') + '</button>' +
+  '</div>';
+}
+
+function addRouteTarget() {
+  const box = document.getElementById('f-rt-targets');
+  box.insertAdjacentHTML('beforeend', routeTargetRowHtml(null));
+}
+
+function removeRouteTarget(btn) {
+  const row = btn.closest('.rt-target-row');
+  if (row) row.remove();
 }
 
 function showRouteModal(id) {
   const r = id ? routes.find(x => x.id === id) : null;
   const title = r ? t('editRoute') : t('addRoute');
+  // 初始目标行：编辑时从 targets（或旧单目标字段）恢复；新增时给一空行
+  const targets = r ? (Array.isArray(r.targets) && r.targets.length ? r.targets
+    : (r.channel_id ? [{ channel_id: r.channel_id, upstream_model: r.upstream_model || '', priority: r.priority, weight: r.weight }] : null))
+    : null;
+  const rowsHtml = (targets && targets.length)
+    ? targets.map(tg => routeTargetRowHtml(tg)).join('')
+    : routeTargetRowHtml(null);
   const html = \`
     <h3>\${title}</h3>
     <div class="form-group">
@@ -868,25 +936,11 @@ function showRouteModal(id) {
       <div class="form-help">\${t('publicModelHelp')}</div>
     </div>
     <div class="form-group">
-      <label>\${t('targetChannel')}</label>
-      \${routeChannelSelect(r ? r.channel_id : '')}
-    </div>
-    <div class="form-group">
-      <label>\${t('upstreamModel')}</label>
-      <input id="f-rt-upstream" value="\${r ? esc(r.upstream_model || '') : ''}">
-      <div class="form-help">\${t('upstreamModelHelp')}</div>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>\${t('priority')}</label>
-        <input type="number" id="f-rt-pri" value="\${r ? r.priority : 0}" min="0">
-        <div class="form-help">\${t('priorityHelp')}</div>
+      <label>\${t('routeTargetCol')}</label>
+      <div id="f-rt-targets">
+        \${rowsHtml}
       </div>
-      <div class="form-group">
-        <label>\${t('weight')}</label>
-        <input type="number" id="f-rt-wt" value="\${r ? r.weight : 10}" min="1">
-        <div class="form-help">\${t('weightHelp')}</div>
-      </div>
+      <button type="button" class="btn btn-sm btn-ghost rt-add-target" onclick="addRouteTarget()">+ \${t('addTarget')}</button>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal()">\${t('cancel')}</button>
@@ -898,15 +952,19 @@ function showRouteModal(id) {
 
 async function saveRoute(id) {
   const model = document.getElementById('f-rt-model').value.trim();
-  const channel_id = document.getElementById('f-rt-channel').value;
-  if (!model || !channel_id) { toast(t('routeModelRequired'), 'error'); return; }
+  if (!model) { toast(t('routeModelRequired'), 'error'); return; }
 
   const name = document.getElementById('f-rt-name').value.trim() || model;
-  const upstream_model = document.getElementById('f-rt-upstream').value.trim();
-  const priority = parseInt(document.getElementById('f-rt-pri').value) || 0;
-  const weight = parseInt(document.getElementById('f-rt-wt').value) || 1;
+  const rows = Array.from(document.querySelectorAll('#f-rt-targets .rt-target-row'));
+  const targets = rows.map(row => ({
+    channel_id: row.querySelector('.rt-trg-ch').value,
+    upstream_model: row.querySelector('.rt-trg-up').value.trim(),
+    priority: parseInt(row.querySelector('.rt-trg-pri').value) || 0,
+    weight: Math.max(1, parseInt(row.querySelector('.rt-trg-wt').value) || 1),
+  })).filter(t => t.channel_id);
+  if (targets.length === 0) { toast(t('atLeastOneTarget'), 'error'); return; }
 
-  const body = JSON.stringify({ name, model, channel_id, upstream_model, priority, weight });
+  const body = JSON.stringify({ name, model, targets });
   const r = id
     ? await api('/routes/' + id, { method: 'PUT', body })
     : await api('/routes', { method: 'POST', body });

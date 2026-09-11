@@ -1,5 +1,5 @@
 import { verifyApiKey } from './auth.js';
-import { LoadBalancer } from '../lb/balancer.js';
+import { LoadBalancer, expandRouteTargets } from '../lb/balancer.js';
 import { claudeToOpenAI, openAIToClaude, openAIStreamToClaudeStream } from './claude.js';
 import { responsesToChatCompletions, chatCompletionsToResponses, chatCompletionsStreamToResponsesStream } from './responses.js';
 
@@ -540,11 +540,17 @@ async function handleModels(store, allowedChannelIds) {
     if (r.enabled === false) continue;
     const pub = String(r.model || '').trim();
     if (!pub) continue;
-    if (allowedSet && !allowedSet.has(r.channel_id)) continue;
-    const ch = channelMap.get(r.channel_id);
-    if (!ch || ch.enabled === false || !ch.keys || ch.keys.length === 0) continue;
+    let hasUsable = false;
+    for (const t of expandRouteTargets(r)) {
+      if (allowedSet && !allowedSet.has(t.channel_id)) continue;
+      const ch = channelMap.get(t.channel_id);
+      if (!ch || ch.enabled === false || !ch.keys || ch.keys.length === 0) continue;
+      hasUsable = true;
+      break;
+    }
+    if (!hasUsable) continue;
     if (!modelMap.has(pub)) {
-      modelMap.set(pub, { id: pub, owned_by: r.name || r.channel_id });
+      modelMap.set(pub, { id: pub, owned_by: r.name || pub });
     }
   }
 

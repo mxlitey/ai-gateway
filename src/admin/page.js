@@ -214,6 +214,7 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
       <a class="nav-item" data-section="routes" onclick="navigate('routes')"></a>
       <a class="nav-item" data-section="usage" onclick="navigate('usage')"></a>
       <a class="nav-item" data-section="apikeys" onclick="navigate('apikeys')"></a>
+      <a class="nav-item" data-section="mysql" onclick="navigate('mysql')"></a>
     </nav>
   </aside>
 
@@ -285,6 +286,22 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
         <table>
           <thead><tr id="ak-thead"></tr></thead>
           <tbody id="ak-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- MySQL 诊断 -->
+    <section id="section-mysql" class="section" style="display:none">
+      <div class="section-header">
+        <h2 id="mysql-title"></h2>
+        <button class="btn btn-ghost" onclick="loadMysqlStatus(false)" id="mysql-refresh-btn"></button>
+      </div>
+      <div class="info-card" id="mysql-status-card"></div>
+      <div class="table-container" style="margin-top:16px">
+        <div class="section-header"><h3 id="mysql-sample-title"></h3></div>
+        <table>
+          <thead><tr><th>pk</th><th>cnt</th></tr></thead>
+          <tbody id="mysql-sample"></tbody>
         </table>
       </div>
     </section>
@@ -414,6 +431,14 @@ const I18N = {
     keysTotal: 'keys',
     cooldown: 'Cooldown',
     modelRoutes: 'Model Routes',
+    mysql: 'Database Diagnosis',
+    mysqlConn: 'Connection',
+    mysqlRows: 'Total rows',
+    mysqlToday: 'Rows today',
+    mysqlSample: 'Sample records (latest)',
+    mysqlEmpty: 'No records yet',
+    mysqlEnabled: 'MySQL enabled:',
+    mysqlDisabled: 'MySQL is not configured. Data is stored in KV instead.',
     direct: 'Passthrough',
     addRoute: 'Add Route',
     editRoute: 'Edit Route',
@@ -544,6 +569,14 @@ const I18N = {
     keysTotal: '个密钥',
     cooldown: '冷却倒计时',
     modelRoutes: '模型路由',
+    mysql: '数据库诊断',
+    mysqlConn: '连接状态',
+    mysqlRows: '总记录数',
+    mysqlToday: '今日记录数',
+    mysqlSample: '样本记录（最新）',
+    mysqlEmpty: '暂无数据',
+    mysqlEnabled: '已开启 MySQL：',
+    mysqlDisabled: '未配置 MySQL，数据存储于 KV。',
     direct: '透传',
     addRoute: '添加路由',
     editRoute: '编辑路由',
@@ -679,7 +712,7 @@ function renderLogin() {
 }
 
 function renderSidebar() {
-  const navMap = { dashboard: 'dashboard', channels: 'channels', routes: 'modelRoutes', usage: 'usageMonitor', apikeys: 'apiKeys' };
+  const navMap = { dashboard: 'dashboard', channels: 'channels', routes: 'modelRoutes', usage: 'usageMonitor', apikeys: 'apiKeys', mysql: 'mysql' };
   document.querySelectorAll('#sidebar-nav .nav-item').forEach(el => {
     el.textContent = t(navMap[el.dataset.section]);
     el.classList.toggle('active', el.dataset.section === curSection);
@@ -706,6 +739,7 @@ function render() {
   if (curSection === 'routes') renderRoutes();
   if (curSection === 'usage') { renderUsageHeaders(); loadUsage(); }
   if (curSection === 'apikeys') renderApiKeys();
+  if (curSection === 'mysql') loadMysqlStatus(false);
 }
 
 function renderChannelHeaders() {
@@ -718,6 +752,43 @@ function renderApiKeyHeaders() {
   document.getElementById('ak-title').textContent = t('apiKeys');
   document.getElementById('ak-gen-btn').textContent = t('generateKey');
   document.getElementById('ak-thead').innerHTML = '<th>'+[t('name'),t('key'),t('boundChannels'),t('usage'),t('created'),t('status'),t('actions')].join('</th><th>')+'</th>';
+}
+
+// ============ MySQL 诊断 ============
+let mysqlStatus = null;
+async function loadMysqlStatus(force) {
+  document.getElementById('mysql-title').textContent = t('mysql');
+  document.getElementById('mysql-refresh-btn').textContent = t('refreshUsage');
+  document.getElementById('mysql-sample-title').textContent = t('mysqlSample');
+  const card = document.getElementById('mysql-status-card');
+  const tb = document.getElementById('mysql-sample');
+  const data = await api('/mysql-status');
+  if (!data) return;
+  mysqlStatus = data;
+  if (data.status === 'disabled') {
+    card.innerHTML = '<p>' + t('mysqlDisabled') + '</p>';
+    tb.innerHTML = '';
+    return;
+  }
+  let rows = '<p><strong>' + t('mysqlEnabled') + '</strong>' +
+    (data.host ? ' <code>' + esc(data.host) + '</code>' : '') + '</p>';
+  if (data.status === 'ok') {
+    const rowsN = (data.row_count != null ? data.row_count : '-') + '';
+    const todayN = (data.today_row_count != null ? data.today_row_count : '-') + '';
+    rows +=
+      '<div class="stats-grid" style="margin-top:12px">' +
+      '<div class="stat-card"><div class="label">' + t('mysqlConn') + '</div><div class="value" style="color:var(--success)">' + t('enabled') + '</div></div>' +
+      '<div class="stat-card"><div class="label">' + t('mysqlRows') + '</div><div class="value">' + rowsN + '</div></div>' +
+      '<div class="stat-card"><div class="label">' + t('mysqlToday') + ' (' + esc(data.date || '') + ')</div><div class="value">' + todayN + '</div></div>' +
+      '</div>';
+    tb.innerHTML = (data.sample && data.sample.length)
+      ? data.sample.map(s => '<tr><td>' + esc(s.pk) + '</td><td>' + esc(s.cnt) + '</td></tr>').join('')
+      : '<tr><td colspan="2" class="empty">' + t('mysqlEmpty') + '</td></tr>';
+  } else {
+    rows += '<p style="margin-top:12px"><span class="badge badge-off">' + t('error') + '</span> <code>' + esc(data.error || '') + '</code></p>';
+    tb.innerHTML = '';
+  }
+  card.innerHTML = rows;
 }
 
 // ============ Dashboard ============

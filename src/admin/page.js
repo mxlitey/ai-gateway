@@ -175,6 +175,25 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 .key-switch input:checked + .key-slider{background:var(--success)}
 .key-switch input:checked + .key-slider::after{transform:translateX(16px)}
 
+/* 映射行：竖屏手机两输入框纵向铺满，避免只显示一两个字符 */
+@media (max-width:600px){
+  .map-row{flex-wrap:wrap}
+  .map-row .map-pub,.map-row .map-up-wrap{flex:1 0 100%;min-width:100%}
+  .map-row .map-up-wrap input{width:100%}
+  .map-arrow{display:none}
+  .map-row .map-del{margin-left:auto}
+}
+
+/* 「获取上游模型」分组展示 */
+.model-pick-group-head{display:flex;align-items:center;gap:6px;padding:8px 10px;cursor:pointer;font-weight:600;font-size:13px;color:var(--text-0);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg-1)}
+.model-pick-group-head:hover{background:var(--bg-hover)}
+.group-tri{font-size:9px;color:var(--text-2);display:inline-block;transform:rotate(0);transition:transform .15s}
+.group-tri.open{transform:rotate(90deg)}
+.group-name{flex:1}
+.group-count{color:var(--text-2);font-weight:400;font-size:12px}
+.model-pick-group-body{display:none}
+.model-pick-group-body > .model-pick-item{padding-left:26px}
+
 /* 竖屏小屏补充适配 */
 @media (max-width: 640px){
   .content{padding-top:124px;padding-left:12px;padding-right:12px}
@@ -855,20 +874,49 @@ async function openModelPickerModal() {
   renderModelPickList('');
 }
 
-async function renderModelPickList(q) {
+function modelPickItemHtml(id) {
+  const checked = modelPickState.has(id) ? ' checked' : '';
+  return '<label class="model-pick-item"><input type="checkbox" class="model-pick-cb" value="' + esc(id) + '"' + checked + ' onchange="toggleModelPick(this)">' + esc(id) + '</label>';
+}
+
+function renderModelPickList(q) {
   const box = document.getElementById('model-pick-list');
   if (!box) return;
   const query = String(q || '').trim().toLowerCase();
-  const list = modelPickList.filter(m => !query || String(m).toLowerCase().includes(query));
-  box.innerHTML = list.length
-    ? list.map(m => {
-        const checked = modelPickState.has(m) ? ' checked' : '';
-        return '<label class="model-pick-item"><input type="checkbox" class="model-pick-cb" value="' + esc(m) + '"' + checked + ' onchange="toggleModelPick(this,\\'' + esc(m) + '\\')">' + esc(m) + '</label>';
-      }).join('')
-    : '<div class="model-picker-empty">' + t('modelSearchEmpty') + '</div>';
+  const list = modelPickList.filter(o => !query || String(o.id ?? o).toLowerCase().includes(query));
+  if (list.length === 0) { box.innerHTML = '<div class="model-picker-empty">' + t('modelSearchEmpty') + '</div>'; return; }
+
+  // 有分组信息时按分组折叠显示，否则平铺
+  const hasGroup = list.some(o => o.group);
+  if (!hasGroup) {
+    box.innerHTML = list.map(o => modelPickItemHtml(o.id ?? o)).join('');
+    return;
+  }
+  const order = Array.from(new Set(list.map(o => o.group).filter(Boolean)));
+  let html = '';
+  for (const g of order) {
+    const items = list.filter(o => (o.group || '') === g);
+    const gid = 'pg' + Math.random().toString(36).slice(2, 8);
+    html += '<div class="model-pick-group">' +
+      '<div class="model-pick-group-head" onclick="togglePickGroup(this)">' +
+        '<span class="group-tri">▸</span><span class="group-name">' + esc(g) + '</span><span class="group-count">' + items.length + '</span>' +
+      '</div>' +
+      '<div class="model-pick-group-body" style="display:none">' + items.map(o => modelPickItemHtml(o.id)).join('') + '</div>' +
+    '</div>';
+  }
+  box.innerHTML = html;
 }
 
-function toggleModelPick(cb, m) {
+function togglePickGroup(head) {
+  const body = head.nextElementSibling;
+  if (!body) return;
+  const hidden = body.style.display === 'none';
+  body.style.display = hidden ? 'block' : 'none';
+  head.querySelector('.group-tri').classList.toggle('open', hidden);
+}
+
+function toggleModelPick(cb) {
+  const m = cb.value;
   if (cb.checked) modelPickState.add(m);
   else modelPickState.delete(m);
 }
@@ -876,7 +924,8 @@ function toggleModelPick(cb, m) {
 function confirmModelPick() {
   const ta = document.getElementById('f-models');
   const taLines = ta.value.split(String.fromCharCode(10)).map(s => s.trim()).filter(Boolean);
-  const ordered = [...taLines, ...modelPickList].filter(m => modelPickState.has(m));
+  const ids = modelPickList.map(o => o.id ?? o);
+  const ordered = [...taLines, ...ids].filter(m => modelPickState.has(m));
   ta.value = Array.from(new Set(ordered)).join(String.fromCharCode(10));
   if (modelPickState.size > 0) toast(t('addedNModels').replace('{n}', modelPickState.size));
   closeModelPicker();
@@ -955,7 +1004,7 @@ async function ensureMapUpstreamModels() {
   let list = [];
   try {
     const r = await api('/fetch-models', { method: 'POST', body });
-    if (r && !r.error && Array.isArray(r.models)) list = r.models;
+    if (r && !r.error && Array.isArray(r.models)) list = r.models.map(o => String(o.id ?? o));
   } catch (e) { /* 拉取失败时保持空列表 */ }
   mapUpCtx = { sig, list };
   return list;

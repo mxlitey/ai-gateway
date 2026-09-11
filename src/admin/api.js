@@ -293,8 +293,13 @@ async function fetchUpstreamModels(ch) {
       if (resp.ok) {
         let data = null;
         try { data = JSON.parse(text); } catch { data = null; }
-        const ids = Array.isArray(data?.data) ? data.data.map(m => m && m.id).filter(Boolean) : [];
-        return { models: ids };
+        // 保留分组信息：优先取 group，其次 category；无分组则仅 id
+        const items = Array.isArray(data?.data) ? data.data.filter(m => m && m.id) : [];
+        const models = items.map(m => {
+          const g = (m.group != null && m.group !== '') ? m.group : (m.category || '');
+          return g ? { id: m.id, group: g } : { id: m.id };
+        });
+        return { models };
       }
       lastErr = `HTTP ${resp.status}: ${text.slice(0, 200)}`;
     } catch (e) {

@@ -179,6 +179,16 @@ class KVStore {
     await this._saveRateLimitData(kvKey, data);
   }
 
+  /** 生成密钥标识（安全起见取哈希，不存储明文密钥）。 */
+  _keyId(apiKey) {
+    const str = String(apiKey || '');
+    let hash = 5381;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) + hash + str.charCodeAt(i)) | 0;
+    }
+    return 'k' + (hash >>> 0).toString(36);
+  }
+
   async getRateLimits(channelId, date) {
     const { data } = await this._loadRateLimitData(channelId, date);
     return data;

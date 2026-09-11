@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "start": "node server.js"
+    "dev": "edgeone makers dev",
+    "deploy": "edgeone makers deploy"
   },
-  "devDependencies": {
-    "wrangler": "^4.23.0"
+  "dependencies": {
+    "@edgeone/pages-blob": "^0.0.16",
+    "mysql2": "^3.11.0"
   }
 }

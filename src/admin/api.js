@@ -24,9 +24,6 @@ export async function handleAdminApi(request, env, store) {
         enabled: data.enabled !== false,
         priority: parseInt(data.priority) || 0,
         weight: Math.max(1, parseInt(data.weight) || 1),
-        quota_enabled: !!data.quota_enabled,
-        quota_daily_total: Math.max(0, parseInt(data.quota_daily_total) || 0),
-        quota_daily_per_model: Math.max(0, parseInt(data.quota_daily_per_model) || 0),
         created_at: new Date().toISOString(),
       };
       channels.push(channel);
@@ -55,13 +52,9 @@ export async function handleAdminApi(request, env, store) {
           enabled: data.enabled ?? ch.enabled,
           priority: data.priority !== undefined ? (parseInt(data.priority) || 0) : ch.priority,
           weight: data.weight !== undefined ? Math.max(1, parseInt(data.weight) || 1) : ch.weight,
-          quota_enabled: data.quota_enabled !== undefined ? !!data.quota_enabled : (ch.quota_enabled || false),
-          quota_daily_total: data.quota_daily_total !== undefined ? Math.max(0, parseInt(data.quota_daily_total) || 0) : (ch.quota_daily_total || 0),
-          quota_daily_per_model: data.quota_daily_per_model !== undefined ? Math.max(0, parseInt(data.quota_daily_per_model) || 0) : (ch.quota_daily_per_model || 0),
           id,
         };
         await store.saveChannels(channels);
-        store.invalidateModelCache(id);
         return jsonRes(channels[idx]);
       }
 
@@ -70,7 +63,6 @@ export async function handleAdminApi(request, env, store) {
         const filtered = channels.filter(ch => ch.id !== id);
         if (filtered.length === channels.length) return jsonRes({ error: 'Channel not found' }, 404);
         await store.saveChannels(filtered);
-        store.invalidateModelCache(id);
         return jsonRes({ success: true });
       }
     }
@@ -87,7 +79,7 @@ export async function handleAdminApi(request, env, store) {
       return jsonRes(channels[idx]);
     }
 
-    // --- Usage (所有渠道，不再限制仅 quota_enabled) ---
+    // --- Usage ---
     if (path === '/usage' && method === 'GET') {
       const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);
       const channels = await store.getChannels();
@@ -99,24 +91,10 @@ export async function handleAdminApi(request, env, store) {
             const kid = k.slice(-8);
             const usage = rawUsage[kid] || { total: 0, models: {} };
             const rateInfo = store.getRateLimitInfoWithData(k, rawRate);
-            const upstreamTotalLimit = Number.isFinite(rateInfo?.header?.user_limit) ? rateInfo.header.user_limit : 0;
-            const upstreamModelLimits = {};
-            for (const [m, d] of Object.entries(rateInfo?.header?.model_limits || {})) {
-              if (Number.isFinite(d?.limit) && d.limit > 0) upstreamModelLimits[m] = d.limit;
-            }
-            const fallbackTotalLimit = ch.quota_enabled ? (ch.quota_daily_total || 0) : 0;
-            const fallbackModelLimit = ch.quota_enabled ? (ch.quota_daily_per_model || 0) : 0;
             return {
               key_id: kid,
               key_hint: k.length > 12 ? k.slice(0, 7) + '...' + k.slice(-4) : k,
               usage,
-              limits: {
-                total_limit: upstreamTotalLimit > 0 ? upstreamTotalLimit : fallbackTotalLimit,
-                total_source: upstreamTotalLimit > 0 ? 'upstream' : (fallbackTotalLimit > 0 ? 'channel' : 'none'),
-                default_model_limit: fallbackModelLimit,
-                model_limits: upstreamModelLimits,
-                model_source: Object.keys(upstreamModelLimits).length > 0 ? 'upstream' : (fallbackModelLimit > 0 ? 'channel' : 'none'),
-              },
               rate_state: {
                 daily_models: rateInfo?.daily_models || [],
                 cooldowns: rateInfo?.cooldowns || {},
@@ -127,9 +105,6 @@ export async function handleAdminApi(request, env, store) {
             channel_id: ch.id,
             channel_name: ch.name,
             enabled: ch.enabled,
-            quota_enabled: !!ch.quota_enabled,
-            quota_daily_total: ch.quota_daily_total || 0,
-            quota_daily_per_model: ch.quota_daily_per_model || 0,
             keys,
           };
         })

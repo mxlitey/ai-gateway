@@ -1,9 +1,0 @@
-node_modules
-.dev.vars
-.wrangler
-wrangler.toml
-test-body.json
-*.log
-.git
-.gitignore
-README.md

@@ -1,4 +1,4 @@
 node_modules/
-.wrangler/
-.dev.vars
 data/
+.env.local
+.env

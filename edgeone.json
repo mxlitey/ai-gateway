@@ -1,0 +1,8 @@
+{
+  "nodeVersion": "20.18.0",
+  "cloudFunctions": {
+    "nodejs": {
+      "maxDuration": 120
+    }
+  }
+}

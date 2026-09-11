@@ -100,11 +100,6 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
           body: JSON.stringify(openaiBody),
         });
         const rateHeaders = extractRateLimitHeaders(resp.headers);
-        if (rateHeaders.hasAny) {
-          store.updateRateLimitHeaders(target.channel.id, target.key, model, rateHeaders).catch(e =>
-            console.error('[ratelimit] update headers failed:', e)
-          );
-        }
 
         if (resp.status === 404) {
           lastError = `HTTP 404 (model not found)`;
@@ -135,7 +130,6 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
             (resp.headers.get('Content-Type') || '').includes('text/event-stream');
 
           if (upstreamIsSSE) {
-            store.clearRateLimitCooldown(target.channel.id, target.key, model).catch(() => {});
             // 渠道用量立即记录（仅计数）
             store.incrementUsage(target.channel.id, target.key, model).catch(e =>
               console.error('[usage] increment failed:', e));
@@ -160,7 +154,7 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
                 'Connection': 'keep-alive',
-                // 禁用 nginx 缓冲，确保 HF Spaces 代理实时转发流式数据
+                // 禁用 nginx 缓冲，确保代理实时转发流式数据
                 'X-Accel-Buffering': 'no',
                 'Access-Control-Allow-Origin': '*',
               },
@@ -187,7 +181,6 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
             console.error('[apikey-usage] increment failed:', e));
 
           const claudeResponse = openAIToClaude(openaiData, model);
-          store.clearRateLimitCooldown(target.channel.id, target.key, model).catch(() => {});
           return jsonRes(claudeResponse, 200);
         }
 
@@ -254,11 +247,6 @@ async function handleResponses(request, url, body, store, allowedChannelIds, cli
           body: JSON.stringify(openaiBody),
         });
         const rateHeaders = extractRateLimitHeaders(resp.headers);
-        if (rateHeaders.hasAny) {
-          store.updateRateLimitHeaders(target.channel.id, target.key, model, rateHeaders).catch(e =>
-            console.error('[ratelimit] update headers failed:', e)
-          );
-        }
 
         if (resp.status === 404) {
           lastError = `HTTP 404 (model not found)`;
@@ -287,7 +275,6 @@ async function handleResponses(request, url, body, store, allowedChannelIds, cli
             (resp.headers.get('Content-Type') || '').includes('text/event-stream');
 
           if (upstreamIsSSE) {
-            store.clearRateLimitCooldown(target.channel.id, target.key, model).catch(() => {});
             store.incrementUsage(target.channel.id, target.key, model).catch(e =>
               console.error('[usage] increment failed:', e));
 
@@ -333,7 +320,6 @@ async function handleResponses(request, url, body, store, allowedChannelIds, cli
             console.error('[apikey-usage] increment failed:', e));
 
           const responsesData = chatCompletionsToResponses(openaiData, model);
-          store.clearRateLimitCooldown(target.channel.id, target.key, model).catch(() => {});
           return jsonRes(responsesData, 200);
         }
 
@@ -375,7 +361,7 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
   }
 
   // Try each target in order (failover on 5xx / network error)
-  // 429 退避：共享 IP 环境（如 HF Spaces）下上游可能按 IP 限流，
+  // 429 退避：共享 IP 环境（如边缘节点）下上游可能按 IP 限流，
   // 需要在连续 429 之间加入延迟，并支持整轮重试
   const MAX_429_ROUNDS = 2;
   let lastError = null;
@@ -409,11 +395,6 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
           body: JSON.stringify(body),
         });
         const rateHeaders = extractRateLimitHeaders(resp.headers);
-        if (rateHeaders.hasAny) {
-          store.updateRateLimitHeaders(target.channel.id, target.key, model, rateHeaders).catch(e =>
-            console.error('[ratelimit] update headers failed:', e)
-          );
-        }
 
         if (resp.status === 404) {
           lastError = `HTTP 404 (model not found)`;
@@ -447,8 +428,7 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
             (ct || '').includes('text/event-stream');
 
           if (upstreamIsSSE) {
-            store.clearRateLimitCooldown(target.channel.id, target.key, model).catch(() => {});
-            // 禁用 nginx 缓冲（HF Spaces 必须），否则代理会缓冲整个流导致 ECONNRESET
+            // 禁用 nginx 缓冲（边缘 Node 运行时必须），否则代理会缓冲整个流导致 ECONNRESET
             respHeaders.set('Content-Type', 'text/event-stream');
             respHeaders.set('Cache-Control', 'no-cache');
             respHeaders.set('Connection', 'keep-alive');
@@ -499,7 +479,6 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
               console.error('[usage] increment failed:', e));
             store.incrementApiKeyUsage(clientKeyId, model, promptTokens, completionTokens).catch(e =>
               console.error('[apikey-usage] increment failed:', e));
-            store.clearRateLimitCooldown(target.channel.id, target.key, model).catch(() => {});
             return new Response(respText, { status: resp.status, headers: respHeaders });
           }
 
@@ -507,9 +486,8 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
           if (resp.ok) {
             store.incrementUsage(target.channel.id, target.key, model).catch(e =>
               console.error('[usage] increment failed:', e));
-            store.incrementApiKeyUsage(clientKeyId, model, 0, 0).catch(e =>
+            store.incrementApiKeyUsage(clientKeyId, model, 0, 0, 0).catch(e =>
               console.error('[apikey-usage] increment failed:', e));
-            store.clearRateLimitCooldown(target.channel.id, target.key, model).catch(() => {});
           }
 
           return new Response(resp.body, { status: resp.status, headers: respHeaders });
@@ -543,49 +521,17 @@ async function handleModels(store, allowedChannelIds) {
     enabled = enabled.filter(ch => allowedChannelIds.includes(ch.id));
   }
 
-  // Collect models: use configured list if available, otherwise fetch from upstream
+  // Collect models from manually configured channel model lists only
   const allModels = []; // { id, owned_by }
-
-  const fetchPromises = enabled.map(async (ch) => {
+  for (const ch of enabled) {
     if (ch.models?.length > 0) {
-      store.setModelCache(ch.id, ch.models).catch(() => {});
-      return ch.models.map(m => ({ id: m, owned_by: ch.name }));
-    }
-
-    if (!ch.keys?.length) return [];
-    const baseUrl = ch.base_url.replace(/\/+$/, '');
-    try {
-      const resp = await fetch(baseUrl + '/models', {
-        headers: { 'Authorization': `Bearer ${ch.keys[0]}` },
-      });
-      if (!resp.ok) return [];
-      const data = await resp.json();
-      if (data?.data && Array.isArray(data.data)) {
-        const modelIds = data.data.map(m => m.id);
-        store.setModelCache(ch.id, modelIds).catch(e =>
-          console.error(`[models] cache write failed for ${ch.name}:`, e)
-        );
-        return data.data.map(m => ({
-          id: m.id,
-          owned_by: m.owned_by || ch.name,
-        }));
-      }
-      return [];
-    } catch {
-      console.error(`[models] Failed to fetch models from ${ch.name}`);
-      return [];
-    }
-  });
-
-  const results = await Promise.all(fetchPromises);
-  const modelMap = new Map(); // deduplicate by model id
-  for (const models of results) {
-    for (const m of models) {
-      if (!modelMap.has(m.id)) {
-        modelMap.set(m.id, m);
+      for (const m of ch.models) {
+        allModels.push({ id: m, owned_by: ch.name });
       }
     }
   }
+
+  const modelMap = new Map(); // deduplicate by model id
 
   return jsonRes({
     object: 'list',
@@ -596,6 +542,21 @@ async function handleModels(store, allowedChannelIds) {
       owned_by: m.owned_by,
     })),
   });
+}
+
+/**
+ * 从上游 usage 中拆分 token 用量（OpenAI 规范）：
+ * - input:  未命中缓存的输入 token（prompt_tokens - cached_tokens）
+ * - cached: 命中缓存的输入 token（prompt_tokens_details.cached_tokens）
+ * - output: 输出 token（completion_tokens）
+ */
+function extractTokenUsage(usage) {
+  const prompt = usage?.prompt_tokens || 0;
+  const cached = usage?.prompt_tokens_details?.cached_tokens
+    || usage?.input_tokens_details?.cached_tokens
+    || 0;
+  const output = usage?.completion_tokens || 0;
+  return { input: Math.max(0, prompt - cached), cached, output };
 }
 
 function extractRateLimitHeaders(headers) {
@@ -717,7 +678,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 /**
  * 429 退避策略：根据 retry-after 头或指数退避计算等待时间。
- * HF Spaces 等共享 IP 环境下，上游(ModelScope)可能按 IP 限流，
+ * 边缘节点等共享 IP 环境下，上游(ModelScope)可能按 IP 限流，
  * 需要在 failover 循环中加入延迟避免连续请求全部被拒。
  */
 function calc429Delay(rateHeaders, attempt) {

@@ -323,23 +323,13 @@ const I18N = {
     copied: 'Copied!',
     copyFailed: 'Copy failed',
     usageMonitor: 'Usage Monitor',
-    quotaSettings: 'Quota Settings',
-    enableQuota: 'Enable Quota',
-    dailyTotalLimit: 'Daily Total Limit',
-    dailyPerModelLimit: 'Daily Per-Model Limit',
-    quotaTotalHelp: 'Total requests per day. 0 = unlimited.',
-    quotaModelHelp: 'Max requests per model per day. 0 = unlimited.',
     totalUsage: 'Daily Total',
     perModelUsage: 'Per Model',
     noQuotaChannels: 'No usage data for the selected date.',
-    quotaExceeded: 'Exceeded',
     remaining: 'remaining',
     unlimited: 'Unlimited',
     usageDate: 'Date',
     refreshUsage: 'Refresh',
-    quota: 'Quota',
-    quotaEnabled: 'Quota',
-    noQuota: 'No Quota',
     noModelUsageYet: 'No requests yet',
     requests: 'Requests',
     tokens: 'Tokens',
@@ -363,10 +353,6 @@ const I18N = {
     errorsToday: 'errors today',
     keysTotal: 'keys',
     cooldown: 'Cooldown',
-    limitSource: 'Limit Source',
-    sourceUpstream: 'Upstream',
-    sourceChannel: 'Channel fallback',
-    sourceNone: 'None',
   },
   zh: {
     loginSub: '请输入管理员密码或 API Key 继续',
@@ -444,29 +430,20 @@ const I18N = {
     copied: '已复制！',
     copyFailed: '复制失败',
     usageMonitor: '用量监控',
-    quotaSettings: '配额设置',
-    enableQuota: '启用配额',
-    dailyTotalLimit: '每日总量限制',
-    dailyPerModelLimit: '每日单模型限制',
-    quotaTotalHelp: '每日请求总量上限，0 = 不限制。',
-    quotaModelHelp: '每个模型每日请求上限，0 = 不限制。',
     totalUsage: '每日总量',
     perModelUsage: '单模型用量',
     noQuotaChannels: '所选日期暂无用量数据。',
-    quotaExceeded: '已超限',
     remaining: '剩余',
     unlimited: '不限制',
     usageDate: '日期',
     refreshUsage: '刷新',
-    quota: '配额',
-    quotaEnabled: '配额',
-    noQuota: '无配额',
     noModelUsageYet: '暂无请求记录',
     requests: '请求',
     tokens: 'Tokens',
     estimatedCost: '费用',
     promptTokens: '输入',
     completionTokens: '输出',
+    cachedTokens: '缓存',
     usage: '用量',
     noUsageYet: '暂无用量',
     boundChannels: '绑定渠道',
@@ -484,10 +461,6 @@ const I18N = {
     errorsToday: '个错误',
     keysTotal: '个密钥',
     cooldown: '冷却倒计时',
-    limitSource: '限额来源',
-    sourceUpstream: '上游实时',
-    sourceChannel: '渠道兜底',
-    sourceNone: '无',
   },
 };
 
@@ -623,7 +596,7 @@ function render() {
 function renderChannelHeaders() {
   document.getElementById('ch-title').textContent = t('channels');
   document.getElementById('ch-add-btn').textContent = t('addChannel');
-  document.getElementById('ch-thead').innerHTML = '<th>'+[t('name'),t('baseUrl'),t('keys'),t('models'),t('priority'),t('weight'),t('quota'),t('status'),t('actions')].join('</th><th>')+'</th>';
+  document.getElementById('ch-thead').innerHTML = '<th>'+[t('name'),t('baseUrl'),t('keys'),t('models'),t('priority'),t('weight'),t('status'),t('actions')].join('</th><th>')+'</th>';
 }
 
 function renderApiKeyHeaders() {
@@ -661,7 +634,7 @@ function renderDashboard() {
 function renderChannels() {
   const tb = document.getElementById('ch-tbody');
   if (!channels.length) {
-    tb.innerHTML = '<tr><td colspan="9" class="empty">' + t('noChannels') + '</td></tr>';
+    tb.innerHTML = '<tr><td colspan="8" class="empty">' + t('noChannels') + '</td></tr>';
     return;
   }
   tb.innerHTML = channels.map(c => \`
@@ -672,7 +645,6 @@ function renderChannels() {
       <td>\${c.models?.length || '<span style="color:var(--text-2)">' + t('all') + '</span>'}</td>
       <td>\${c.priority}</td>
       <td>\${c.weight}</td>
-      <td>\${c.quota_enabled ? '<span class="badge badge-on">' + (c.quota_daily_total || '∞') + '/' + (c.quota_daily_per_model || '∞') + '</span>' : '<span style="color:var(--text-2)">-</span>'}</td>
       <td><span class="badge \${c.enabled ? 'badge-on' : 'badge-off'}">\${c.enabled ? t('on') : t('off')}</span></td>
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-ghost" onclick="showChModal('\${c.id}')">\${t('edit')}</button>
@@ -718,24 +690,6 @@ function showChModal(id) {
         <div class="form-help">\${t('weightHelp')}</div>
       </div>
     </div>
-    <div style="border-top:1px solid var(--border);margin:8px 0 16px;padding-top:16px">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:12px">
-        <input type="checkbox" id="f-quota" \${ch?.quota_enabled ? 'checked' : ''} style="width:auto" onchange="document.getElementById('quota-fields').style.display=this.checked?'grid':'none'">
-        <span style="font-size:14px;font-weight:600">\${t('enableQuota')}</span>
-      </label>
-      <div class="form-row" id="quota-fields" style="display:\${ch?.quota_enabled ? 'grid' : 'none'}">
-        <div class="form-group">
-          <label>\${t('dailyTotalLimit')}</label>
-          <input type="number" id="f-qt" value="\${ch?.quota_daily_total || 2000}" min="0">
-          <div class="form-help">\${t('quotaTotalHelp')}</div>
-        </div>
-        <div class="form-group">
-          <label>\${t('dailyPerModelLimit')}</label>
-          <input type="number" id="f-qm" value="\${ch?.quota_daily_per_model || 500}" min="0">
-          <div class="form-help">\${t('quotaModelHelp')}</div>
-        </div>
-      </div>
-    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal()">\${t('cancel')}</button>
       <button class="btn btn-primary" onclick="saveCh('\${id||''}')">\${t('save')}</button>
@@ -752,13 +706,9 @@ async function saveCh(id) {
   const priority = parseInt(document.getElementById('f-pri').value) || 0;
   const weight = parseInt(document.getElementById('f-wt').value) || 1;
 
-  const quota_enabled = document.getElementById('f-quota').checked;
-  const quota_daily_total = parseInt(document.getElementById('f-qt').value) || 0;
-  const quota_daily_per_model = parseInt(document.getElementById('f-qm').value) || 0;
-
   if (!name || !base_url) { toast(t('nameUrlRequired'), 'error'); return; }
 
-  const body = JSON.stringify({ name, base_url, keys, models, priority, weight, quota_enabled, quota_daily_total, quota_daily_per_model });
+  const body = JSON.stringify({ name, base_url, keys, models, priority, weight });
   const r = id
     ? await api('/channels/' + id, { method: 'PUT', body })
     : await api('/channels', { method: 'POST', body });
@@ -998,17 +948,6 @@ function renderUsage() {
       ? '<span style="width:8px;height:8px;border-radius:50%;background:var(--success);display:inline-block"></span>'
       : '<span style="width:8px;height:8px;border-radius:50%;background:var(--danger);display:inline-block"></span>';
 
-    // 配额徽章
-    const quotaBadge = ch.quota_enabled
-      ? '<span class="badge badge-on" style="font-size:11px;margin-left:8px">' + t('quotaEnabled') + '</span>'
-      : '<span class="badge" style="font-size:11px;margin-left:8px;background:rgba(113,113,122,.12);color:var(--text-2)">' + t('noQuota') + '</span>';
-
-    // 配额限制信息（渠道配置为本地兜底）
-    const limitInfo = '<span style="color:var(--text-2);font-size:13px;font-weight:400">' +
-      t('dailyTotalLimit') + ': ' + (ch.quota_enabled && ch.quota_daily_total > 0 ? ch.quota_daily_total : '∞') +
-      ' · ' + t('dailyPerModelLimit') + ': ' + (ch.quota_enabled && ch.quota_daily_per_model > 0 ? ch.quota_daily_per_model : '∞') +
-      '</span>';
-
     const allKeys = ch.keys || [];
     const totalKeys = allKeys.length;
     const totalPages = Math.max(1, Math.ceil(totalKeys / USAGE_PAGE_SIZE));
@@ -1020,7 +959,6 @@ function renderUsage() {
 
     const keyCards = pageKeys.map(k => {
       const u = k.usage;
-      const limits = k.limits || {};
       const rateState = k.rate_state || {};
       const cooldowns = rateState.cooldowns || {};
       const activeCooldownItems = Object.entries(cooldowns)
@@ -1028,14 +966,6 @@ function renderUsage() {
         .sort((a, b) => Number(a[1]) - Number(b[1]));
       if (activeCooldownItems.length > 0) hasAnyActiveCooldown = true;
 
-      const totalLimit = limits.total_limit || 0;
-      const hasTotalLimit = totalLimit > 0;
-      const totalSource = limits.total_source || 'none';
-      const sourceText = totalSource === 'upstream'
-        ? t('sourceUpstream')
-        : totalSource === 'channel'
-          ? t('sourceChannel')
-          : t('sourceNone');
       const cooldownHtml = activeCooldownItems.length > 0
         ? '<div style="margin:8px 0 12px 0;font-size:12px;color:#b45309;background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:8px">' +
             '<div style="font-weight:600;margin-bottom:4px">' + t('cooldown') + '</div>' +
@@ -1049,43 +979,22 @@ function renderUsage() {
           '</div>'
         : '';
 
-      // 总量显示
-      const totalPct = hasTotalLimit
-        ? Math.min(100, Math.round(u.total / totalLimit * 100))
-        : 0;
-      const totalClass = totalPct >= 90 ? 'progress-danger' : totalPct >= 70 ? 'progress-warn' : 'progress-ok';
-      const totalLabel = hasTotalLimit
-        ? u.total + ' / ' + totalLimit + '  (' + totalPct + '%)'
-        : String(u.total);
-
       const modelNames = Object.keys(u.models || {}).sort();
 
       const modelRows = modelNames.map(m => {
         const count = u.models[m] || 0;
-        const upstreamLimit = limits.model_limits && Number.isFinite(limits.model_limits[m]) ? limits.model_limits[m] : 0;
-        const fallbackLimit = Number.isFinite(limits.default_model_limit) ? limits.default_model_limit : 0;
-        const modelLimit = upstreamLimit > 0 ? upstreamLimit : fallbackLimit;
-        const hasModelLimit = modelLimit > 0;
-        const pct = hasModelLimit
-          ? Math.min(100, Math.round(count / modelLimit * 100))
-          : 0;
-        const cls = pct >= 90 ? 'progress-danger' : pct >= 70 ? 'progress-warn' : 'progress-ok';
-        const lbl = hasModelLimit
-          ? count + ' / ' + modelLimit + '  (' + pct + '%)'
-          : String(count);
         return '<div class="usage-row">' +
-          '<div class="usage-label"><span style="font-family:monospace;font-size:12px">' + esc(m) + '</span><span class="usage-val">' + lbl + '</span></div>' +
-          '<div class="progress-bar"><div class="progress-fill ' + cls + '" style="width:' + (hasModelLimit ? pct : Math.min(count / 5, 100)) + '%"></div></div>' +
+          '<div class="usage-label"><span style="font-family:monospace;font-size:12px">' + esc(m) + '</span><span class="usage-val">' + count + '</span></div>' +
+          '<div class="progress-bar"><div class="progress-fill progress-ok" style="width:' + Math.min(count / 5, 100) + '%"></div></div>' +
           '</div>';
       }).join('');
 
       return '<div style="background:var(--bg-1);border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:10px">' +
         '<div style="font-family:monospace;font-size:13px;color:var(--primary);margin-bottom:10px">' + esc(k.key_hint) + '</div>' +
-        '<div style="font-size:12px;color:var(--text-2);margin-bottom:8px">' + t('limitSource') + ': ' + sourceText + '</div>' +
         cooldownHtml +
         '<div class="usage-row">' +
-          '<div class="usage-label"><span>' + t('totalUsage') + '</span><span class="usage-val">' + totalLabel + '</span></div>' +
-          '<div class="progress-bar"><div class="progress-fill ' + totalClass + '" style="width:' + (hasTotalLimit ? totalPct : Math.min(u.total / 20, 100)) + '%"></div></div>' +
+          '<div class="usage-label"><span>' + t('totalUsage') + '</span><span class="usage-val">' + u.total + '</span></div>' +
+          '<div class="progress-bar"><div class="progress-fill progress-ok" style="width:' + Math.min(u.total / 20, 100) + '%"></div></div>' +
         '</div>' +
         (modelRows
           ? '<div style="margin-top:12px"><div style="font-size:12px;color:var(--text-2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">' + t('perModelUsage') + '</div>' + modelRows + '</div>'
@@ -1120,8 +1029,7 @@ function renderUsage() {
     }
 
     return '<div class="usage-card">' +
-      '<h4>' + statusDot + ' ' + esc(ch.channel_name) + quotaBadge + '</h4>' +
-      (limitInfo ? '<div style="margin-bottom:14px">' + limitInfo + '</div>' : '') +
+      '<h4>' + statusDot + ' ' + esc(ch.channel_name) + '</h4>' +
       keyCards +
       paginationHtml +
     '</div>';

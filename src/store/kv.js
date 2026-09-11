@@ -1,10 +1,14 @@
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-const MODEL_CACHE_KV_TTL = 3600; // 1 hour – auto-expire in KV so stale model lists don't persist forever
 const DEFAULT_COOLDOWN_MS = 90 * 1000;
 
 class KVStore {
-  constructor(kv) {
+  /**
+   * @param {object} kv   Blob/File 适配层（config、ratelimit、errors）
+   * @param {object} [mysql]  MySQL 适配层（usage、apikey-usage 原子计数）；缺省时不启用用量统计
+   */
+  constructor(kv, mysql) {
     this.kv = kv;
+    this.mysql = mysql;
     this.cache = new Map();
   }
 
@@ -43,17 +47,9 @@ class KVStore {
     await this.set('config:apikeys', keys);
   }
 
-  async getRRCounter(channelId) {
-    const val = await this.kv.get(`lb:rr:${channelId}`);
-    return parseInt(val) || 0;
-  }
-
-  async setRRCounter(channelId, value) {
-    await this.kv.put(`lb:rr:${channelId}`, String(value));
-  }
-
-  // ── Per-key usage tracking (bypass cache for freshness) ──
-  // Storage format: usage:{channelId}:{date} → { "keyId1": { total, models: { m: N } }, ... }
+  // ── Per-key usage tracking (MySQL 原子计数；无 MySQL 时回退 KV 读-改-写) ──
+  // 存储格式（MySQL）：usage_counter 表扁平计数，见 mysql-kv.js
+  // 兼容格式（KV 回退）：usage:{channelId}:{date} → { "keyId1": { total, models: { m: N } }, ... }
 
   _todayKey() {
     const now = new Date();
@@ -66,63 +62,27 @@ class KVStore {
   }
 
   async getUsage(channelId, date) {
-    const key = `usage:${channelId}:${date || this._todayKey()}`;
-    try {
-      return (await this.kv.get(key, 'json')) || {};
-    } catch {
-      return {};
-    }
+    if (!this.mysql) return {};
+    return this.mysql.getUsage(channelId, date || this._todayKey());
   }
 
   async incrementUsage(channelId, apiKey, model) {
-    const date = this._todayKey();
-    const kvKey = `usage:${channelId}:${date}`;
-    const allUsage = await this.getUsage(channelId, date);
-    const kid = this._keyId(apiKey);
-
-    if (!allUsage[kid]) allUsage[kid] = { total: 0, models: {} };
-    allUsage[kid].total += 1;
-    if (model) {
-      allUsage[kid].models[model] = (allUsage[kid].models[model] || 0) + 1;
-    }
-    await this.kv.put(kvKey, JSON.stringify(allUsage));
-    return allUsage[kid];
+    if (!this.mysql) return;
+    await this.mysql.incrementUsage(channelId, this._todayKey(), this._keyId(apiKey), model);
   }
 
-  // ── Per-client API key usage tracking ──
-  // Storage: apikey-usage:{date} → { "keyId": { requests, prompt_tokens, completion_tokens, models: { m: { requests, prompt_tokens, completion_tokens } } } }
+  // ── 客户端 API Key 用量统计（仅 MySQL 可用；未配置时统计禁用）──
+  // Storage: apikey-usage:{date} → { "keyId": { requests, prompt_tokens, completion_tokens, cached_tokens, models: { m: { requests, prompt_tokens, completion_tokens, cached_tokens } } } }
+  // prompt_tokens = 未命中缓存的输入；cached_tokens = 命中缓存的输入；completion_tokens = 输出
 
   async getApiKeyUsage(date) {
-    const key = `apikey-usage:${date || this._todayKey()}`;
-    try {
-      return (await this.kv.get(key, 'json')) || {};
-    } catch {
-      return {};
-    }
+    if (!this.mysql) return {};
+    return this.mysql.getApiKeyUsage(date || this._todayKey());
   }
 
-  async incrementApiKeyUsage(apiKeyId, model, promptTokens = 0, completionTokens = 0) {
-    const date = this._todayKey();
-    const kvKey = `apikey-usage:${date}`;
-    const allUsage = await this.getApiKeyUsage(date);
-
-    if (!allUsage[apiKeyId]) {
-      allUsage[apiKeyId] = { requests: 0, prompt_tokens: 0, completion_tokens: 0, models: {} };
-    }
-    const u = allUsage[apiKeyId];
-    u.requests += 1;
-    u.prompt_tokens += promptTokens;
-    u.completion_tokens += completionTokens;
-
-    if (model) {
-      if (!u.models[model]) u.models[model] = { requests: 0, prompt_tokens: 0, completion_tokens: 0 };
-      u.models[model].requests += 1;
-      u.models[model].prompt_tokens += promptTokens;
-      u.models[model].completion_tokens += completionTokens;
-    }
-
-    await this.kv.put(kvKey, JSON.stringify(allUsage));
-    return u;
+  async incrementApiKeyUsage(apiKeyId, model, promptTokens = 0, completionTokens = 0, cachedTokens = 0) {
+    if (!this.mysql) return;
+    await this.mysql.incrementApiKeyUsage(apiKeyId, model, promptTokens, completionTokens, cachedTokens);
   }
 
   // ── Error logs (per-channel, per-day, last 100 entries) ──
@@ -140,22 +100,6 @@ class KVStore {
   async getErrors(channelId, date) {
     const key = `errors:${channelId}:${date || this._todayKey()}`;
     try { return (await this.kv.get(key, 'json')) || []; } catch { return []; }
-  }
-
-  // ── Per-channel model cache (populated by /models and LoadBalancer) ──
-
-  async getModelCache(channelId) {
-    return await this.get(`model-cache:${channelId}`);
-  }
-
-  async setModelCache(channelId, modelIds) {
-    const key = `model-cache:${channelId}`;
-    await this.kv.put(key, JSON.stringify(modelIds), { expirationTtl: MODEL_CACHE_KV_TTL });
-    this.cache.set(key, { value: modelIds, time: Date.now() });
-  }
-
-  invalidateModelCache(channelId) {
-    this.invalidate(`model-cache:${channelId}`);
   }
 
   // ── Rate-limit state (per key+model, per day) ──
@@ -260,52 +204,6 @@ class KVStore {
     await this._saveRateLimitData(kvKey, data);
   }
 
-  async clearRateLimitCooldown(channelId, apiKey, model) {
-    const date = this._todayKey();
-    const { kvKey, data } = await this._loadRateLimitData(channelId, date);
-    const kid = this._keyId(apiKey);
-    const entry = this._ensureRateLimitEntry(data, kid);
-    const modelKey = model || '*';
-    if (entry.cooldowns[modelKey] !== undefined) {
-      delete entry.cooldowns[modelKey];
-      await this._saveRateLimitData(kvKey, data);
-    }
-  }
-
-  async updateRateLimitHeaders(channelId, apiKey, model, headerInfo) {
-    if (!headerInfo) return;
-    const date = this._todayKey();
-    const { kvKey, data } = await this._loadRateLimitData(channelId, date);
-    const kid = this._keyId(apiKey);
-    const entry = this._ensureRateLimitEntry(data, kid);
-
-    const now = Date.now();
-    const userLimit = Number.isFinite(headerInfo.user_limit) ? headerInfo.user_limit : undefined;
-    const userRemaining = Number.isFinite(headerInfo.user_remaining) ? headerInfo.user_remaining : undefined;
-    const modelLimit = Number.isFinite(headerInfo.model_limit) ? headerInfo.model_limit : undefined;
-    const modelRemaining = Number.isFinite(headerInfo.model_remaining) ? headerInfo.model_remaining : undefined;
-
-    if (userLimit !== undefined) entry.header.user_limit = userLimit;
-    if (userRemaining !== undefined) entry.header.user_remaining = userRemaining;
-    entry.header.updated_at = now;
-
-    if (model && (modelLimit !== undefined || modelRemaining !== undefined)) {
-      const old = entry.header.model_limits[model] || {};
-      entry.header.model_limits[model] = {
-        limit: modelLimit !== undefined ? modelLimit : old.limit,
-        remaining: modelRemaining !== undefined ? modelRemaining : old.remaining,
-        updated_at: now,
-      };
-    }
-
-    // If upstream now reports remaining > 0, clear stale daily-block mark.
-    if (model && modelRemaining !== undefined && modelRemaining > 0) {
-      entry.daily_models = entry.daily_models.filter(m => m !== model);
-    }
-
-    await this._saveRateLimitData(kvKey, data);
-  }
-
   async getRateLimits(channelId, date) {
     const { data } = await this._loadRateLimitData(channelId, date);
     return data;
@@ -336,50 +234,8 @@ class KVStore {
     }
     return entry;
   }
-
-  getModelHeaderLimitWithData(apiKey, model, rateLimitData) {
-    const info = this.getRateLimitInfoWithData(apiKey, rateLimitData);
-    const hit = info?.header?.model_limits?.[model];
-    if (!hit || !Number.isFinite(hit.limit)) return 0;
-    return hit.limit;
-  }
-
-  getUserHeaderLimitWithData(apiKey, rateLimitData) {
-    const info = this.getRateLimitInfoWithData(apiKey, rateLimitData);
-    const limit = info?.header?.user_limit;
-    return Number.isFinite(limit) ? limit : 0;
-  }
-
-  checkQuotaWithData(channel, apiKey, model, usageData, rateLimitData = {}) {
-    const kid = this._keyId(apiKey);
-    const keyUsage = usageData[kid] || { total: 0, models: {} };
-
-    // Priority 1: upstream live limits from response headers
-    const upstreamTotalLimit = this.getUserHeaderLimitWithData(apiKey, rateLimitData);
-    const upstreamModelLimit = model ? this.getModelHeaderLimitWithData(apiKey, model, rateLimitData) : 0;
-
-    if (upstreamTotalLimit > 0 && keyUsage.total >= upstreamTotalLimit) {
-      return { allowed: false, reason: 'daily_total' };
-    }
-    if (model && upstreamModelLimit > 0 && (keyUsage.models[model] || 0) >= upstreamModelLimit) {
-      return { allowed: false, reason: 'model_limit' };
-    }
-
-    // Priority 2: local fallback limits from channel settings
-    if (!channel.quota_enabled) return { allowed: true };
-
-    if (channel.quota_daily_total > 0 && keyUsage.total >= channel.quota_daily_total) {
-      return { allowed: false, reason: 'daily_total' };
-    }
-    if (model && channel.quota_daily_per_model > 0 &&
-        (keyUsage.models[model] || 0) >= channel.quota_daily_per_model) {
-      return { allowed: false, reason: 'model_limit' };
-    }
-
-    return { allowed: true };
-  }
 }
 
-export function createStore(kv) {
-  return new KVStore(kv);
+export function createStore(kv, mysql) {
+  return new KVStore(kv, mysql);
 }

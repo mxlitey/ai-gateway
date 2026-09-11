@@ -18,75 +18,21 @@ export class LoadBalancer {
       enabled = enabled.filter(ch => allowedChannelIds.includes(ch.id));
     }
 
-    // For channels without a configured model list, resolve their actual models
-    // from the cache (populated by /v1/models) or by fetching upstream on demand.
-    const discoveredModels = new Map();
-    const needDiscovery = enabled.filter(ch => !ch.models || ch.models.length === 0);
-    if (needDiscovery.length > 0) {
-      await Promise.all(needDiscovery.map(async ch => {
-        let cached = await this.store.getModelCache(ch.id);
-        if (!cached) {
-          cached = await this._fetchUpstreamModels(ch);
-          if (cached && cached.length > 0) {
-            await this.store.setModelCache(ch.id, cached).catch(() => {});
-          }
-        }
-        if (cached && cached.length > 0) {
-          discoveredModels.set(ch.id, cached);
-        }
-      }));
-    }
-
-    let compatible = enabled.filter(ch => {
-      if (ch.models && ch.models.length > 0) {
-        return ch.models.some(m => m === model || model.startsWith(m));
-      }
-      const cached = discoveredModels.get(ch.id);
-      if (cached) {
-        return cached.some(m => m === model || model.startsWith(m));
-      }
-      return true; // no info available yet, accept as fallback
-    });
-
-    // Stale model cache? Invalidate and re-discover from upstream, then retry.
-    if (compatible.length === 0 && needDiscovery.length > 0) {
-      for (const ch of needDiscovery) {
-        this.store.invalidateModelCache(ch.id);
-      }
-      discoveredModels.clear();
-      await Promise.all(needDiscovery.map(async ch => {
-        const fresh = await this._fetchUpstreamModels(ch);
-        if (fresh && fresh.length > 0) {
-          await this.store.setModelCache(ch.id, fresh).catch(() => {});
-          discoveredModels.set(ch.id, fresh);
-        }
-      }));
-      compatible = enabled.filter(ch => {
-        if (ch.models && ch.models.length > 0) {
-          return ch.models.some(m => m === model || model.startsWith(m));
-        }
-        const cached = discoveredModels.get(ch.id);
-        if (cached) {
-          return cached.some(m => m === model || model.startsWith(m));
-        }
-        return true;
-      });
-    }
+    // Only channels with a manually configured model list are eligible.
+    // A channel that matches is one whose configured list contains the
+    // requested model (exact or prefix match).
+    let compatible = enabled.filter(ch =>
+      ch.models && ch.models.length > 0 &&
+      ch.models.some(m => m === model || model.startsWith(m))
+    );
 
     if (compatible.length === 0) {
       return { targets: [], error: 'No available channel for model: ' + model };
     }
 
-    // Pre-load usage data and rate-limit data in parallel
-    const usageMap = new Map();
+    // Pre-load rate-limit data in parallel
     const rateLimitMap = new Map();
     const preloadTasks = [];
-    // Usage is needed for both upstream header-based limits and local fallback quota.
-    for (const ch of compatible) {
-      preloadTasks.push(
-        this.store.getUsage(ch.id).then(d => usageMap.set(ch.id, d))
-      );
-    }
     for (const ch of compatible) {
       preloadTasks.push(
         this.store.getRateLimits(ch.id).then(d => rateLimitMap.set(ch.id, d))
@@ -119,16 +65,14 @@ export class LoadBalancer {
       }
     }
 
-    // Filter targets by 429 rate-limit and per-key quota
+    // Filter targets by 429 rate-limit state
     const targets = allTargets.filter(t => {
       const rlData = rateLimitMap.get(t.channel.id) || {};
-      if (this.store.isRateLimitedWithData(t.key, model, rlData)) return false;
-      const usageData = usageMap.get(t.channel.id) || {};
-      return this.store.checkQuotaWithData(t.channel, t.key, model, usageData, rlData).allowed;
+      return !this.store.isRateLimitedWithData(t.key, model, rlData);
     });
 
     if (targets.length === 0 && allTargets.length > 0) {
-      return { targets: [], error: 'All keys have exceeded their quota or rate limits for model: ' + model };
+      return { targets: [], error: 'All keys are rate-limited for model: ' + model };
     }
 
     if (targets.length === 0) {
@@ -157,28 +101,6 @@ export class LoadBalancer {
       items.splice(idx, 1);
     }
     return result;
-  }
-
-  /**
-   * Fetch the model list from a channel's upstream /models endpoint.
-   * Returns an array of model ID strings, or null on failure.
-   */
-  async _fetchUpstreamModels(ch) {
-    if (!ch.keys?.length) return null;
-    const baseUrl = ch.base_url.replace(/\/+$/, '');
-    try {
-      const resp = await fetch(baseUrl + '/models', {
-        headers: { 'Authorization': `Bearer ${ch.keys[0]}` },
-      });
-      if (!resp.ok) return null;
-      const data = await resp.json();
-      if (data?.data && Array.isArray(data.data)) {
-        return data.data.map(m => m.id);
-      }
-    } catch (e) {
-      console.warn(`[lb] Failed to fetch models from ${ch.name}:`, e.message);
-    }
-    return null;
   }
 
   /**

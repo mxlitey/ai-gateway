@@ -277,6 +277,39 @@ export async function handleAdminApi(request, env, store) {
       });
     }
 
+    // --- MySQL 诊断（只读）：确认用量计数是否真正走数据库并落行 ---
+    if (path === '/mysql-status' && method === 'GET') {
+      const info = { enabled: !!store.mysql };
+      if (store.mysql) {
+        const m = store.mysql;
+        info.host = m.url ? m.url.replace(/\/\/.*@/, '//***:***@').split('?')[0] : null;
+        info.date = beijingToday();
+        try {
+          if (!m.pool) m.pool = m._getPool();
+          await m._ensureTable();
+          const [rows] = await m.pool.query('SELECT COUNT(*) AS n FROM usage_counter');
+          info.row_count = rows[0].n;
+          const [today] = await m.pool.query(
+            "SELECT COUNT(*) AS n FROM usage_counter WHERE pk LIKE ?",
+            [`%:${beijingToday()}:%`],
+          );
+          info.today_row_count = today[0].n;
+          // 返回几条样本 pk，便于核对 key 格式
+          const [sample] = await m.pool.query(
+            'SELECT pk, cnt FROM usage_counter ORDER BY pk DESC LIMIT 10',
+          );
+          info.sample = sample;
+          info.status = 'ok';
+        } catch (err) {
+          info.status = 'error';
+          info.error = String(err.message || err);
+        }
+      } else {
+        info.status = 'disabled';
+      }
+      return jsonRes(info);
+    }
+
     return jsonRes({ error: 'Not found' }, 404);
   } catch (err) {
     console.error('Admin API error:', err);

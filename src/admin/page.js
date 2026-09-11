@@ -143,6 +143,13 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 .model-picker input[type="checkbox"]{width:auto;flex:0 0 auto}
 .model-picker-empty{color:var(--text-2);font-size:13px;padding:4px 0}
 
+/* 公开模型 → 上游模型 映射编辑 */
+.map-row{display:flex;align-items:center;gap:8px;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px}
+.map-row input{flex:1;min-width:0}
+.map-arrow{color:var(--text-2);font-size:14px;flex:0 0 auto}
+.map-del{flex:0 0 auto;width:32px;height:32px;padding:0;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(239,68,68,.3);color:var(--danger);background:transparent;border-radius:6px;cursor:pointer}
+.map-del:hover{background:var(--danger);color:#fff}
+
 /* 竖屏小屏补充适配 */
 @media (max-width: 640px){
   .content{padding-top:104px;padding-left:12px;padding-right:12px}
@@ -163,6 +170,10 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
   .date-picker input[type="date"]{width:100%}
   .rt-target-row{grid-template-columns:1fr 1fr;gap:8px}
   .rt-trg-del{grid-column:span 2}
+  .map-row{flex-wrap:wrap}
+  .map-row .map-arrow{display:none}
+  .map-row input{flex:1 1 45%}
+  .map-del{flex:1 0 auto;margin-top:4px}
 }
 </style>
 </head>
@@ -403,6 +414,13 @@ const I18N = {
     routeUpdated: 'Route updated',
     routeModelRequired: 'Public model and Target channel are required',
     selectChannel: 'Select a channel',
+    routesInfo: 'Model routing paths across all enabled channels (try in channel order, keys rotate with random start). Edit mappings in Channels.',
+    routesNone: 'No model routes yet. Configure a "public model → upstream model" mapping in Channels.',
+    modelMapLabel: 'Public Model → Upstream Model',
+    modelMapHelp: 'Left is the public model name clients use; right is the real upstream model. If left empty, defaults to the public name. After selecting models above, you can set each model\'s upstream here.',
+    addMapping: 'Add Mapping',
+    mapPublicModelPh: 'Public model',
+    mapUpstreamPh: 'Upstream model',
   },
   zh: {
     loginSub: '请输入管理员密码或 API Key 继续',
@@ -534,6 +552,11 @@ const I18N = {
     selectUpstream: '请选择上游模型',
     routesInfo: '以下为各公开模型在当前所有启用渠道中的路由路径（按渠道存储顺序尝试，渠道内密钥随机起点轮换）。如需调整映射，请前往「渠道管理」编辑。',
     routesNone: '暂无任何模型路由。请在「渠道管理」中为渠道配置「公开模型 → 上游模型」映射。',
+    modelMapLabel: '公开模型 → 上游模型　映射',
+    modelMapHelp: '每行左侧为客户端使用的公开模型名，右侧为该模型实际转发给上游的真实模型名。留空映射会默认公开名=上游名。勾选上方模型后，可在这里补充或修改每个模型对应的上游模型。',
+    addMapping: '添加映射',
+    mapPublicModelPh: '公开模型名',
+    mapUpstreamPh: '上游模型名',
   },
 };
 
@@ -549,6 +572,9 @@ let curSection = 'dashboard';
 
 // 渠道弹窗中"获取上游模型"拉取到的模型缓存（用于勾选列表 + 搜索过滤）
 let lastFetchedModels = [];
+
+// 渠道弹窗中「公开模型 → 上游模型」映射（用于编辑，未保存前暂存于此）
+let modelMapRows = [];
 
 // ============ API ============
 async function api(path, opts = {}) {
@@ -748,13 +774,23 @@ function showChModal(id) {
       <div class="model-picker" id="f-models-picker"><div class="model-picker-empty">\${t('modelPickerHelp')}</div></div>
       <textarea id="f-models" style="min-height:80px" placeholder="\${t('modelsPlaceholder')}">\${ch ? (ch.models||[]).join('\\n') : ''}</textarea>
     </div>
+    <div class="form-group">
+      <label>\${t('modelMapLabel')}</label>
+      <div id="f-modelmap"></div>
+      <button type="button" class="btn btn-sm btn-ghost" style="width:100%" onclick="addModelMapRow()">+ \${t('addMapping')}</button>
+      <div class="form-help">\${t('modelMapHelp')}</div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal()">\${t('cancel')}</button>
       <button class="btn btn-primary" onclick="saveCh('\${id||''}')">\${t('save')}</button>
     </div>
   \`;
+  modelMapRows = ch && ch.model_map && typeof ch.model_map === 'object'
+    ? Object.entries(ch.model_map).map(([p, u]) => ({ public: p, upstream: String(u) }))
+    : [];
   lastFetchedModels = [];
   openModal(html);
+  renderModelMapRows();
 }
 
 // 获取上游模型并渲染勾选列表（多选，勾选即加入该渠道模型）
@@ -798,8 +834,52 @@ function toggleChannelModel(cb, model) {
   const ta = document.getElementById('f-models');
   const lines = ta.value.split('\\n').map(s=>s.trim()).filter(Boolean);
   const set = new Set(lines);
-  if (cb.checked) set.add(model); else set.delete(model);
+  if (cb.checked) {
+    set.add(model);
+    // 勾选模型时，若映射中尚无该公开模型，自动补一条「公开名=上游名」的默认映射
+    if (!modelMapRows.some(r => (r.public || '').trim() === model)) {
+      modelMapRows.push({ public: model, upstream: model });
+      renderModelMapRows();
+    }
+  } else {
+    set.delete(model);
+  }
   ta.value = Array.from(set).join('\\n');
+}
+
+// ---- 公开模型 → 上游模型 映射编辑 ----
+function renderModelMapRows() {
+  const box = document.getElementById('f-modelmap');
+  if (!box) return;
+  if (modelMapRows.length === 0) {
+    box.innerHTML = '<div class="model-picker-empty">' + t('modelPickerEmpty') + '</div>';
+    return;
+  }
+  box.innerHTML = modelMapRows.map((row, i) =>
+    '<div class="map-row" data-i="' + i + '">' +
+      '<input class="map-pub" value="' + esc(row.public) + '" placeholder="' + t('mapPublicModelPh') + '" oninput="updateModelMapRow(' + i + ')">' +
+      '<span class="map-arrow">→</span>' +
+      '<input class="map-up" value="' + esc(row.upstream) + '" placeholder="' + t('mapUpstreamPh') + '" oninput="updateModelMapRow(' + i + ')">' +
+      '<button type="button" class="map-del" onclick="removeModelMapRow(' + i + ')">✕</button>' +
+    '</div>'
+  ).join('');
+}
+
+function updateModelMapRow(i) {
+  const rowEl = document.querySelector('.map-row[data-i="' + i + '"]');
+  if (!rowEl) return;
+  modelMapRows[i].public = rowEl.querySelector('.map-pub').value.trim();
+  modelMapRows[i].upstream = rowEl.querySelector('.map-up').value.trim();
+}
+
+function addModelMapRow(pub, upstream) {
+  modelMapRows.push({ public: pub || '', upstream: upstream || '' });
+  renderModelMapRows();
+}
+
+function removeModelMapRow(i) {
+  modelMapRows.splice(i, 1);
+  renderModelMapRows();
 }
 
 async function saveCh(id) {
@@ -810,7 +890,15 @@ async function saveCh(id) {
 
   if (!name || !base_url) { toast(t('nameUrlRequired'), 'error'); return; }
 
-  const body = JSON.stringify({ name, base_url, keys, models });
+  // 收集「公开模型 → 上游模型」映射，忽略公开名为空的行
+  const model_map = {};
+  for (const row of modelMapRows) {
+    const p = (row.public || '').trim();
+    if (!p) continue;
+    model_map[p] = ((row.upstream || '').trim()) || p;
+  }
+
+  const body = JSON.stringify({ name, base_url, keys, models, model_map });
   const r = id
     ? await api('/channels/' + id, { method: 'PUT', body })
     : await api('/channels', { method: 'POST', body });

@@ -1,5 +1,5 @@
 import { verifyApiKey } from './auth.js';
-import { LoadBalancer, expandRouteTargets } from '../lb/balancer.js';
+import { LoadBalancer } from '../lb/balancer.js';
 import { claudeToOpenAI, openAIToClaude, openAIStreamToClaudeStream } from './claude.js';
 import { responsesToChatCompletions, chatCompletionsToResponses, chatCompletionsStreamToResponsesStream } from './responses.js';
 
@@ -526,31 +526,25 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
 }
 
 async function handleModels(store, allowedChannelIds) {
-  const routes = (await store.getRoutes()) || [];
   const channels = (await store.getChannels()) || [];
-  const channelMap = new Map(channels.map(c => [c.id, c]));
   const allowedSet = (allowedChannelIds && allowedChannelIds.length > 0)
     ? new Set(allowedChannelIds)
     : null;
 
-  // 公开模型名必须至少关联 1 条"可用"上游路由才展示：
-  // 启用 + 目标渠道启用且有 key + 且渠道在客户端 key 的允许范围内。
+  // 从渠道的 model_map 汇总公开模型名：
+  // 仅统计启用 + 有 key + 且在客户端 key 允许范围内、且已配置至少一个上游模型映射的渠道。
   const modelMap = new Map(); // 公开模型名 -> { id, owned_by }
-  for (const r of routes) {
-    if (r.enabled === false) continue;
-    const pub = String(r.model || '').trim();
-    if (!pub) continue;
-    let hasUsable = false;
-    for (const t of expandRouteTargets(r)) {
-      if (allowedSet && !allowedSet.has(t.channel_id)) continue;
-      const ch = channelMap.get(t.channel_id);
-      if (!ch || ch.enabled === false || !ch.keys || ch.keys.length === 0) continue;
-      hasUsable = true;
-      break;
-    }
-    if (!hasUsable) continue;
-    if (!modelMap.has(pub)) {
-      modelMap.set(pub, { id: pub, owned_by: r.name || pub });
+  for (const c of channels) {
+    if (c.enabled === false || !c.keys || c.keys.length === 0) continue;
+    if (allowedSet && !allowedSet.has(c.id)) continue;
+    const mm = (c.model_map && typeof c.model_map === 'object') ? c.model_map : {};
+    for (const pub of Object.keys(mm)) {
+      const p = String(pub || '').trim();
+      const um = String(mm[pub] || '').trim();
+      if (!p || !um) continue;
+      if (!modelMap.has(p)) {
+        modelMap.set(p, { id: p, owned_by: c.name || c.id });
+      }
     }
   }
 

@@ -27,8 +27,6 @@ export async function handleAdminApi(request, env, store) {
         keys: Array.isArray(data.keys) ? data.keys.filter(Boolean) : [],
         models: Array.isArray(data.models) ? data.models.filter(Boolean) : [],
         enabled: data.enabled !== false,
-        priority: parseInt(data.priority) || 0,
-        weight: Math.max(1, parseInt(data.weight) || 1),
         created_at: new Date().toISOString(),
       };
       channels.push(channel);
@@ -55,8 +53,6 @@ export async function handleAdminApi(request, env, store) {
           keys: Array.isArray(data.keys) ? data.keys.filter(Boolean) : ch.keys,
           models: Array.isArray(data.models) ? data.models.filter(Boolean) : ch.models,
           enabled: data.enabled ?? ch.enabled,
-          priority: data.priority !== undefined ? (parseInt(data.priority) || 0) : ch.priority,
-          weight: data.weight !== undefined ? Math.max(1, parseInt(data.weight) || 1) : ch.weight,
           id,
         };
         await store.saveChannels(channels);
@@ -378,15 +374,11 @@ function normalizeRouteTargets(data, defaultModel = '') {
       .map(t => ({
         channel_id: t.channel_id,
         upstream_model: rtrim(t.upstream_model) || pub,
-        priority: parseInt(t.priority) || 0,
-        weight: Math.max(1, parseInt(t.weight) || 1),
       }));
   } else if (data.channel_id) {
     targets = [{
       channel_id: data.channel_id,
       upstream_model: rtrim(data.upstream_model) || pub,
-      priority: parseInt(data.priority) || 0,
-      weight: Math.max(1, parseInt(data.weight) || 1),
     }];
   }
   return targets;

@@ -1,9 +1,9 @@
 /**
  * 展开一条路由的目标集合。
  *
- * 新格式：route.targets = [{ channel_id, upstream_model, priority, weight }, ...]，
+ * 新格式：route.targets = [{ channel_id, upstream_model }, ...]，
  * 一个公开模型可路由到不同渠道的不同模型。
- * 兼容旧格式：route 顶层持有 channel_id / upstream_model / priority / weight。
+ * 兼容旧格式：route 顶层持有 channel_id / upstream_model。
  * 返回原始目标行（不校验渠道可用性）。
  */
 export function expandRouteTargets(route) {
@@ -13,20 +13,12 @@ export function expandRouteTargets(route) {
       .map(t => ({
         channel_id: t.channel_id,
         upstream_model: String(t.upstream_model || '').trim(),
-        priority: (t.priority !== undefined && t.priority !== null)
-          ? (parseInt(t.priority) || 0)
-          : (parseInt(route.priority) || 0),
-        weight: (t.weight !== undefined && t.weight !== null)
-          ? (Math.max(1, parseInt(t.weight) || 1))
-          : (Math.max(1, parseInt(route.weight) || 1)),
       }));
   }
   if (route.channel_id) {
     return [{
       channel_id: route.channel_id,
       upstream_model: String(route.upstream_model || '').trim(),
-      priority: parseInt(route.priority) || 0,
-      weight: Math.max(1, parseInt(route.weight) || 1),
     }];
   }
   return [];
@@ -44,7 +36,7 @@ export class LoadBalancer {
    *   - 路由公开模型名与请求 model 完全一致（trim 后比较）才命中
    *   - 仅启用、且目标渠道启用且有 key 的路由参与
    *   - 客户端 key 的 channel_ids 限定时，非允许渠道的路由被过滤
-   *   - 命中后按 priority 分组（数值越小越优先），组内按权重重放
+   *   - 命中后按路由内目标顺序展开
    *   - 每个目标渠道按自身 key 顺序（随机起点轮换）展开，key 与上游模型
    *     组合去重，避免同一渠道下多条同名路由重复
    *
@@ -91,28 +83,17 @@ export class LoadBalancer {
 
     const publicModel = requested;
 
-    // 按优先级分组（数值越小越优先），组内按权重重放
-    const groups = {};
-    for (const t of targetRows) {
-      const p = t.priority ?? 0;
-      if (!groups[p]) groups[p] = [];
-      groups[p].push(t);
-    }
-    const priorities = Object.keys(groups).map(Number).sort((a, b) => a - b);
-
+    // 按路由内目标顺序展开（画在前的目标优先），同一渠道+key+上游模型去重
     const allTargets = [];
     const seen = new Set(); // 去重：channelId:key:upstreamModel
-    for (const p of priorities) {
-      const ordered = this.weightedShuffle(groups[p]);
-      for (const tr of ordered) {
-        const upstream = String(tr.upstream_model || '').trim() || requested;
-        const keys = await this.getOrderedKeys(tr.channel);
-        for (const key of keys) {
-          const dedupeKey = `${tr.channel.id}:${key}:${upstream}`;
-          if (seen.has(dedupeKey)) continue;
-          seen.add(dedupeKey);
-          allTargets.push({ channel: tr.channel, key, model: upstream, routeId: tr.routeId, publicModel });
-        }
+    for (const tr of targetRows) {
+      const upstream = String(tr.upstream_model || '').trim() || requested;
+      const keys = await this.getOrderedKeys(tr.channel);
+      for (const key of keys) {
+        const dedupeKey = `${tr.channel.id}:${key}:${upstream}`;
+        if (seen.has(dedupeKey)) continue;
+        seen.add(dedupeKey);
+        allTargets.push({ channel: tr.channel, key, model: upstream, routeId: tr.routeId, publicModel });
       }
     }
 
@@ -131,27 +112,6 @@ export class LoadBalancer {
     }
 
     return { targets };
-  }
-
-  /**
-   * Weighted random shuffle: channels with higher weight
-   * have proportionally higher chance of being picked first.
-   */
-  weightedShuffle(channels) {
-    const items = channels.map(ch => ({ ch, w: ch.weight || 1 }));
-    const result = [];
-    while (items.length > 0) {
-      const total = items.reduce((sum, i) => sum + i.w, 0);
-      let rand = Math.random() * total;
-      let idx = 0;
-      for (let i = 0; i < items.length; i++) {
-        rand -= items[i].w;
-        if (rand <= 0) { idx = i; break; }
-      }
-      result.push(items[idx].ch);
-      items.splice(idx, 1);
-    }
-    return result;
   }
 
   /**

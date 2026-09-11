@@ -133,9 +133,8 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 .pagination .pg-info{font-size:12px;color:var(--text-2);margin:0 4px}
 
 /* 路由多目标编辑 */
-.rt-target-row{display:grid;grid-template-columns:1fr 1fr 90px 90px auto;gap:10px;align-items:end;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px}
+.rt-target-row{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px}
 .rt-target-row label{font-size:12px;margin-bottom:4px}
-.rt-trg-rect{min-width:0}
 .rt-add-target{width:100%;margin-bottom:8px}
 
 /* 渠道模型勾选 */
@@ -430,8 +429,6 @@ const I18N = {
     baseUrl: '基础 URL',
     keys: '密钥数',
     models: '模型',
-    priority: '优先级',
-    weight: '权重',
     status: '状态',
     actions: '操作',
     edit: '编辑',
@@ -450,8 +447,6 @@ const I18N = {
     modelsLabel: '模型列表（每行一个，留空表示接受所有模型）',
     modelsPlaceholder: 'gpt-4o\\nclaude-3-opus',
     modelsHelp: '仅匹配这些模型的请求会路由到此渠道。留空则接受任何模型。',
-    priorityHelp: '数值越小优先级越高，优先尝试。',
-    weightHelp: '同优先级组内的相对权重。',
     cancel: '取消',
     save: '保存',
     generateKey: '生成密钥',
@@ -534,6 +529,9 @@ const I18N = {
     modelPickerHelp: '勾选模型即添加到该渠道；也可手动在下方输入。',
     modelPickerEmpty: '未获取到模型，请检查基础 URL 与密钥。',
     routeTargetCol: '目标渠道 / 上游模型',
+    modelSearchPlaceholder: '搜索模型…',
+    modelSearchEmpty: '未找到匹配的模型。',
+    upstreamModelPlaceholder: '选择或输入上游模型',
   },
 };
 
@@ -547,6 +545,9 @@ let channels = [];
 let apiKeys = [];
 let routes = [];
 let curSection = 'dashboard';
+
+// 渠道弹窗中"获取上游模型"拉取到的模型缓存（用于勾选列表 + 搜索过滤）
+let lastFetchedModels = [];
 
 // ============ API ============
 async function api(path, opts = {}) {
@@ -668,13 +669,13 @@ function renderRouteHeaders() {
   if (!tb) return;
   document.getElementById('rt-title').textContent = t('modelRoutes');
   document.getElementById('rt-add-btn').textContent = t('addRoute');
-  document.getElementById('rt-thead').innerHTML = '<th>'+[t('routeName'),t('publicModel'),t('routeTargetCol'),t('priority'),t('weight'),t('status'),t('actions')].join('</th><th>')+'</th>';
+  document.getElementById('rt-thead').innerHTML = '<th>'+[t('routeName'),t('publicModel'),t('routeTargetCol'),t('status'),t('actions')].join('</th><th>')+'</th>';
 }
 
 function renderChannelHeaders() {
   document.getElementById('ch-title').textContent = t('channels');
   document.getElementById('ch-add-btn').textContent = t('addChannel');
-  document.getElementById('ch-thead').innerHTML = '<th>'+[t('name'),t('baseUrl'),t('keys'),t('models'),t('priority'),t('weight'),t('status'),t('actions')].join('</th><th>')+'</th>';
+  document.getElementById('ch-thead').innerHTML = '<th>'+[t('name'),t('baseUrl'),t('keys'),t('models'),t('status'),t('actions')].join('</th><th>')+'</th>';
 }
 
 function renderApiKeyHeaders() {
@@ -712,7 +713,7 @@ function renderDashboard() {
 function renderChannels() {
   const tb = document.getElementById('ch-tbody');
   if (!channels.length) {
-    tb.innerHTML = '<tr><td colspan="8" class="empty">' + t('noChannels') + '</td></tr>';
+    tb.innerHTML = '<tr><td colspan="6" class="empty">' + t('noChannels') + '</td></tr>';
     return;
   }
   tb.innerHTML = channels.map(c => \`
@@ -721,8 +722,6 @@ function renderChannels() {
       <td class="cell-truncate" title="\${esc(c.base_url)}">\${esc(c.base_url)}</td>
       <td>\${c.keys?.length || 0}</td>
       <td>\${c.models?.length || '<span style="color:var(--text-2)">' + t('all') + '</span>'}</td>
-      <td>\${c.priority}</td>
-      <td>\${c.weight}</td>
       <td><span class="badge \${c.enabled ? 'badge-on' : 'badge-off'}">\${c.enabled ? t('on') : t('off')}</span></td>
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-ghost" onclick="showChModal('\${c.id}')">\${t('edit')}</button>
@@ -755,32 +754,21 @@ function showChModal(id) {
     <div class="form-group">
       <label>\${t('modelsLabel')}</label>
       <button type="button" class="btn btn-sm btn-ghost" style="margin-bottom:8px" onclick="fetchUpstreamChannelModels(this)">\${t('fetchModels')}</button>
+      <input id="f-models-search" oninput="renderChannelModelPicker()" placeholder="\${t('modelSearchPlaceholder')}" style="margin-bottom:8px">
       <div class="model-picker" id="f-models-picker"><div class="model-picker-empty">\${t('modelPickerHelp')}</div></div>
       <textarea id="f-models" style="min-height:80px" placeholder="\${t('modelsPlaceholder')}">\${ch ? (ch.models||[]).join('\\n') : ''}</textarea>
-    </div>
-    <div class="form-row">
-      <div class="form-group">
-        <label>\${t('priority')}</label>
-        <input type="number" id="f-pri" value="\${ch ? ch.priority : 0}" min="0">
-        <div class="form-help">\${t('priorityHelp')}</div>
-      </div>
-      <div class="form-group">
-        <label>\${t('weight')}</label>
-        <input type="number" id="f-wt" value="\${ch ? ch.weight : 10}" min="1">
-        <div class="form-help">\${t('weightHelp')}</div>
-      </div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal()">\${t('cancel')}</button>
       <button class="btn btn-primary" onclick="saveCh('\${id||''}')">\${t('save')}</button>
     </div>
   \`;
+  lastFetchedModels = [];
   openModal(html);
 }
 
 // 获取上游模型并渲染勾选列表（多选，勾选即加入该渠道模型）
 async function fetchUpstreamChannelModels(btn) {
-  const box = document.getElementById('f-models-picker');
   const id = document.getElementById('f-ch-id').value;
   const body = id
     ? JSON.stringify({ channel_id: id })
@@ -794,18 +782,26 @@ async function fetchUpstreamChannelModels(btn) {
   btn.disabled = false; btn.textContent = old;
 
   if (!r || r.error) { toast(r?.error || t('failed'), 'error'); return; }
+  lastFetchedModels = r.models || [];
+  // 已选择的模型从文本框读取并回勾
+  renderChannelModelPicker();
+}
+
+function renderChannelModelPicker() {
+  const box = document.getElementById('f-models-picker');
+  if (!box) return;
+  const q = String(document.getElementById('f-models-search').value || '').trim().toLowerCase();
   const ta = document.getElementById('f-models');
-  const lines = ta.value.split('\\n').map(s=>s.trim()).filter(Boolean);
-  const set = new Set(lines);
-  const fetched = r.models || [];
-  if (fetched.length === 0) {
+  const set = new Set(ta.value.split('\\n').map(s=>s.trim()).filter(Boolean));
+  const list = lastFetchedModels.filter(m => !q || String(m).toLowerCase().includes(q));
+  if (lastFetchedModels.length === 0) {
     box.innerHTML = '<div class="model-picker-empty">' + t('modelPickerEmpty') + '</div>';
     return;
   }
-  box.innerHTML = fetched.map(m => {
+  box.innerHTML = list.length ? list.map(m => {
     const checked = set.has(m) ? ' checked' : '';
     return '<label><input type="checkbox" class="model-cb" value="' + esc(m) + '"' + checked + ' onclick="toggleChannelModel(this,\\'' + esc(m) + '\\')">' + esc(m) + '</label>';
-  }).join('');
+  }).join('') : '<div class="model-picker-empty">' + t('modelSearchEmpty') + '</div>';
 }
 
 function toggleChannelModel(cb, model) {
@@ -821,12 +817,10 @@ async function saveCh(id) {
   const base_url = document.getElementById('f-url').value.trim();
   const keys = document.getElementById('f-keys').value.split('\\n').map(s=>s.trim()).filter(Boolean);
   const models = document.getElementById('f-models').value.split('\\n').map(s=>s.trim()).filter(Boolean);
-  const priority = parseInt(document.getElementById('f-pri').value) || 0;
-  const weight = parseInt(document.getElementById('f-wt').value) || 1;
 
   if (!name || !base_url) { toast(t('nameUrlRequired'), 'error'); return; }
 
-  const body = JSON.stringify({ name, base_url, keys, models, priority, weight });
+  const body = JSON.stringify({ name, base_url, keys, models });
   const r = id
     ? await api('/channels/' + id, { method: 'PUT', body })
     : await api('/channels', { method: 'POST', body });
@@ -855,7 +849,7 @@ function channelNameById(id) {
 function renderRoutes() {
   const tb = document.getElementById('rt-tbody');
   if (!routes.length) {
-    tb.innerHTML = '<tr><td colspan="7" class="empty">' + t('noRoutes') + '</td></tr>';
+    tb.innerHTML = '<tr><td colspan="5" class="empty">' + t('noRoutes') + '</td></tr>';
     return;
   }
   tb.innerHTML = routes.map(r => \`
@@ -863,8 +857,6 @@ function renderRoutes() {
       <td><strong>\${esc(r.name)}</strong></td>
       <td style="font-family:monospace;font-size:13px">\${esc(r.model)}</td>
       <td>\${routeTargetsCell(r)}</td>
-      <td>\${r.priority}</td>
-      <td>\${r.weight}</td>
       <td><span class="badge \${r.enabled ? 'badge-on' : 'badge-off'}">\${r.enabled ? t('on') : t('off')}</span></td>
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-ghost" onclick="showRouteModal('\${r.id}')">\${t('edit')}</button>
@@ -887,21 +879,33 @@ function routeTargetsCell(r) {
   return lines || '<span style="color:var(--text-2)">-</span>';
 }
 
+let rtSeq = 0;
 function routeTargetRowHtml(target) {
+  const seq = 'rtr' + (++rtSeq);
   const sel = target && target.channel_id ? target.channel_id : '';
   const up = (target && target.upstream_model) ? esc(target.upstream_model) : '';
-  const pri = (target && target.priority !== undefined) ? target.priority : 0;
-  const wt = (target && target.weight !== undefined) ? target.weight : 10;
   const chOptions = ['<option value="">' + t('selectChannel') + '</option>']
     .concat(channels.map(ch => '<option value="' + ch.id + '"' + (ch.id === sel ? ' selected' : '') + '>' + esc(ch.name) + '</option>'))
     .join('');
   return '<div class="rt-target-row">' +
-    '<div class="rt-trg-cell"><label>' + t('targetChannel') + '</label><select class="rt-trg-ch">' + chOptions + '</select></div>' +
-    '<div class="rt-trg-cell"><label>' + t('upstreamModel') + '</label><input class="rt-trg-up" value="' + up + '" placeholder="gpt-4o"></div>' +
-    '<div class="rt-trg-rect"><label>' + t('priority') + '</label><input class="rt-trg-pri" type="number" value="' + pri + '" min="0"></div>' +
-    '<div class="rt-trg-rect"><label>' + t('weight') + '</label><input class="rt-trg-wt" type="number" value="' + wt + '" min="1"></div>' +
+    '<div class="rt-trg-cell"><label>' + t('targetChannel') + '</label><select class="rt-trg-ch" data-seq="' + seq + '" onchange="loadChannelModels(this)">' + chOptions + '</select></div>' +
+    '<div class="rt-trg-cell"><label>' + t('upstreamModel') + '</label><input class="rt-trg-up" list="dl-' + seq + '" value="' + up + '" placeholder="' + t('upstreamModelPlaceholder') + '"><datalist id="dl-' + seq + '"></datalist></div>' +
     '<button type="button" class="btn btn-sm btn-danger rt-trg-del" onclick="removeRouteTarget(this)">' + t('removeTarget') + '</button>' +
   '</div>';
+}
+
+// 选择渠道后自动带出该渠道的上游模型列表（datalist 下拉供选择，仍可手动输入）
+async function loadChannelModels(sel) {
+  const seq = sel.dataset.seq;
+  const chId = sel.value;
+  const dl = document.getElementById('dl-' + seq);
+  if (!dl) return;
+  dl.innerHTML = '';
+  if (!chId) return;
+  const r = await api('/fetch-models', { method: 'POST', body: JSON.stringify({ channel_id: chId }) });
+  if (r && !r.error && Array.isArray(r.models) && r.models.length) {
+    dl.innerHTML = r.models.map(m => '<option value="' + esc(m) + '"></option>').join('');
+  }
 }
 
 function addRouteTarget() {
@@ -919,7 +923,7 @@ function showRouteModal(id) {
   const title = r ? t('editRoute') : t('addRoute');
   // 初始目标行：编辑时从 targets（或旧单目标字段）恢复；新增时给一空行
   const targets = r ? (Array.isArray(r.targets) && r.targets.length ? r.targets
-    : (r.channel_id ? [{ channel_id: r.channel_id, upstream_model: r.upstream_model || '', priority: r.priority, weight: r.weight }] : null))
+    : (r.channel_id ? [{ channel_id: r.channel_id, upstream_model: r.upstream_model || '' }] : null))
     : null;
   const rowsHtml = (targets && targets.length)
     ? targets.map(tg => routeTargetRowHtml(tg)).join('')
@@ -948,6 +952,8 @@ function showRouteModal(id) {
     </div>
   \`;
   openModal(html);
+  // 编辑/新增时：为目标行已经有选中渠道的，自动带出其上游模型候选
+  document.querySelectorAll('#f-rt-targets .rt-trg-ch').forEach(sel => { if (sel.value) loadChannelModels(sel); });
 }
 
 async function saveRoute(id) {
@@ -959,8 +965,6 @@ async function saveRoute(id) {
   const targets = rows.map(row => ({
     channel_id: row.querySelector('.rt-trg-ch').value,
     upstream_model: row.querySelector('.rt-trg-up').value.trim(),
-    priority: parseInt(row.querySelector('.rt-trg-pri').value) || 0,
-    weight: Math.max(1, parseInt(row.querySelector('.rt-trg-wt').value) || 1),
   })).filter(t => t.channel_id);
   if (targets.length === 0) { toast(t('atLeastOneTarget'), 'error'); return; }
 

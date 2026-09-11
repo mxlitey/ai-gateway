@@ -145,6 +145,8 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 /* 公开模型 → 上游模型 映射编辑 */
 .map-row{position:relative;display:flex;align-items:center;gap:8px;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px}
 .map-row input{flex:1;min-width:0}
+.map-up-wrap{position:relative;flex:1;min-width:0;display:flex}
+.map-up-wrap .map-up{width:100%;flex:1}
 .map-up-listbox{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:120;background:var(--bg-2);border:1px solid var(--border);border-radius:8px;max-height:220px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)}
 .map-up-item{padding:8px 10px;font-size:13px;color:var(--text-0);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .map-up-item:hover,.map-up-item.active{background:var(--primary);color:#fff}
@@ -935,9 +937,9 @@ async function openMapUpDropdown(el, i) {
   document.querySelectorAll('.map-up-listbox').forEach(n => { if (n.closest('.map-row') !== el.closest('.map-row')) n.remove(); });
   const q = String(el.value || '').trim().toLowerCase();
   mapUpFiltered = list.filter(m => !q || String(m).toLowerCase().includes(q));
-  const rowEl = el.closest('.map-row');
-  let dl = rowEl.querySelector('.map-up-listbox');
-  if (!dl) { dl = document.createElement('div'); dl.className = 'map-up-listbox'; rowEl.appendChild(dl); }
+  const container = el.closest('.map-up-wrap') || el.closest('.map-row');
+  let dl = container.querySelector('.map-up-listbox');
+  if (!dl) { dl = document.createElement('div'); dl.className = 'map-up-listbox'; container.appendChild(dl); }
   dl.innerHTML = mapUpFiltered.length
     ? mapUpFiltered.map((m, j) => '<div class="map-up-item" onmousedown="pickMapUpModel(' + i + ',' + j + ')">' + esc(String(m)) + '</div>').join('')
     : '<div class="map-up-empty">' + t('noMatchingModels') + '</div>';
@@ -966,8 +968,10 @@ function renderModelMapRows() {
     '<div class="map-row" data-i="' + i + '">' +
       '<input class="map-pub" value="' + esc(row.public) + '" placeholder="' + t('mapPublicModelPh') + '" oninput="updateModelMapRow(' + i + ')">' +
       '<span class="map-arrow">→</span>' +
-      '<input class="map-up" autocomplete="off" value="' + esc(row.upstream) + '" placeholder="' + t('mapUpstreamPh') + '"' +
-        ' onfocus="mapUpFocus(this,' + i + ')" oninput="mapUpInput(this,' + i + ')" onblur="closeMapUpDropdown()">' +
+      '<span class="map-up-wrap">' +
+        '<input class="map-up" autocomplete="off" value="' + esc(row.upstream) + '" placeholder="' + t('mapUpstreamPh') + '"' +
+          ' onfocus="mapUpFocus(this,' + i + ')" oninput="mapUpInput(this,' + i + ')" onblur="closeMapUpDropdown()">' +
+      '</span>' +
       '<button type="button" class="map-del" onclick="removeModelMapRow(' + i + ')">✕</button>' +
     '</div>'
   ).join('');

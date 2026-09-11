@@ -417,7 +417,7 @@ const I18N = {
     routesInfo: 'Model routing paths across all enabled channels (try in channel order, keys rotate with random start). Edit mappings in Channels.',
     routesNone: 'No model routes yet. Configure a "public model → upstream model" mapping in Channels.',
     modelMapLabel: 'Public Model → Upstream Model',
-    modelMapHelp: 'Left is the public model name clients use; right is the real upstream model. If left empty, defaults to the public name. After selecting models above, you can set each model\'s upstream here.',
+    modelMapHelp: "Left is the public model name clients use; right is the real upstream model. If left empty, defaults to the public name. After selecting models above, you can set each model's upstream here.",
     addMapping: 'Add Mapping',
     mapPublicModelPh: 'Public model',
     mapUpstreamPh: 'Upstream model',

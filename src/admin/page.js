@@ -853,18 +853,7 @@ async function fetchUpstreamChannelModels(btn) {
 
   if (!r || r.error) { toast(r?.error || t('failed'), 'error'); return; }
   lastFetchedModels = r.models || [];
-
-  // 自动用「公开名=上游名」补全映射：已存在公开名的行保持不变，只补缺失的
-  const existing = new Set(modelMapRows.map(r => (r.public || '').trim()));
-  let added = 0;
-  for (const m of lastFetchedModels) {
-    if (existing.has(m)) continue;
-    modelMapRows.push({ public: m, upstream: m });
-    existing.add(m);
-    added++;
-  }
-  renderModelMapRows();
-  toast(t('modelsFetchedPre') + lastFetchedModels.length + t('modelsFetchedPostAuto') + (added > 0 ? ' +' + added : ''), 'success');
+  toast(t('modelsFetchedPre') + lastFetchedModels.length + t('modelsFetchedPost'), 'success');
 }
 
 // 点击某行的上游模型 → 打开可搜索选择弹窗

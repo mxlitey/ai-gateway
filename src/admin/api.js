@@ -20,14 +20,13 @@ export async function handleAdminApi(request, env, store) {
         return jsonRes({ error: 'name and base_url are required' }, 400);
       }
       const channels = await store.getChannels();
-      const model_map = normalizeModelMap(data);
       const channel = {
         id: crypto.randomUUID(),
         name: data.name.trim(),
         base_url: data.base_url.trim(),
         keys: Array.isArray(data.keys) ? data.keys.filter(Boolean) : [],
-        models: Object.keys(model_map),
-        model_map,
+        models: Array.isArray(data.models) ? data.models.filter(Boolean) : [],
+        model_map: normalizeModelMap(data),
         enabled: data.enabled !== false,
         created_at: new Date().toISOString(),
       };
@@ -48,16 +47,15 @@ export async function handleAdminApi(request, env, store) {
         if (idx === -1) return jsonRes({ error: 'Channel not found' }, 404);
 
         const ch = channels[idx];
-        const model_map = (data.model_map !== undefined)
-          ? normalizeModelMap(data)
-          : ((ch.model_map && typeof ch.model_map === 'object') ? ch.model_map : {});
         const nextChannel = {
           ...ch,
           name: data.name?.trim() ?? ch.name,
           base_url: data.base_url?.trim() ?? ch.base_url,
           keys: Array.isArray(data.keys) ? data.keys.filter(Boolean) : ch.keys,
-          models: Object.keys(model_map),
-          model_map,
+          models: Array.isArray(data.models) ? data.models.filter(Boolean) : ch.models,
+          model_map: (data.model_map !== undefined)
+            ? normalizeModelMap(data)
+            : ((ch.model_map && typeof ch.model_map === 'object') ? ch.model_map : {}),
           enabled: data.enabled ?? ch.enabled,
           id,
         };

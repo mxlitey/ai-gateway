@@ -46,7 +46,7 @@ export async function handleAdminApi(request, env, store) {
         if (idx === -1) return jsonRes({ error: 'Channel not found' }, 404);
 
         const ch = channels[idx];
-        channels[idx] = {
+        const nextChannel = {
           ...ch,
           name: data.name?.trim() ?? ch.name,
           base_url: data.base_url?.trim() ?? ch.base_url,
@@ -55,6 +55,33 @@ export async function handleAdminApi(request, env, store) {
           enabled: data.enabled ?? ch.enabled,
           id,
         };
+
+        // 渠道模型变更后，级联清理指向"已移除模型"的路由目标，避免路由指向不存在的模型。
+        // models 非空表示该渠道只接受这些模型；空数组表示接受任何模型。
+        const newModels = nextChannel.models;
+        const isInvalid = (t) => newModels.length > 0 && t.upstream_model && newModels.indexOf(t.upstream_model) === -1;
+        const routes = (await store.getRoutes()) || [];
+        const blocked = []; // 若某条路由因此失去全部目标，则阻止本次保存
+        let rewritten = false;
+        for (const r of routes) {
+          const targets = (Array.isArray(r.targets) && r.targets.length)
+            ? r.targets
+            : (r.channel_id ? [{ channel_id: r.channel_id, upstream_model: r.upstream_model || '' }] : []);
+          const valid = targets.filter(t => t.channel_id !== id || !isInvalid(t));
+          if (valid.length === targets.length) continue;
+          if (valid.length === 0) {
+            blocked.push(r.name || r.model);
+          } else {
+            rewritten = true;
+            r.targets = valid.map(t => ({ channel_id: t.channel_id, upstream_model: t.upstream_model || '' }));
+          }
+        }
+        if (blocked.length > 0) {
+          return jsonRes({ error: '移除模型后以下路由将无可用目标，请先调整：' + blocked.join('、') }, 409);
+        }
+        if (rewritten) await store.saveRoutes(routes);
+
+        channels[idx] = nextChannel;
         await store.saveChannels(channels);
         return jsonRes(channels[idx]);
       }

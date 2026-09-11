@@ -143,8 +143,12 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 .model-picker-empty{color:var(--text-2);font-size:13px;padding:4px 0}
 
 /* 公开模型 → 上游模型 映射编辑 */
-.map-row{display:flex;align-items:center;gap:8px;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px}
+.map-row{position:relative;display:flex;align-items:center;gap:8px;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px}
 .map-row input{flex:1;min-width:0}
+.map-up-listbox{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:120;background:var(--bg-2);border:1px solid var(--border);border-radius:8px;max-height:220px;overflow-y:auto;box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.map-up-item{padding:8px 10px;font-size:13px;color:var(--text-0);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.map-up-item:hover,.map-up-item.active{background:var(--primary);color:#fff}
+.map-up-empty{padding:10px;font-size:13px;color:var(--text-2);text-align:center}
 .map-arrow{color:var(--text-2);font-size:14px;flex:0 0 auto}
 .map-del{flex:0 0 auto;width:32px;height:32px;padding:0;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(239,68,68,.3);color:var(--danger);background:transparent;border-radius:6px;cursor:pointer}
 .map-del:hover{background:var(--danger);color:#fff}
@@ -538,6 +542,7 @@ const I18N = {
     addMapping: '添加映射',
     mapPublicModelPh: '公开模型名',
     mapUpstreamPh: '上游模型名',
+    noMatchingModels: '无匹配的上游模型',
   },
 };
 
@@ -775,7 +780,6 @@ function showChModal(id) {
     <div class="form-group">
       <label>\${t('modelMapLabel')}</label>
       <div id="f-modelmap"></div>
-      <datalist id="f-upstream-datalist"></datalist>
       <button type="button" class="btn btn-sm btn-ghost" style="width:100%" onclick="addModelMapRow()">+ \${t('addMapping')}</button>
     </div>
     <div class="modal-actions">
@@ -791,6 +795,7 @@ function showChModal(id) {
   );
   if (keyRows.length === 0) keyRows.push({ key: '', enabled: true });
   lastFetchedModels = [];
+  mapUpCtx = { sig: '', list: [] };
   openModal(html);
   renderKeyRows();
   renderModelMapRows();
@@ -813,7 +818,6 @@ async function fetchUpstreamChannelModels(btn) {
 
   if (!r || r.error) { toast(r?.error || t('failed'), 'error'); return; }
   lastFetchedModels = r.models || [];
-  refreshUpstreamDatalist();
   // 已选择的模型从文本框读取并回勾
   renderChannelModelPicker();
 }
@@ -839,16 +843,8 @@ function toggleChannelModel(cb, model) {
   const ta = document.getElementById('f-models');
   const lines = ta.value.split('\\n').map(s=>s.trim()).filter(Boolean);
   const set = new Set(lines);
-  if (cb.checked) {
-    set.add(model);
-    // 选中的上游模型同步纳入映射（公开名=上游名），已存在则跳过
-    if (!modelMapRows.some(r => (r.public || '').trim() === model)) {
-      modelMapRows.push({ public: model, upstream: model });
-      renderModelMapRows();
-    }
-  } else {
-    set.delete(model);
-  }
+  if (cb.checked) set.add(model);
+  else set.delete(model);
   ta.value = Array.from(set).join('\\n');
 }
 
@@ -893,24 +889,85 @@ function removeKeyRow(i) {
 }
 
 // ---- 公开模型 → 上游模型 映射编辑 ----
-// 刷新上游模型下拉列表（datalist）：输入时同步筛选出匹配项
-function refreshUpstreamDatalist() {
-  const dl = document.getElementById('f-upstream-datalist');
-  if (dl) {
-    dl.innerHTML = lastFetchedModels.map(m => '<option value="' + esc(String(m)) + '"></option>').join('');
-  }
+// 上游模型下拉（combobox）：点击/输入时拉取上游列表并实时筛选，可点选也可手动输入
+let mapUpCtx = { sig: '', list: [] };   // 按渠道缓存的上游模型列表
+let mapUpFiltered = [];                  // 当前下拉框筛选项（供点选读取）
+
+// 当前渠道标识（编辑中渠道 id，新增渠道则用 API 主机）
+function mapChannelSig() {
+  const idEl = document.getElementById('f-ch-id');
+  const urlEl = document.getElementById('f-url');
+  return (idEl && idEl.value) || (urlEl && urlEl.value.trim()) || '';
+}
+
+// 惰性拉取当前渠道的上游模型列表，同渠道只拉一次
+async function ensureMapUpstreamModels() {
+  const sig = mapChannelSig();
+  if (!sig) return [];
+  if (mapUpCtx.sig === sig && mapUpCtx.list.length) return mapUpCtx.list;
+  const idEl = document.getElementById('f-ch-id');
+  const urlEl = document.getElementById('f-url');
+  const body = (idEl && idEl.value)
+    ? JSON.stringify({ channel_id: idEl.value })
+    : JSON.stringify({
+        base_url: urlEl ? urlEl.value.trim() : '',
+        keys: keyRows.filter(r => r.enabled !== false).map(r => r.key.trim()).filter(Boolean),
+      });
+  let list = [];
+  try {
+    const r = await api('/fetch-models', { method: 'POST', body });
+    if (r && !r.error && Array.isArray(r.models)) list = r.models;
+  } catch (e) { /* 拉取失败时保持空列表 */ }
+  mapUpCtx = { sig, list };
+  return list;
+}
+
+// 元素点击/输入 → 打开下拉（输入时同步筛选）
+async function mapUpFocus(el, i) { await openMapUpDropdown(el, i); }
+async function mapUpInput(el, i) {
+  updateModelMapRow(i);
+  await openMapUpDropdown(el, i);
+}
+
+async function openMapUpDropdown(el, i) {
+  const list = await ensureMapUpstreamModels();
+  // 关闭其它行已打开的下拉
+  document.querySelectorAll('.map-up-listbox').forEach(n => { if (n.closest('.map-row') !== el.closest('.map-row')) n.remove(); });
+  const q = String(el.value || '').trim().toLowerCase();
+  mapUpFiltered = list.filter(m => !q || String(m).toLowerCase().includes(q));
+  const rowEl = el.closest('.map-row');
+  let dl = rowEl.querySelector('.map-up-listbox');
+  if (!dl) { dl = document.createElement('div'); dl.className = 'map-up-listbox'; rowEl.appendChild(dl); }
+  dl.innerHTML = mapUpFiltered.length
+    ? mapUpFiltered.map((m, j) => '<div class="map-up-item" onmousedown="pickMapUpModel(' + i + ',' + j + ')">' + esc(String(m)) + '</div>').join('')
+    : '<div class="map-up-empty">' + t('noMatchingModels') + '</div>';
+  dl.style.display = 'block';
+}
+
+function closeMapUpDropdown() {
+  setTimeout(() => { document.querySelectorAll('.map-up-listbox').forEach(n => n.remove()); }, 150);
+}
+
+function pickMapUpModel(i, j) {
+  const m = mapUpFiltered[j];
+  if (m == null) return;
+  modelMapRows[i].upstream = String(m);
+  const rowEl = document.querySelector('.map-row[data-i="' + i + '"]');
+  const up = rowEl && rowEl.querySelector('.map-up');
+  if (up) up.value = String(m);
+  closeMapUpDropdown();
 }
 
 function renderModelMapRows() {
   const box = document.getElementById('f-modelmap');
-  refreshUpstreamDatalist();
   if (!box) return;
   if (modelMapRows.length === 0) { box.innerHTML = ''; return; }
   box.innerHTML = modelMapRows.map((row, i) =>
     '<div class="map-row" data-i="' + i + '">' +
       '<input class="map-pub" value="' + esc(row.public) + '" placeholder="' + t('mapPublicModelPh') + '" oninput="updateModelMapRow(' + i + ')">' +
       '<span class="map-arrow">→</span>' +
-      '<input class="map-up" list="f-upstream-datalist" value="' + esc(row.upstream) + '" placeholder="' + t('mapUpstreamPh') + '" oninput="updateModelMapRow(' + i + ')">' +
+      '<input class="map-up" autocomplete="off" value="' + esc(row.upstream) + '" placeholder="' + t('mapUpstreamPh') + '"' +
+        ' onfocus="mapUpFocus(this,' + i + ')" oninput="mapUpInput(this,' + i + ')" onblur="closeMapUpDropdown()">' +
       '<button type="button" class="map-del" onclick="removeModelMapRow(' + i + ')">✕</button>' +
     '</div>'
   ).join('');

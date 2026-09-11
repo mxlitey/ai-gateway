@@ -67,6 +67,7 @@ tr:hover td{background:var(--bg-hover)}
 .badge{display:inline-block;padding:3px 10px;border-radius:9999px;font-size:12px;font-weight:500}
 .badge-on{background:rgba(34,197,94,.12);color:var(--success)}
 .badge-off{background:rgba(239,68,68,.12);color:var(--danger)}
+.tag-direct{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:500;background:rgba(99,102,241,.12);color:var(--primary)}
 
 /* Buttons */
 .btn{padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-size:14px;font-weight:500;transition:all .15s;display:inline-flex;align-items:center;gap:6px;line-height:1.4}
@@ -401,6 +402,7 @@ const I18N = {
     keysTotal: 'keys',
     cooldown: 'Cooldown',
     modelRoutes: 'Model Routes',
+    direct: 'Passthrough',
     addRoute: 'Add Route',
     editRoute: 'Edit Route',
     routeName: 'Name (Alias)',
@@ -526,6 +528,7 @@ const I18N = {
     keysTotal: '个密钥',
     cooldown: '冷却倒计时',
     modelRoutes: '模型路由',
+    direct: '透传',
     addRoute: '添加路由',
     editRoute: '编辑路由',
     routeName: '名称（别名）',
@@ -962,13 +965,14 @@ function renderRoutes() {
       return '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border)">' +
         '<span>' + esc(r.channel.name || r.channel.id) +
           ' <span style="color:var(--text-2);font-size:12px">(' + esc(shortHost(r.channel.base_url)) + ')</span></span>' +
-        '<span><code style="background:var(--bg-0);padding:2px 8px;border-radius:4px;font-size:12px;color:var(--primary)">' + esc(r.upstream) + '</code>' +
-        (r.direct ? ' <span style="color:var(--text-2);font-size:12px">透传</span>' : '') + '</span>' +
+        '<span><code style="background:var(--bg-0);padding:2px 8px;border-radius:4px;font-size:12px;color:var(--primary)">' + esc(r.upstream) + '</code></span>' +
       '</div>';
     }).join('');
 
     return '<tr>' +
-      '<td style="vertical-align:top;white-space:nowrap"><code style="background:var(--bg-0);padding:3px 8px;border-radius:4px;font-size:13px">' + esc(p) + '</code></td>' +
+      '<td style="vertical-align:top;white-space:nowrap">' +
+        (targets.some(r => r.direct) ? '<span class="tag-direct">' + t('direct') + '</span> ' : '') +
+        '<code style="background:var(--bg-0);padding:3px 8px;border-radius:4px;font-size:13px">' + esc(p) + '</code></td>' +
       '<td style="padding-top:4px;padding-bottom:4px">' + targetHtml + '</td>' +
     '</tr>';
   }).join('');

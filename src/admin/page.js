@@ -303,6 +303,7 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
       <div class="date-picker">
         <label id="error-date-label" style="margin:0;white-space:nowrap"></label>
         <input type="date" id="error-date" onchange="loadErrors()">
+        <button type="button" class="btn btn-sm btn-ghost" id="error-today-btn" onclick="setErrorDateToday()"></button>
       </div>
       <div id="error-container"></div>
     </section>
@@ -418,6 +419,7 @@ const I18N = {
     errorLogs: 'Error Logs',
     logs: 'Logs',
     errorDate: 'Date',
+    today: 'Today',
     refreshError: 'Refresh',
     noErrors: 'No errors today.',
     errorTime: 'Time',
@@ -530,6 +532,7 @@ const I18N = {
     errorLogs: '错误日志',
     logs: '日志',
     errorDate: '日期',
+    today: '今日',
     refreshError: '刷新',
     noErrors: '今日暂无错误。',
     errorTime: '时间',
@@ -1322,8 +1325,15 @@ function renderErrorHeaders() {
   document.getElementById('error-title').textContent = t('errorLogs');
   document.getElementById('error-refresh-btn').textContent = t('refreshError');
   document.getElementById('error-date-label').textContent = t('errorDate');
+  document.getElementById('error-today-btn').textContent = t('today');
   const dateInput = document.getElementById('error-date');
   if (!dateInput.value) dateInput.value = todayBeijing();
+}
+
+// 回到今日日期并加载
+function setErrorDateToday() {
+  document.getElementById('error-date').value = todayBeijing();
+  loadErrors();
 }
 
 async function loadErrors() {
@@ -1389,18 +1399,28 @@ function toggleErrMsg(caret) {
   caret.parentElement.classList.toggle('open');
 }
 
-// 错误日志：一键复制完整报错信息
+// 错误日志：一键复制（时间 / 模型 / 状态码 / 错误信息）
 async function copyErrMsg(btn) {
-  const textEl = btn.parentElement.querySelector('.err-text');
-  const msg = textEl ? textEl.textContent : '';
-  if (!msg) { toast(t('copyFail'), 'error'); return; }
+  const tr = btn.closest('tr');
+  const cells = tr ? tr.querySelectorAll('td') : null;
+  const textEl = tr ? tr.querySelector('.err-text') : null;
+  if (!cells || cells.length < 4 || !textEl) { toast(t('copyFail'), 'error'); return; }
+  const time = (cells[0].textContent || '').trim();
+  const model = (cells[1].textContent || '').trim();
+  const status = (cells[2].textContent || '').trim();
+  const msg = textEl.textContent;
+  const text = t('errorTime') + ': ' + time + '\n' +
+    t('errorModel') + ': ' + model + '\n' +
+    t('errorStatus') + ': ' + status + '\n' +
+    t('errorMessage') + ': ' + msg;
+  if (!text.trim()) { toast(t('copyFail'), 'error'); return; }
   try {
-    await navigator.clipboard.writeText(msg);
+    await navigator.clipboard.writeText(text);
     toast(t('copied'), 'success');
   } catch {
     // 剪贴板 API 不可用时回退到 textarea 复制
     const ta = document.createElement('textarea');
-    ta.value = msg;
+    ta.value = text;
     document.body.appendChild(ta);
     ta.select();
     try { document.execCommand('copy'); toast(t('copied'), 'success'); } catch { toast(t('copyFail'), 'error'); }

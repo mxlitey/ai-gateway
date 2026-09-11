@@ -27,7 +27,6 @@ export class MysqlKV {
     this.maxConnections = maxConnections;
     this.pool = null;
     this.tableReady = null;
-    this.active = 0;
   }
 
   _getPool() {
@@ -85,29 +84,8 @@ export class MysqlKV {
   }
 
   async _run(sql, params) {
-    this.active++;
-    try {
-      const [rows] = await this._getPool().execute(sql, params);
-      return rows;
-    } finally {
-      this.active--;
-    }
-  }
-
-  /**
-   * 关闭连接池：等待进行中的操作结束，然后把连接归还给主机并置空，
-   * 使连接随请求结束立即断开（而不是等 idleTimeout）。
-   */
-  async close() {
-    // 等待进行中的操作结束（共享计数可安全应对同一实例的并发请求）
-    for (let i = 0; i < 20 && this.pool && this.active > 0; i++) {
-      await new Promise(r => setTimeout(r, 10));
-    }
-    if (this.pool) {
-      await this.pool.end().catch(() => {});
-      this.pool = null;
-      this.tableReady = null;
-    }
+    const [rows] = await this._getPool().execute(sql, params);
+    return rows;
   }
 
   // ── usage:{channelId}:{date} ───────────────────────────────

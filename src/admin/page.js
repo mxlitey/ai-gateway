@@ -191,6 +191,7 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
     <nav class="sidebar-nav" id="sidebar-nav">
       <a class="nav-item active" data-section="dashboard" onclick="navigate('dashboard')"></a>
       <a class="nav-item" data-section="channels" onclick="navigate('channels')"></a>
+      <a class="nav-item" data-section="routes" onclick="navigate('routes')"></a>
       <a class="nav-item" data-section="usage" onclick="navigate('usage')"></a>
       <a class="nav-item" data-section="apikeys" onclick="navigate('apikeys')"></a>
     </nav>
@@ -219,6 +220,20 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
         <table>
           <thead><tr id="ch-thead"></tr></thead>
           <tbody id="ch-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Model Routes (只读展示) -->
+    <section id="section-routes" class="section" style="display:none">
+      <div class="section-header">
+        <h2 id="routes-title"></h2>
+      </div>
+      <div class="info-card" id="routes-info"></div>
+      <div class="table-container" style="margin-top:16px">
+        <table>
+          <thead><tr id="routes-thead"></tr></thead>
+          <tbody id="routes-tbody"></tbody>
         </table>
       </div>
     </section>
@@ -517,6 +532,8 @@ const I18N = {
     modelSearchPlaceholder: '搜索模型…',
     modelSearchEmpty: '未找到匹配的模型。',
     selectUpstream: '请选择上游模型',
+    routesInfo: '以下为各公开模型在当前所有启用渠道中的路由路径（按渠道存储顺序尝试，渠道内密钥随机起点轮换）。如需调整映射，请前往「渠道管理」编辑。',
+    routesNone: '暂无任何模型路由。请在「渠道管理」中为渠道配置「公开模型 → 上游模型」映射。',
   },
 };
 
@@ -640,6 +657,7 @@ function render() {
   renderChannelHeaders();
   renderApiKeyHeaders();
   if (curSection === 'channels') renderChannels();
+  if (curSection === 'routes') renderRoutes();
   if (curSection === 'usage') { renderUsageHeaders(); loadUsage(); }
   if (curSection === 'apikeys') renderApiKeys();
 }
@@ -812,10 +830,57 @@ async function toggleCh(id) {
   if (r && !r.error) { await loadData(); render(); }
 }
 
-// ============ Model Routes ============
+// ============ Model Routes (只读展示) ============
 function channelNameById(id) {
   const ch = channels.find(c => c.id === id);
   return ch ? (ch.name || id) : (id || '-');
+}
+
+function renderRoutes() {
+  document.getElementById('routes-title').textContent = t('modelRoutes');
+  document.getElementById('routes-info').innerHTML = '<p>' + t('routesInfo') + '</p>';
+
+  const head = document.getElementById('routes-thead');
+  head.innerHTML = '<th>' + [t('publicModel'), t('routeTargetCol')].join('</th><th>') + '</th>';
+
+  const tb = document.getElementById('routes-tbody');
+
+  // 汇总所有启用且有密钥渠道的 model_map，公开模型按首次出现顺序排列
+  const rows = [];     // { public, channel, upstream }
+  const order = [];    // 公开模型唯一顺序
+  const idx = new Map();
+  for (const ch of channels) {
+    if (ch.enabled === false || !ch.keys || ch.keys.length === 0) continue;
+    const mm = (ch.model_map && typeof ch.model_map === 'object') ? ch.model_map : {};
+    for (const pub of Object.keys(mm)) {
+      const p = String(pub).trim();
+      const um = String(mm[pub]).trim();
+      if (!p) continue;
+      if (!idx.has(p)) { idx.set(p, order.length); order.push(p); }
+      rows.push({ public: p, channel: ch, upstream: um || p });
+    }
+  }
+
+  if (order.length === 0) {
+    tb.innerHTML = '<tr><td colspan="2" class="empty">' + t('routesNone') + '</td></tr>';
+    return;
+  }
+
+  tb.innerHTML = order.map(p => {
+    const targets = rows.filter(r => r.public === p);
+    const targetHtml = targets.map(r => {
+      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border)">' +
+        '<span>' + esc(r.channel.name || r.channel.id) +
+          ' <span style="color:var(--text-2);font-size:12px">(' + esc(shortHost(r.channel.base_url)) + ')</span></span>' +
+        '<span><code style="background:var(--bg-0);padding:2px 8px;border-radius:4px;font-size:12px;color:var(--primary)">' + esc(r.upstream) + '</code></span>' +
+      '</div>';
+    }).join('');
+
+    return '<tr>' +
+      '<td style="vertical-align:top;white-space:nowrap"><code style="background:var(--bg-0);padding:3px 8px;border-radius:4px;font-size:13px">' + esc(p) + '</code></td>' +
+      '<td style="padding-top:4px;padding-bottom:4px">' + targetHtml + '</td>' +
+    '</tr>';
+  }).join('');
 }
 
 // ============ API Keys ============

@@ -81,22 +81,11 @@ class KVStore {
   }
 
   async incrementUsage(channelId, apiKey, model) {
+    // 仅在有数据库时记录用量；未配置时不做 KV 读-改-写（避免无状态下并发竞态写 blob）
+    if (!this.mysql) return;
     const date = this._todayKey();
     const kid = this._keyId(apiKey);
-    if (this.mysql) {
-      await this.mysql.incrementUsage(channelId, date, kid, model);
-      return;
-    }
-    // KV 回退（读-改-写）
-    const key = `usage:${channelId}:${date}`;
-    let data;
-    try { data = (await this.kv.get(key, 'json')) || {}; } catch { data = {}; }
-    if (!data[kid]) data[kid] = { total: 0, models: {} };
-    const entry = data[kid];
-    entry.total = (entry.total || 0) + 1;
-    const mk = model || '*';
-    entry.models[mk] = (entry.models[mk] || 0) + 1;
-    await this.kv.put(key, JSON.stringify(data));
+    await this.mysql.incrementUsage(channelId, date, kid, model);
   }
 
   // ── 客户端 API Key 用量统计（仅 MySQL 可用；未配置时统计禁用）──
@@ -114,29 +103,10 @@ class KVStore {
   }
 
   async incrementApiKeyUsage(apiKeyId, model, promptTokens = 0, completionTokens = 0, cachedTokens = 0) {
+    // 仅在有数据库时记录用量；未配置时不做 KV 读-改-写（避免无状态下并发竞态写 blob）
+    if (!this.mysql) return;
     const date = this._todayKey();
-    if (this.mysql) {
-      await this.mysql.incrementApiKeyUsage(apiKeyId, model, promptTokens, completionTokens, cachedTokens);
-      return;
-    }
-    // KV 回退（读-改-写）
-    const key = `apikey-usage:${date}`;
-    let data;
-    try { data = (await this.kv.get(key, 'json')) || {}; } catch { data = {}; }
-    const mk = model || '*';
-    if (!data[apiKeyId]) data[apiKeyId] = { requests: 0, prompt_tokens: 0, completion_tokens: 0, cached_tokens: 0, models: {} };
-    const entry = data[apiKeyId];
-    entry.requests += 1;
-    entry.prompt_tokens += promptTokens;
-    entry.completion_tokens += completionTokens;
-    entry.cached_tokens += cachedTokens;
-    if (!entry.models[mk]) entry.models[mk] = { requests: 0, prompt_tokens: 0, completion_tokens: 0, cached_tokens: 0 };
-    const m = entry.models[mk];
-    m.requests += 1;
-    m.prompt_tokens += promptTokens;
-    m.completion_tokens += completionTokens;
-    m.cached_tokens += cachedTokens;
-    await this.kv.put(key, JSON.stringify(data));
+    await this.mysql.incrementApiKeyUsage(apiKeyId, model, promptTokens, completionTokens, cachedTokens);
   }
 
   // ── Error logs (per-channel, per-day, last 100 entries) ──

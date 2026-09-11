@@ -105,6 +105,17 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 .modal h3{font-size:18px;margin-bottom:20px;font-weight:600}
 .modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:24px}
 
+/* 「获取上游模型」独立弹窗 */
+.model-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:200;backdrop-filter:blur(2px)}
+.model-modal{background:var(--bg-2);border:1px solid var(--border);border-radius:12px;padding:28px;width:560px;max-width:92vw;max-height:85vh;display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,.5)}
+.model-modal h3{font-size:18px;margin-bottom:16px;font-weight:600}
+.model-pick-search{margin-bottom:12px;padding:8px 12px;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;color:var(--text-0);outline:none}
+.model-pick-search:focus{border-color:var(--primary)}
+.model-pick-list{flex:1;min-height:180px;max-height:52vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-1);padding:4px}
+.model-pick-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px;color:var(--text-0)}
+.model-pick-item:hover{background:var(--bg-hover)}
+.model-pick-item input{width:auto;flex:0 0 auto}
+
 /* Toast */
 .toast-container{position:fixed;top:20px;right:20px;z-index:200}
 .toast{background:var(--bg-3);border:1px solid var(--border);border-radius:var(--radius);padding:12px 20px;margin-bottom:8px;font-size:14px;animation:slideIn .3s ease;min-width:240px}
@@ -534,6 +545,10 @@ const I18N = {
     fetchingModels: '获取中…',
     modelPickerHelp: '勾选模型即添加到该渠道；也可手动在下方输入。',
     modelPickerEmpty: '未获取到模型，请检查基础 URL 与密钥。',
+    modelPickerLoading: '正在获取上游模型…',
+    modelPickTitle: '选择上游模型',
+    confirmAdd: '确定添加',
+    addedNModels: '已添加 {n} 个模型。',
     routeTargetCol: '目标渠道 / 上游模型',
     modelSearchPlaceholder: '搜索模型…',
     modelSearchEmpty: '未找到匹配的模型。',
@@ -558,8 +573,9 @@ let channels = [];
 let apiKeys = [];
 let curSection = 'dashboard';
 
-// 渠道弹窗中"获取上游模型"拉取到的模型缓存（用于勾选列表 + 搜索过滤）
-let lastFetchedModels = [];
+// 「获取上游模型」弹窗：拉取到的模型列表与勾选状态
+let modelPickList = [];
+let modelPickState = new Set();
 
 // 渠道弹窗中「公开模型 → 上游模型」映射（用于编辑，未保存前暂存于此）
 let modelMapRows = [];
@@ -774,9 +790,7 @@ function showChModal(id) {
     </div>
     <div class="form-group">
       <label>\${t('modelsLabel')}</label>
-      <button type="button" class="btn btn-sm btn-ghost" style="margin-bottom:8px" onclick="fetchUpstreamChannelModels(this)">\${t('fetchModels')}</button>
-      <input id="f-models-search" oninput="renderChannelModelPicker()" placeholder="\${t('modelSearchPlaceholder')}" style="margin-bottom:8px">
-      <div class="model-picker" id="f-models-picker"><div class="model-picker-empty">\${t('modelPickerHelp')}</div></div>
+      <button type="button" class="btn btn-sm btn-ghost" style="margin-bottom:8px" onclick="openModelPickerModal()">\${t('fetchModels')}</button>
       <textarea id="f-models" style="min-height:80px" placeholder="\${t('modelsPlaceholder')}">\${ch ? (ch.models||[]).join('\\n') : ''}</textarea>
     </div>
     <div class="form-group">
@@ -796,58 +810,81 @@ function showChModal(id) {
     typeof k === 'string' ? { key: k, enabled: true } : { key: String(k.key || ''), enabled: k.enabled !== false }
   );
   if (keyRows.length === 0) keyRows.push({ key: '', enabled: true });
-  lastFetchedModels = [];
   mapUpCtx = { sig: '', list: [] };
   openModal(html);
   renderKeyRows();
   renderModelMapRows();
 }
 
-// 获取上游模型并渲染勾选列表（多选，勾选即加入该渠道模型）
-async function fetchUpstreamChannelModels(btn) {
-  const id = document.getElementById('f-ch-id').value;
-  const keys = keyRows.filter(r => r.enabled !== false).map(r => r.key.trim()).filter(Boolean);
-  const body = id
-    ? JSON.stringify({ channel_id: id })
-    : JSON.stringify({
-        base_url: document.getElementById('f-url').value.trim(),
-        keys,
-      });
-  const old = btn.textContent;
-  btn.disabled = true; btn.textContent = t('fetchingModels');
-  const r = await api('/fetch-models', { method: 'POST', body });
-  btn.disabled = false; btn.textContent = old;
-
-  if (!r || r.error) { toast(r?.error || t('failed'), 'error'); return; }
-  lastFetchedModels = r.models || [];
-  // 已选择的模型从文本框读取并回勾
-  renderChannelModelPicker();
-}
-
-function renderChannelModelPicker() {
-  const box = document.getElementById('f-models-picker');
-  if (!box) return;
-  const q = String(document.getElementById('f-models-search').value || '').trim().toLowerCase();
+// 打开「获取上游模型」弹窗：拉取列表 → 搜索筛选 → 单选/多选 → 确定加入模型列表
+async function openModelPickerModal() {
+  const idEl = document.getElementById('f-ch-id');
+  const urlEl = document.getElementById('f-url');
   const ta = document.getElementById('f-models');
-  const set = new Set(ta.value.split('\\n').map(s=>s.trim()).filter(Boolean));
-  const list = lastFetchedModels.filter(m => !q || String(m).toLowerCase().includes(q));
-  if (lastFetchedModels.length === 0) {
+  const keys = keyRows.filter(r => r.enabled !== false).map(r => r.key.trim()).filter(Boolean);
+  const body = (idEl && idEl.value)
+    ? JSON.stringify({ channel_id: idEl.value })
+    : JSON.stringify({ base_url: urlEl ? urlEl.value.trim() : '', keys });
+
+  const ov = document.createElement('div');
+  ov.className = 'model-modal-overlay';
+  ov.innerHTML = '<div class="model-modal" id="model-modal-box">' +
+    '<h3>' + t('modelPickTitle') + '</h3>' +
+    '<input id="model-pick-search" class="model-pick-search" placeholder="' + t('modelSearchPlaceholder') + '">' +
+    '<div class="model-pick-list" id="model-pick-list"><div class="model-picker-empty">' + t('modelPickerLoading') + '</div></div>' +
+    '<div class="modal-actions">' +
+      '<button class="btn btn-ghost" onclick="closeModelPicker()">' + t('cancel') + '</button>' +
+      '<button class="btn btn-primary" onclick="confirmModelPick()">' + t('confirmAdd') + '</button>' +
+    '</div>' +
+  '</div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('mousedown', e => { if (e.target === ov) closeModelPicker(); });
+  ov.querySelector('#model-pick-search').addEventListener('input', e => renderModelPickList(e.target.value));
+
+  let res = null;
+  try { res = await api('/fetch-models', { method: 'POST', body }); } catch (e) { res = null; }
+  const list = (res && !res.error && Array.isArray(res.models)) ? res.models : [];
+  if (list.length === 0) {
+    const box = ov.querySelector('#model-pick-list');
     box.innerHTML = '<div class="model-picker-empty">' + t('modelPickerEmpty') + '</div>';
     return;
   }
-  box.innerHTML = list.length ? list.map(m => {
-    const checked = set.has(m) ? ' checked' : '';
-    return '<label><input type="checkbox" class="model-cb" value="' + esc(m) + '"' + checked + ' onclick="toggleChannelModel(this,\\'' + esc(m) + '\\')">' + esc(m) + '</label>';
-  }).join('') : '<div class="model-picker-empty">' + t('modelSearchEmpty') + '</div>';
+  // 已选中的模型默认勾选
+  modelPickState = new Set(ta.value.split(String.fromCharCode(10)).map(s => s.trim()).filter(Boolean));
+  modelPickList = list;
+  renderModelPickList('');
 }
 
-function toggleChannelModel(cb, model) {
+async function renderModelPickList(q) {
+  const box = document.getElementById('model-pick-list');
+  if (!box) return;
+  const query = String(q || '').trim().toLowerCase();
+  const list = modelPickList.filter(m => !query || String(m).toLowerCase().includes(query));
+  box.innerHTML = list.length
+    ? list.map(m => {
+        const checked = modelPickState.has(m) ? ' checked' : '';
+        return '<label class="model-pick-item"><input type="checkbox" class="model-pick-cb" value="' + esc(m) + '"' + checked + ' onchange="toggleModelPick(this,\\'' + esc(m) + '\\')">' + esc(m) + '</label>';
+      }).join('')
+    : '<div class="model-picker-empty">' + t('modelSearchEmpty') + '</div>';
+}
+
+function toggleModelPick(cb, m) {
+  if (cb.checked) modelPickState.add(m);
+  else modelPickState.delete(m);
+}
+
+function confirmModelPick() {
   const ta = document.getElementById('f-models');
-  const lines = ta.value.split('\\n').map(s=>s.trim()).filter(Boolean);
-  const set = new Set(lines);
-  if (cb.checked) set.add(model);
-  else set.delete(model);
-  ta.value = Array.from(set).join('\\n');
+  const taLines = ta.value.split(String.fromCharCode(10)).map(s => s.trim()).filter(Boolean);
+  const ordered = [...taLines, ...modelPickList].filter(m => modelPickState.has(m));
+  ta.value = Array.from(new Set(ordered)).join(String.fromCharCode(10));
+  if (modelPickState.size > 0) toast(t('addedNModels').replace('{n}', modelPickState.size));
+  closeModelPicker();
+}
+
+function closeModelPicker() {
+  const ov = document.querySelector('.model-modal-overlay');
+  if (ov) ov.remove();
 }
 
 // ---- 渠道 API 密钥（支持逐条启用 / 禁用） ----

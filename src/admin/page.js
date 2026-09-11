@@ -163,6 +163,7 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
     <nav class="sidebar-nav" id="sidebar-nav">
       <a class="nav-item active" data-section="dashboard" onclick="navigate('dashboard')"></a>
       <a class="nav-item" data-section="channels" onclick="navigate('channels')"></a>
+      <a class="nav-item" data-section="routes" onclick="navigate('routes')"></a>
       <a class="nav-item" data-section="usage" onclick="navigate('usage')"></a>
       <a class="nav-item" data-section="apikeys" onclick="navigate('apikeys')"></a>
     </nav>
@@ -198,6 +199,20 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
         <table>
           <thead><tr id="ch-thead"></tr></thead>
           <tbody id="ch-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Model Routes -->
+    <section id="section-routes" class="section" style="display:none">
+      <div class="section-header">
+        <h2 id="rt-title"></h2>
+        <button class="btn btn-primary" onclick="showRouteModal()" id="rt-add-btn"></button>
+      </div>
+      <div class="table-container">
+        <table>
+          <thead><tr id="rt-thead"></tr></thead>
+          <tbody id="rt-tbody"></tbody>
         </table>
       </div>
     </section>
@@ -353,6 +368,20 @@ const I18N = {
     errorsToday: 'errors today',
     keysTotal: 'keys',
     cooldown: 'Cooldown',
+    modelRoutes: 'Model Routes',
+    addRoute: 'Add Route',
+    editRoute: 'Edit Route',
+    routeName: 'Name (Alias)',
+    publicModel: 'Public Model',
+    targetChannel: 'Target Channel',
+    upstreamModel: 'Upstream Model',
+    publicModelHelp: 'The model name clients will use. Must match the model in requests.',
+    upstreamModelHelp: 'The actual model name sent to the upstream channel. Defaults to the public model.',
+    noRoutes: 'No routes yet. Click "Add Route" to create one.',
+    routeCreated: 'Route created',
+    routeUpdated: 'Route updated',
+    routeModelRequired: 'Public model and Target channel are required',
+    selectChannel: 'Select a channel',
   },
   zh: {
     loginSub: '请输入管理员密码或 API Key 继续',
@@ -461,6 +490,20 @@ const I18N = {
     errorsToday: '个错误',
     keysTotal: '个密钥',
     cooldown: '冷却倒计时',
+    modelRoutes: '模型路由',
+    addRoute: '添加路由',
+    editRoute: '编辑路由',
+    routeName: '名称（别名）',
+    publicModel: '公开模型名',
+    targetChannel: '目标渠道',
+    upstreamModel: '上游模型',
+    publicModelHelp: '客户端使用的模型名，需与请求中的 model 一致。',
+    upstreamModelHelp: '实际转发给上游渠道的模型名，默认等于公开模型名。',
+    noRoutes: '暂无路由，点击「添加路由」创建。',
+    routeCreated: '路由已创建',
+    routeUpdated: '路由已更新',
+    routeModelRequired: '公开模型名和目标渠道不能为空',
+    selectChannel: '选择一个渠道',
   },
 };
 
@@ -473,6 +516,7 @@ function renderAll() { renderLogin(); renderSidebar(); render(); }
 let token = localStorage.getItem('ag_token');
 let channels = [];
 let apiKeys = [];
+let routes = [];
 let curSection = 'dashboard';
 
 // ============ API ============
@@ -497,14 +541,16 @@ async function api(path, opts = {}) {
 let apiKeyUsage = {};
 
 async function loadData() {
-  const [ch, ak, aku] = await Promise.all([
+  const [ch, ak, aku, rt] = await Promise.all([
     api('/channels'),
     api('/apikeys'),
     api('/apikeys/usage'),
+    api('/routes'),
   ]);
   channels = ch || [];
   apiKeys = ak || [];
   apiKeyUsage = (aku && aku.keys) || {};
+  routes = rt || [];
 }
 
 // ============ Auth ============
@@ -561,7 +607,7 @@ function renderLogin() {
 }
 
 function renderSidebar() {
-  const navMap = { dashboard: 'dashboard', channels: 'channels', usage: 'usageMonitor', apikeys: 'apiKeys' };
+  const navMap = { dashboard: 'dashboard', channels: 'channels', routes: 'modelRoutes', usage: 'usageMonitor', apikeys: 'apiKeys' };
   document.querySelectorAll('#sidebar-nav .nav-item').forEach(el => {
     el.textContent = t(navMap[el.dataset.section]);
     el.classList.toggle('active', el.dataset.section === curSection);
@@ -587,10 +633,20 @@ function navigate(section) {
 function render() {
   renderDashboard();
   renderChannelHeaders();
+  renderRouteHeaders();
   renderApiKeyHeaders();
   if (curSection === 'channels') renderChannels();
+  if (curSection === 'routes') renderRoutes();
   if (curSection === 'usage') { renderUsageHeaders(); loadUsage(); }
   if (curSection === 'apikeys') renderApiKeys();
+}
+
+function renderRouteHeaders() {
+  const tb = document.getElementById('rt-title');
+  if (!tb) return;
+  document.getElementById('rt-title').textContent = t('modelRoutes');
+  document.getElementById('rt-add-btn').textContent = t('addRoute');
+  document.getElementById('rt-thead').innerHTML = '<th>'+[t('routeName'),t('publicModel'),t('targetChannel'),t('upstreamModel'),t('priority'),t('weight'),t('status'),t('actions')].join('</th><th>')+'</th>';
 }
 
 function renderChannelHeaders() {
@@ -726,6 +782,121 @@ async function saveCh(id) {
 async function toggleCh(id) {
   const r = await api('/channels/' + id + '/toggle', { method: 'PATCH' });
   if (r && !r.error) { await loadData(); render(); }
+}
+
+// ============ Model Routes ============
+function channelNameById(id) {
+  const ch = channels.find(c => c.id === id);
+  return ch ? (ch.name || id) : (id || '-');
+}
+
+function renderRoutes() {
+  const tb = document.getElementById('rt-tbody');
+  if (!routes.length) {
+    tb.innerHTML = '<tr><td colspan="8" class="empty">' + t('noRoutes') + '</td></tr>';
+    return;
+  }
+  tb.innerHTML = routes.map(r => \`
+    <tr>
+      <td><strong>\${esc(r.name)}</strong></td>
+      <td style="font-family:monospace;font-size:13px">\${esc(r.model)}</td>
+      <td>\${esc(channelNameById(r.channel_id))}</td>
+      <td style="font-family:monospace;font-size:13px">\${esc(r.upstream_model || '-')}</td>
+      <td>\${r.priority}</td>
+      <td>\${r.weight}</td>
+      <td><span class="badge \${r.enabled ? 'badge-on' : 'badge-off'}">\${r.enabled ? t('on') : t('off')}</span></td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-ghost" onclick="showRouteModal('\${r.id}')">\${t('edit')}</button>
+        <button class="btn btn-sm btn-ghost" onclick="toggleRoute('\${r.id}')">\${r.enabled ? t('disable') : t('enable')}</button>
+        <button class="btn btn-sm btn-danger" onclick="confirmDel('route','\${r.id}','\${esc(r.model)}')">\${t('delete')}</button>
+      </td>
+    </tr>
+  \`).join('');
+}
+
+function routeChannelSelect(selectedId) {
+  if (!channels.length) return '<div class="form-help">' + t('noChannels') + '</div>';
+  return '<select id="f-rt-channel">' +
+    '<option value="">' + t('selectChannel') + '</option>' +
+    channels.map(ch =>
+      '<option value="' + ch.id + '"' + (ch.id === selectedId ? ' selected' : '') + '>' + esc(ch.name) + '</option>'
+    ).join('') +
+  '</select>';
+}
+
+function showRouteModal(id) {
+  const r = id ? routes.find(x => x.id === id) : null;
+  const title = r ? t('editRoute') : t('addRoute');
+  const html = \`
+    <h3>\${title}</h3>
+    <div class="form-group">
+      <label>\${t('routeName')}</label>
+      <input id="f-rt-name" value="\${r ? esc(r.name) : ''}" placeholder="\${r ? '' : esc(t('publicModel'))}">
+    </div>
+    <div class="form-group">
+      <label>\${t('publicModel')}</label>
+      <input id="f-rt-model" value="\${r ? esc(r.model) : ''}" placeholder="my-model">
+      <div class="form-help">\${t('publicModelHelp')}</div>
+    </div>
+    <div class="form-group">
+      <label>\${t('targetChannel')}</label>
+      \${routeChannelSelect(r ? r.channel_id : '')}
+    </div>
+    <div class="form-group">
+      <label>\${t('upstreamModel')}</label>
+      <input id="f-rt-upstream" value="\${r ? esc(r.upstream_model || '') : ''}">
+      <div class="form-help">\${t('upstreamModelHelp')}</div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>\${t('priority')}</label>
+        <input type="number" id="f-rt-pri" value="\${r ? r.priority : 0}" min="0">
+        <div class="form-help">\${t('priorityHelp')}</div>
+      </div>
+      <div class="form-group">
+        <label>\${t('weight')}</label>
+        <input type="number" id="f-rt-wt" value="\${r ? r.weight : 10}" min="1">
+        <div class="form-help">\${t('weightHelp')}</div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">\${t('cancel')}</button>
+      <button class="btn btn-primary" onclick="saveRoute('\${id || ''}')">\${t('save')}</button>
+    </div>
+  \`;
+  openModal(html);
+}
+
+async function saveRoute(id) {
+  const model = document.getElementById('f-rt-model').value.trim();
+  const channel_id = document.getElementById('f-rt-channel').value;
+  if (!model || !channel_id) { toast(t('routeModelRequired'), 'error'); return; }
+
+  const name = document.getElementById('f-rt-name').value.trim() || model;
+  const upstream_model = document.getElementById('f-rt-upstream').value.trim();
+  const priority = parseInt(document.getElementById('f-rt-pri').value) || 0;
+  const weight = parseInt(document.getElementById('f-rt-wt').value) || 1;
+
+  const body = JSON.stringify({ name, model, channel_id, upstream_model, priority, weight });
+  const r = id
+    ? await api('/routes/' + id, { method: 'PUT', body })
+    : await api('/routes', { method: 'POST', body });
+
+  if (r && !r.error) {
+    toast(id ? t('routeUpdated') : t('routeCreated'), 'success');
+    closeModal();
+    await loadData();
+    render();
+  } else {
+    toast(r?.error || t('saveFailed'), 'error');
+  }
+}
+
+async function toggleRoute(id) {
+  const r = routes.find(x => x.id === id);
+  if (!r) return;
+  const res = await api('/routes/' + id, { method: 'PATCH', body: JSON.stringify({ enabled: !r.enabled }) });
+  if (res && !res.error) { await loadData(); render(); }
 }
 
 // ============ API Keys ============
@@ -1100,8 +1271,8 @@ function confirmDel(type, id, name) {
   \`);
   document.getElementById('del-btn').onclick = async () => {
     closeModal();
-    const path = type === 'channel' ? '/channels/' : '/apikeys/';
-    const r = await api(path + id, { method: 'DELETE' });
+    const paths = { channel: '/channels/', apikey: '/apikeys/', route: '/routes/' };
+    const r = await api((paths[type] || '/routing/') + id, { method: 'DELETE' });
     if (r && !r.error) {
       toast(t('deleted'), 'success');
       await loadData();

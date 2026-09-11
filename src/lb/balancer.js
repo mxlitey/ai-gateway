@@ -4,71 +4,85 @@ export class LoadBalancer {
   }
 
   /**
-   * Select ordered list of targets for a given model.
-   * Targets are ordered by: priority group → weighted shuffle → round-robin keys.
-   * The caller should try them in order (failover).
-   * @param {string} model
-   * @param {string[]|null} allowedChannelIds - if set, only these channels are used
+   * 基于模型路由表解析有序目标列表（严格只走路由，无匹配则报错）。
+   *
+   * 路由规则：
+   *   - 路由公开模型名与请求 model 完全一致（trim 后比较）才命中
+   *   - 仅启用、且目标渠道启用且有 key 的路由参与
+   *   - 客户端 key 的 channel_ids 限定时，非允许渠道的路由被过滤
+   *   - 命中后按 priority 分组（数值越小越优先），组内按权重重放
+   *   - 每个目标渠道按自身 key 顺序（随机起点轮换）展开，key 与上游模型
+   *     组合去重，避免同一渠道下多条同名路由重复
+   *
+   * 返回 target 结构：{ channel, key, model（上游模型名）, routeId, publicModel（公开名） }。
+   *
+   * @param {string} model 客户端请求的公开模型名
+   * @param {string[]|null} allowedChannelIds - 客户端 key 允许的渠道，缺省不限制
    */
   async selectTarget(model, allowedChannelIds = null) {
+    const routes = (await this.store.getRoutes()) || [];
     const channels = await this.store.getChannels();
-    let enabled = channels.filter(ch => ch.enabled && ch.keys?.length > 0);
+    const channelMap = new Map(channels.map(ch => [ch.id, ch]));
 
-    if (allowedChannelIds && allowedChannelIds.length > 0) {
-      enabled = enabled.filter(ch => allowedChannelIds.includes(ch.id));
+    const allowedSet = (allowedChannelIds && allowedChannelIds.length > 0)
+      ? new Set(allowedChannelIds)
+      : null;
+
+    const requested = (model || '').trim();
+
+    // 严格只走路由
+    const matched = routes.filter(r => {
+      if (r.enabled === false) return false;
+      if (String(r.model || '').trim() !== requested) return false;
+      const ch = channelMap.get(r.channel_id);
+      if (!ch || ch.enabled === false || !ch.keys || ch.keys.length === 0) return false;
+      if (allowedSet && !allowedSet.has(ch.id)) return false;
+      return true;
+    });
+
+    if (matched.length === 0) {
+      return { targets: [], error: 'No available route for model: ' + model };
     }
 
-    // Only channels with a manually configured model list are eligible.
-    // A channel that matches is one whose configured list contains the
-    // requested model (exact or prefix match).
-    let compatible = enabled.filter(ch =>
-      ch.models && ch.models.length > 0 &&
-      ch.models.some(m => m === model || model.startsWith(m))
-    );
-
-    if (compatible.length === 0) {
-      return { targets: [], error: 'No available channel for model: ' + model };
-    }
-
-    // Pre-load rate-limit data in parallel
+    // 预加载相关渠道限流状态
     const rateLimitMap = new Map();
-    const preloadTasks = [];
-    for (const ch of compatible) {
-      preloadTasks.push(
-        this.store.getRateLimits(ch.id).then(d => rateLimitMap.set(ch.id, d))
-      );
-    }
-    if (preloadTasks.length > 0) {
-      await Promise.all(preloadTasks);
-    }
+    const chIds = new Set(matched.map(r => r.channel_id));
+    await Promise.all([...chIds].map(id =>
+      this.store.getRateLimits(id).then(d => rateLimitMap.set(id, d))
+    ));
 
-    // Group by priority (lower number = higher priority)
+    const publicModel = requested;
+
+    // 按优先级分组（数值越小越优先），组内按权重重放
     const groups = {};
-    for (const ch of compatible) {
-      const p = ch.priority ?? 0;
+    for (const r of matched) {
+      const p = r.priority ?? 0;
       if (!groups[p]) groups[p] = [];
-      groups[p].push(ch);
+      groups[p].push(r);
     }
-
     const priorities = Object.keys(groups).map(Number).sort((a, b) => a - b);
 
-    // Build ordered target list
     const allTargets = [];
+    const seen = new Set(); // 去重：channelId:key:upstreamModel
     for (const p of priorities) {
-      const group = groups[p];
-      const sorted = this.weightedShuffle(group);
-      for (const ch of sorted) {
+      const ordered = this.weightedShuffle(groups[p]);
+      for (const route of ordered) {
+        const ch = channelMap.get(route.channel_id);
+        const upstream = String(route.upstream_model || route.model || '').trim() || requested;
         const keys = await this.getOrderedKeys(ch);
         for (const key of keys) {
-          allTargets.push({ channel: ch, key });
+          const dedupeKey = `${ch.id}:${key}:${upstream}`;
+          if (seen.has(dedupeKey)) continue;
+          seen.add(dedupeKey);
+          allTargets.push({ channel: ch, key, model: upstream, routeId: route.id, publicModel });
         }
       }
     }
 
-    // Filter targets by 429 rate-limit state
+    // 按 429 限流状态过滤
     const targets = allTargets.filter(t => {
       const rlData = rateLimitMap.get(t.channel.id) || {};
-      return !this.store.isRateLimitedWithData(t.key, model, rlData);
+      return !this.store.isRateLimitedWithData(t.key, publicModel, rlData);
     });
 
     if (targets.length === 0 && allTargets.length > 0) {
@@ -76,7 +90,7 @@ export class LoadBalancer {
     }
 
     if (targets.length === 0) {
-      return { targets: [], error: 'No available channel for model: ' + model };
+      return { targets: [], error: 'No available route for model: ' + model };
     }
 
     return { targets };

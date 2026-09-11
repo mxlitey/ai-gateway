@@ -47,6 +47,15 @@ class KVStore {
     await this.set('config:apikeys', keys);
   }
 
+  // ── Model routes (路由表：公开模型名 → 渠道 + 上游模型) ──
+  async getRoutes() {
+    return (await this.get('config:routes')) || [];
+  }
+
+  async saveRoutes(routes) {
+    await this.set('config:routes', routes);
+  }
+
   // ── Per-key usage tracking (MySQL 原子计数；无 MySQL 时回退 KV 读-改-写) ──
   // 存储格式（MySQL）：usage_counter 表扁平计数，见 mysql-kv.js
   // 兼容格式（KV 回退）：usage:{channelId}:{date} → { "keyId1": { total, models: { m: N } }, ... }

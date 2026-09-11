@@ -79,6 +79,81 @@ export async function handleAdminApi(request, env, store) {
       return jsonRes(channels[idx]);
     }
 
+    // --- Model Routes（模型路由表）---
+    if (path === '/routes' && method === 'GET') {
+      return jsonRes(await store.getRoutes());
+    }
+
+    if (path === '/routes' && method === 'POST') {
+      const data = await request.json();
+      if (!data.model || !data.channel_id) {
+        return jsonRes({ error: 'model and channel_id are required' }, 400);
+      }
+      const routes = await store.getRoutes();
+      const route = {
+        id: crypto.randomUUID(),
+        name: data.name?.trim() || data.model.trim(),
+        model: data.model.trim(),
+        channel_id: data.channel_id,
+        upstream_model: (data.upstream_model || '').trim() || data.model.trim(),
+        priority: parseInt(data.priority) || 0,
+        weight: Math.max(1, parseInt(data.weight) || 1),
+        enabled: data.enabled !== false,
+        created_at: new Date().toISOString(),
+      };
+      routes.push(route);
+      await store.saveRoutes(routes);
+      return jsonRes(route, 201);
+    }
+
+    // Match /routes/:id
+    const routeMatch = path.match(/^\/routes\/([^/]+)$/);
+    if (routeMatch) {
+      const id = routeMatch[1];
+
+      if (method === 'PUT') {
+        const data = await request.json();
+        const routes = await store.getRoutes();
+        const idx = routes.findIndex(r => r.id === id);
+        if (idx === -1) return jsonRes({ error: 'Route not found' }, 404);
+
+        const r = routes[idx];
+        routes[idx] = {
+          ...r,
+          name: data.name?.trim() ?? r.name,
+          model: data.model?.trim() ?? r.model,
+          channel_id: data.channel_id ?? r.channel_id,
+          upstream_model: data.upstream_model !== undefined
+            ? ((data.upstream_model || '').trim() || routes[idx].model || '')
+            : r.upstream_model,
+          priority: data.priority !== undefined ? (parseInt(data.priority) || 0) : r.priority,
+          weight: data.weight !== undefined ? Math.max(1, parseInt(data.weight) || 1) : r.weight,
+          enabled: data.enabled ?? r.enabled,
+          id,
+        };
+        await store.saveRoutes(routes);
+        return jsonRes(routes[idx]);
+      }
+
+      if (method === 'DELETE') {
+        const routes = await store.getRoutes();
+        const filtered = routes.filter(r => r.id !== id);
+        if (filtered.length === routes.length) return jsonRes({ error: 'Route not found' }, 404);
+        await store.saveRoutes(filtered);
+        return jsonRes({ success: true });
+      }
+
+      if (method === 'PATCH') {
+        const data = await request.json();
+        const routes = await store.getRoutes();
+        const idx = routes.findIndex(r => r.id === id);
+        if (idx === -1) return jsonRes({ error: 'Route not found' }, 404);
+        if (data.enabled !== undefined) routes[idx].enabled = data.enabled;
+        await store.saveRoutes(routes);
+        return jsonRes(routes[idx]);
+      }
+    }
+
     // --- Usage ---
     if (path === '/usage' && method === 'GET') {
       const date = url.searchParams.get('date') || new Date().toISOString().slice(0, 10);

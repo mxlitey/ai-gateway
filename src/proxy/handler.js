@@ -89,6 +89,9 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
 
         console.log(`[proxy][claude] -> ${target.channel.name} ${targetUrl}${round > 0 ? ` (retry #${round})` : ''}`);
 
+        // 路由改写：把客户端的公开模型名替换为目标渠道的真实上游模型名
+        openaiBody.model = target.model;
+
         const headers = new Headers();
         headers.set('Content-Type', 'application/json');
         headers.set('Authorization', `Bearer ${target.key}`);
@@ -236,6 +239,9 @@ async function handleResponses(request, url, body, store, allowedChannelIds, cli
 
         console.log(`[proxy][responses] -> ${target.channel.name} ${targetUrl}${round > 0 ? ` (retry #${round})` : ''}`);
 
+        // 路由改写：把客户端的公开模型名替换为目标渠道的真实上游模型名
+        openaiBody.model = target.model;
+
         const headers = new Headers();
         headers.set('Content-Type', 'application/json');
         headers.set('Authorization', `Bearer ${target.key}`);
@@ -381,6 +387,9 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
 
         console.log(`[proxy] -> ${target.channel.name} ${targetUrl}${round > 0 ? ` (retry #${round})` : ''}`);
 
+        // 路由改写：把客户端的公开模型名替换为目标渠道的真实上游模型名
+        if (target.model) body.model = target.model;
+
         const headers = new Headers();
         headers.set('Content-Type', 'application/json');
         headers.set('Authorization', `Bearer ${target.key}`);
@@ -515,21 +524,20 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
 }
 
 async function handleModels(store, allowedChannelIds) {
-  const channels = await store.getChannels();
-  let enabled = channels.filter(ch => ch.enabled);
-  if (allowedChannelIds && allowedChannelIds.length > 0) {
-    enabled = enabled.filter(ch => allowedChannelIds.includes(ch.id));
-  }
+  const routes = (await store.getRoutes()) || [];
+  const allowedSet = (allowedChannelIds && allowedChannelIds.length > 0)
+    ? new Set(allowedChannelIds)
+    : null;
 
-  // 收集渠道手动配置的模型列表，按 model id 去重
-  const modelMap = new Map(); // model id -> { id, owned_by }
-  for (const ch of enabled) {
-    if (ch.models?.length > 0) {
-      for (const m of ch.models) {
-        if (!modelMap.has(m)) {
-          modelMap.set(m, { id: m, owned_by: ch.name });
-        }
-      }
+  // 返回路由表中公开模型名（去重），而非上游渠道模型
+  const modelMap = new Map(); // 公开模型名 -> { id, owned_by }
+  for (const r of routes) {
+    if (r.enabled === false) continue;
+    const pub = String(r.model || '').trim();
+    if (!pub) continue;
+    if (allowedSet && !allowedSet.has(r.channel_id)) continue;
+    if (!modelMap.has(pub)) {
+      modelMap.set(pub, { id: pub, owned_by: r.name || r.channel_id });
     }
   }
 

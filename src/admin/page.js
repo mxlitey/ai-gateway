@@ -147,8 +147,15 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 .map-row{display:flex;align-items:center;gap:8px;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px}
 .map-row input{flex:1;min-width:0}
 .map-arrow{color:var(--text-2);font-size:14px;flex:0 0 auto}
+.map-up-btn{flex:1.2;min-width:0;display:flex;align-items:center;justify-content:space-between;gap:6px;padding:8px 10px;background:var(--bg-0);border:1px solid var(--border);border-radius:6px;color:var(--text-0);font-size:14px;cursor:pointer;text-align:left;overflow:hidden}
+.map-up-btn:hover{border-color:var(--primary)}
+.map-up-btn .map-up-caret{color:var(--text-2);flex:0 0 auto}
 .map-del{flex:0 0 auto;width:32px;height:32px;padding:0;display:inline-flex;align-items:center;justify-content:center;border:1px solid rgba(239,68,68,.3);color:var(--danger);background:transparent;border-radius:6px;cursor:pointer}
 .map-del:hover{background:var(--danger);color:#fff}
+#up-picker label{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;margin-bottom:6px;color:var(--text-1);font-weight:400}
+#up-picker input[type="radio"]{width:auto;flex:0 0 auto}
+#up-picker label:hover{color:var(--text-0)}
+#up-picker label.sel{color:var(--primary);font-weight:600}
 
 /* 竖屏小屏补充适配 */
 @media (max-width: 640px){
@@ -557,6 +564,9 @@ const I18N = {
     addMapping: '添加映射',
     mapPublicModelPh: '公开模型名',
     mapUpstreamPh: '上游模型名',
+    modelPickerNone: '尚无映射。点击上方「获取上游模型」加载上游列表，或直接「添加映射」后点击 → 选择上游模型。',
+    modelsFetchedPre: '已获取上游模型 ',
+    modelsFetchedPost: ' 个。点击每行右侧按钮选择该行上游模型。',
   },
 };
 
@@ -768,14 +778,8 @@ function showChModal(id) {
       <textarea id="f-keys" placeholder="\${t('keysPlaceholder')}">\${ch ? (ch.keys||[]).join('\\n') : ''}</textarea>
     </div>
     <div class="form-group">
-      <label>\${t('modelsLabel')}</label>
-      <button type="button" class="btn btn-sm btn-ghost" style="margin-bottom:8px" onclick="fetchUpstreamChannelModels(this)">\${t('fetchModels')}</button>
-      <input id="f-models-search" oninput="renderChannelModelPicker()" placeholder="\${t('modelSearchPlaceholder')}" style="margin-bottom:8px">
-      <div class="model-picker" id="f-models-picker"><div class="model-picker-empty">\${t('modelPickerHelp')}</div></div>
-      <textarea id="f-models" style="min-height:80px" placeholder="\${t('modelsPlaceholder')}">\${ch ? (ch.models||[]).join('\\n') : ''}</textarea>
-    </div>
-    <div class="form-group">
       <label>\${t('modelMapLabel')}</label>
+      <button type="button" class="btn btn-sm btn-ghost" style="margin:0 auto 8px;width:100%" onclick="fetchUpstreamChannelModels(this)">\${t('fetchModels')}</button>
       <div id="f-modelmap"></div>
       <button type="button" class="btn btn-sm btn-ghost" style="width:100%" onclick="addModelMapRow()">+ \${t('addMapping')}</button>
       <div class="form-help">\${t('modelMapHelp')}</div>
@@ -793,7 +797,47 @@ function showChModal(id) {
   renderModelMapRows();
 }
 
-// 获取上游模型并渲染勾选列表（多选，勾选即加入该渠道模型）
+// ---- 公开模型 → 上游模型 映射编辑 ----
+
+// 正在为哪一行(Mapping 索引)选择上游模型
+let modelUpstreamRow = -1;
+
+function renderModelMapRows() {
+  const box = document.getElementById('f-modelmap');
+  if (!box) return;
+  if (modelMapRows.length === 0) {
+    box.innerHTML = '<div class="model-picker-empty">' + t('modelPickerNone') + '</div>';
+    return;
+  }
+  box.innerHTML = modelMapRows.map((row, i) =>
+    '<div class="map-row" data-i="' + i + '">' +
+      '<input class="map-pub" value="' + esc(row.public) + '" placeholder="' + t('mapPublicModelPh') + '" oninput="updateModelMapRow(' + i + ')">' +
+      '<span class="map-arrow">→</span>' +
+      '<button type="button" class="map-up-btn" onclick="openUpstreamPicker(' + i + ')" title="' + t('selectUpstream') + '">' +
+        esc(row.upstream || '') + '<span class="map-up-caret">▾</span>' +
+      '</button>' +
+      '<button type="button" class="map-del" onclick="removeModelMapRow(' + i + ')">✕</button>' +
+    '</div>'
+  ).join('');
+}
+
+function updateModelMapRow(i) {
+  const rowEl = document.querySelector('.map-row[data-i="' + i + '"]');
+  if (!rowEl) return;
+  modelMapRows[i].public = rowEl.querySelector('.map-pub').value.trim();
+}
+
+function addModelMapRow(pub, upstream) {
+  modelMapRows.push({ public: pub || '', upstream: upstream || '' });
+  renderModelMapRows();
+}
+
+function removeModelMapRow(i) {
+  modelMapRows.splice(i, 1);
+  renderModelMapRows();
+}
+
+// 获取上游模型并缓存列表，作为映射上游模型的可选项
 async function fetchUpstreamChannelModels(btn) {
   const id = document.getElementById('f-ch-id').value;
   const body = id
@@ -809,84 +853,69 @@ async function fetchUpstreamChannelModels(btn) {
 
   if (!r || r.error) { toast(r?.error || t('failed'), 'error'); return; }
   lastFetchedModels = r.models || [];
-  // 已选择的模型从文本框读取并回勾
-  renderChannelModelPicker();
+  toast(t('modelsFetchedPre') + lastFetchedModels.length + t('modelsFetchedPost'), 'success');
 }
 
-function renderChannelModelPicker() {
-  const box = document.getElementById('f-models-picker');
+// 点击某行的上游模型 → 打开可搜索选择弹窗
+function openUpstreamPicker(i) {
+  modelUpstreamRow = i;
+  const html = '' +
+    '<h3 style="margin-bottom:12px">' + t('selectUpstream') + '</h3>' +
+    '<input id="up-search" oninput="renderUpstreamPickOptions()" placeholder="' + t('modelSearchPlaceholder') + '" style="margin-bottom:8px" autofocus>' +
+    '<div class="model-picker" id="up-picker"></div>' +
+    '<div class="modal-actions">' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+      '<button class="btn btn-ghost" onclick="fetchUpstreamModal(this)">' + t('fetchModels') + '</button>' +
+    '</div>';
+  openModal(html);
+  renderUpstreamPickOptions();
+}
+
+function fetchUpstreamModal(btn) {
+  const id = document.getElementById('f-ch-id').value;
+  const body = id
+    ? JSON.stringify({ channel_id: id })
+    : JSON.stringify({
+        base_url: document.getElementById('f-url').value.trim(),
+        keys: document.getElementById('f-keys').value.split('\\n').map(s=>s.trim()).filter(Boolean),
+      });
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = t('fetchingModels');
+  api('/fetch-models', { method: 'POST', body }).then(r => {
+    btn.disabled = false; btn.textContent = old;
+    if (!r || r.error) { toast(r?.error || t('failed'), 'error'); return; }
+    lastFetchedModels = r.models || [];
+    renderUpstreamPickOptions();
+  });
+}
+
+function renderUpstreamPickOptions() {
+  const box = document.getElementById('up-picker');
   if (!box) return;
-  const q = String(document.getElementById('f-models-search').value || '').trim().toLowerCase();
-  const ta = document.getElementById('f-models');
-  const set = new Set(ta.value.split('\\n').map(s=>s.trim()).filter(Boolean));
-  const list = lastFetchedModels.filter(m => !q || String(m).toLowerCase().includes(q));
+  const q = String(document.getElementById('up-search').value || '').trim().toLowerCase();
   if (lastFetchedModels.length === 0) {
     box.innerHTML = '<div class="model-picker-empty">' + t('modelPickerEmpty') + '</div>';
     return;
   }
-  box.innerHTML = list.length ? list.map(m => {
-    const checked = set.has(m) ? ' checked' : '';
-    return '<label><input type="checkbox" class="model-cb" value="' + esc(m) + '"' + checked + ' onclick="toggleChannelModel(this,\\'' + esc(m) + '\\')">' + esc(m) + '</label>';
-  }).join('') : '<div class="model-picker-empty">' + t('modelSearchEmpty') + '</div>';
+  const list = lastFetchedModels.filter(m => !q || String(m).toLowerCase().includes(q));
+  box.innerHTML = list.length ? list.map(m =>
+    '<label><input type="radio" name="up-model" value="' + esc(m) + '" onclick="pickUpstreamModel(\\'' + esc(m) + '\\')"> ' + esc(m) + '</label>'
+  ).join('') : '<div class="model-picker-empty">' + t('modelSearchEmpty') + '</div>';
 }
 
-function toggleChannelModel(cb, model) {
-  const ta = document.getElementById('f-models');
-  const lines = ta.value.split('\\n').map(s=>s.trim()).filter(Boolean);
-  const set = new Set(lines);
-  if (cb.checked) {
-    set.add(model);
-    // 勾选模型时，若映射中尚无该公开模型，自动补一条「公开名=上游名」的默认映射
-    if (!modelMapRows.some(r => (r.public || '').trim() === model)) {
-      modelMapRows.push({ public: model, upstream: model });
-      renderModelMapRows();
-    }
-  } else {
-    set.delete(model);
+function pickUpstreamModel(m) {
+  if (modelUpstreamRow >= 0) {
+    modelMapRows[modelUpstreamRow].upstream = m;
+    renderModelMapRows();
   }
-  ta.value = Array.from(set).join('\\n');
-}
-
-// ---- 公开模型 → 上游模型 映射编辑 ----
-function renderModelMapRows() {
-  const box = document.getElementById('f-modelmap');
-  if (!box) return;
-  if (modelMapRows.length === 0) {
-    box.innerHTML = '<div class="model-picker-empty">' + t('modelPickerEmpty') + '</div>';
-    return;
-  }
-  box.innerHTML = modelMapRows.map((row, i) =>
-    '<div class="map-row" data-i="' + i + '">' +
-      '<input class="map-pub" value="' + esc(row.public) + '" placeholder="' + t('mapPublicModelPh') + '" oninput="updateModelMapRow(' + i + ')">' +
-      '<span class="map-arrow">→</span>' +
-      '<input class="map-up" value="' + esc(row.upstream) + '" placeholder="' + t('mapUpstreamPh') + '" oninput="updateModelMapRow(' + i + ')">' +
-      '<button type="button" class="map-del" onclick="removeModelMapRow(' + i + ')">✕</button>' +
-    '</div>'
-  ).join('');
-}
-
-function updateModelMapRow(i) {
-  const rowEl = document.querySelector('.map-row[data-i="' + i + '"]');
-  if (!rowEl) return;
-  modelMapRows[i].public = rowEl.querySelector('.map-pub').value.trim();
-  modelMapRows[i].upstream = rowEl.querySelector('.map-up').value.trim();
-}
-
-function addModelMapRow(pub, upstream) {
-  modelMapRows.push({ public: pub || '', upstream: upstream || '' });
-  renderModelMapRows();
-}
-
-function removeModelMapRow(i) {
-  modelMapRows.splice(i, 1);
-  renderModelMapRows();
+  modelUpstreamRow = -1;
+  closeModal();
 }
 
 async function saveCh(id) {
   const name = document.getElementById('f-name').value.trim();
   const base_url = document.getElementById('f-url').value.trim();
   const keys = document.getElementById('f-keys').value.split('\\n').map(s=>s.trim()).filter(Boolean);
-  const models = document.getElementById('f-models').value.split('\\n').map(s=>s.trim()).filter(Boolean);
 
   if (!name || !base_url) { toast(t('nameUrlRequired'), 'error'); return; }
 
@@ -898,7 +927,7 @@ async function saveCh(id) {
     model_map[p] = ((row.upstream || '').trim()) || p;
   }
 
-  const body = JSON.stringify({ name, base_url, keys, models, model_map });
+  const body = JSON.stringify({ name, base_url, keys, model_map });
   const r = id
     ? await api('/channels/' + id, { method: 'PUT', body })
     : await api('/channels', { method: 'POST', body });

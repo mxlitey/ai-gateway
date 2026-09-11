@@ -521,17 +521,17 @@ async function handleModels(store, allowedChannelIds) {
     enabled = enabled.filter(ch => allowedChannelIds.includes(ch.id));
   }
 
-  // Collect models from manually configured channel model lists only
-  const allModels = []; // { id, owned_by }
+  // 收集渠道手动配置的模型列表，按 model id 去重
+  const modelMap = new Map(); // model id -> { id, owned_by }
   for (const ch of enabled) {
     if (ch.models?.length > 0) {
       for (const m of ch.models) {
-        allModels.push({ id: m, owned_by: ch.name });
+        if (!modelMap.has(m)) {
+          modelMap.set(m, { id: m, owned_by: ch.name });
+        }
       }
     }
   }
-
-  const modelMap = new Map(); // deduplicate by model id
 
   return jsonRes({
     object: 'list',

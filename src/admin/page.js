@@ -1317,7 +1317,7 @@ function renderErrors(errData) {
         '<td style="white-space:nowrap;font-size:13px;color:var(--text-2)">' + time + '</td>' +
         '<td>' + modelCell + '</td>' +
         '<td>' + statusBadge + '</td>' +
-        '<td class="cell-truncate" title="' + esc(e.message) + '" style="font-size:13px">' + esc(e.message) + '</td>' +
+        '<td title="' + esc(e.message) + '" style="font-size:13px;white-space:pre-wrap;word-break:break-all;min-width:220px">' + esc(e.message) + '</td>' +
       '</tr>';
     }).join('');
 

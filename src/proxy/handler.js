@@ -668,7 +668,7 @@ function logError(store, target, model, status, message) {
     upstream_model: target.model || model,
     status,
     key_hint: hint,
-    message: String(message).slice(0, 500),
+    message: String(message).slice(0, 2000),
   }).catch(e => console.error('[errorlog] write failed:', e));
 }
 

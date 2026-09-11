@@ -45,9 +45,17 @@ export async function handleRequest(context) {
   const env = context.env || {};
   const kv = await getKv(env);
   const mysql = await getMysql(env);
-  return worker.fetch(context.request, {
-    ADMIN_PASSWORD: env.ADMIN_PASSWORD || '',
-    KV: kv,
-    MYSQL: mysql,
-  });
+  try {
+    return await worker.fetch(context.request, {
+      ADMIN_PASSWORD: env.ADMIN_PASSWORD || '',
+      KV: kv,
+      MYSQL: mysql,
+    });
+  } finally {
+    // 请求结束立即断开 MySQL 连接并重建单例，避免实例间堆积连接撞到 max_user_connections
+    if (mysql) {
+      await mysql.close().catch(() => {});
+      mysqlPromise = null;
+    }
+  }
 }

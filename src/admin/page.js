@@ -167,8 +167,8 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
   .stat-card{padding:16px}
   .stat-card .value{font-size:26px}
   .form-row{grid-template-columns:1fr;gap:0}
-  .modal{width:100%;max-width:100%;margin:0;border-radius:12px 12px 0 0;padding:20px;max-height:92vh}
-  .modal-overlay{align-items:flex-end}
+  .modal{width:92%;max-width:560px;margin:0;border-radius:12px;padding:20px;max-height:90vh}
+  .modal-overlay{align-items:center}
   .login-card{width:100%;max-width:92vw;padding:32px 24px}
   .info-card{padding:16px}
   .toast-container{top:auto;right:12px;left:12px;bottom:12px}
@@ -714,8 +714,7 @@ function renderChannels() {
   tb.innerHTML = channels.map(c => {
     const mn = channelModelNames(c);
     const modelCell = mn.length
-      ? esc(mn.slice(0, 5).join(', ') + (mn.length > 5 ? '…' : '')) +
-        (mn.length > 5 ? ' <span style="color:var(--text-2);font-size:12px">(' + mn.length + ')</span>' : '')
+      ? mn.length
       : '<span style="color:var(--text-2)">' + t('all') + '</span>';
     return \`
     <tr>
@@ -814,6 +813,7 @@ async function fetchUpstreamChannelModels(btn) {
 
   if (!r || r.error) { toast(r?.error || t('failed'), 'error'); return; }
   lastFetchedModels = r.models || [];
+  refreshUpstreamDatalist();
   // 已选择的模型从文本框读取并回勾
   renderChannelModelPicker();
 }
@@ -849,7 +849,7 @@ function toggleChannelModel(cb, model) {
   } else {
     set.delete(model);
   }
-  ta.value = Array.from(set).join('\n');
+  ta.value = Array.from(set).join('\\n');
 }
 
 // ---- 渠道 API 密钥（支持逐条启用 / 禁用） ----
@@ -893,12 +893,17 @@ function removeKeyRow(i) {
 }
 
 // ---- 公开模型 → 上游模型 映射编辑 ----
-function renderModelMapRows() {
-  const box = document.getElementById('f-modelmap');
+// 刷新上游模型下拉列表（datalist）：输入时同步筛选出匹配项
+function refreshUpstreamDatalist() {
   const dl = document.getElementById('f-upstream-datalist');
   if (dl) {
     dl.innerHTML = lastFetchedModels.map(m => '<option value="' + esc(String(m)) + '"></option>').join('');
   }
+}
+
+function renderModelMapRows() {
+  const box = document.getElementById('f-modelmap');
+  refreshUpstreamDatalist();
   if (!box) return;
   if (modelMapRows.length === 0) { box.innerHTML = ''; return; }
   box.innerHTML = modelMapRows.map((row, i) =>

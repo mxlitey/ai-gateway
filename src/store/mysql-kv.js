@@ -21,7 +21,7 @@ const USAGE_PREFIX = 'usage:';
 const APIKEY_USAGE_PREFIX = 'apikey-usage:';
 
 export class MysqlKV {
-  constructor({ url, maxConnections = 2 }) {
+  constructor({ url, maxConnections = 1 }) {
     if (!url) throw new Error('MysqlKV requires a connection url');
     this.url = url;
     this.maxConnections = maxConnections;
@@ -34,6 +34,8 @@ export class MysqlKV {
       this.pool = mysql.createPool({
         uri: this.url,
         connectionLimit: this.maxConnections,
+        maxIdle: this.maxConnections,
+        idleTimeout: 15000,
         waitForConnections: true,
         queueLimit: 0,
         charset: 'utf8mb4',

@@ -26,6 +26,7 @@ export async function handleAdminApi(request, env, store) {
         base_url: data.base_url.trim(),
         keys: Array.isArray(data.keys) ? data.keys.filter(Boolean) : [],
         models: Array.isArray(data.models) ? data.models.filter(Boolean) : [],
+        model_map: normalizeModelMap(data),
         enabled: data.enabled !== false,
         created_at: new Date().toISOString(),
       };
@@ -52,35 +53,12 @@ export async function handleAdminApi(request, env, store) {
           base_url: data.base_url?.trim() ?? ch.base_url,
           keys: Array.isArray(data.keys) ? data.keys.filter(Boolean) : ch.keys,
           models: Array.isArray(data.models) ? data.models.filter(Boolean) : ch.models,
+          model_map: (data.model_map !== undefined)
+            ? normalizeModelMap(data)
+            : ((ch.model_map && typeof ch.model_map === 'object') ? ch.model_map : {}),
           enabled: data.enabled ?? ch.enabled,
           id,
         };
-
-        // 渠道模型变更后，级联清理指向"已移除模型"的路由目标，避免路由指向不存在的模型。
-        // models 非空表示该渠道只接受这些模型；空数组表示接受任何模型。
-        const newModels = nextChannel.models;
-        const isInvalid = (t) => newModels.length > 0 && t.upstream_model && newModels.indexOf(t.upstream_model) === -1;
-        const routes = (await store.getRoutes()) || [];
-        const blocked = []; // 若某条路由因此失去全部目标，则阻止本次保存
-        let rewritten = false;
-        for (const r of routes) {
-          const targets = (Array.isArray(r.targets) && r.targets.length)
-            ? r.targets
-            : (r.channel_id ? [{ channel_id: r.channel_id, upstream_model: r.upstream_model || '' }] : []);
-          const valid = targets.filter(t => t.channel_id !== id || !isInvalid(t));
-          if (valid.length === targets.length) continue;
-          if (valid.length === 0) {
-            blocked.push(r.name || r.model);
-          } else {
-            rewritten = true;
-            r.targets = valid.map(t => ({ channel_id: t.channel_id, upstream_model: t.upstream_model || '' }));
-          }
-        }
-        if (blocked.length > 0) {
-          return jsonRes({ error: '移除模型后以下路由将无可用目标，请先调整：' + blocked.join('、') }, 409);
-        }
-        if (rewritten) await store.saveRoutes(routes);
-
         channels[idx] = nextChannel;
         await store.saveChannels(channels);
         return jsonRes(channels[idx]);
@@ -105,83 +83,6 @@ export async function handleAdminApi(request, env, store) {
       channels[idx].enabled = !channels[idx].enabled;
       await store.saveChannels(channels);
       return jsonRes(channels[idx]);
-    }
-
-    // --- Model Routes（模型路由表）---
-    if (path === '/routes' && method === 'GET') {
-      return jsonRes(await store.getRoutes());
-    }
-
-    if (path === '/routes' && method === 'POST') {
-      const data = await request.json();
-      const model = (data.model || '').trim();
-      const targets = normalizeRouteTargets(data);
-      // 公开模型名必须关联至少一个上游渠道模型
-      if (!model || targets.length === 0) {
-        return jsonRes({ error: 'model 不能为空，且至少关联一个上游渠道模型' }, 400);
-      }
-      const routes = await store.getRoutes();
-      const route = {
-        id: crypto.randomUUID(),
-        name: data.name?.trim() || model,
-        model,
-        targets,
-        enabled: data.enabled !== false,
-        created_at: new Date().toISOString(),
-      };
-      routes.push(route);
-      await store.saveRoutes(routes);
-      return jsonRes(route, 201);
-    }
-
-    // Match /routes/:id
-    const routeMatch = path.match(/^\/routes\/([^/]+)$/);
-    if (routeMatch) {
-      const id = routeMatch[1];
-
-      if (method === 'PUT') {
-        const data = await request.json();
-        const routes = await store.getRoutes();
-        const idx = routes.findIndex(r => r.id === id);
-        if (idx === -1) return jsonRes({ error: 'Route not found' }, 404);
-
-        const r = routes[idx];
-        const next = { ...r };
-        if (data.name !== undefined) next.name = data.name.trim() || next.model;
-        if (data.model !== undefined) {
-          next.model = data.model.trim();
-          if (!next.name || next.name === r.model) next.name = next.model;
-        }
-        if (data.targets !== undefined || data.channel_id !== undefined) {
-          const targets = normalizeRouteTargets(data, next.model || r.model);
-          if (targets.length === 0) {
-            return jsonRes({ error: '至少关联一个上游渠道模型' }, 400);
-          }
-          next.targets = targets;
-        }
-        if (data.enabled !== undefined) next.enabled = data.enabled;
-        routes[idx] = next;
-        await store.saveRoutes(routes);
-        return jsonRes(routes[idx]);
-      }
-
-      if (method === 'DELETE') {
-        const routes = await store.getRoutes();
-        const filtered = routes.filter(r => r.id !== id);
-        if (filtered.length === routes.length) return jsonRes({ error: 'Route not found' }, 404);
-        await store.saveRoutes(filtered);
-        return jsonRes({ success: true });
-      }
-
-      if (method === 'PATCH') {
-        const data = await request.json();
-        const routes = await store.getRoutes();
-        const idx = routes.findIndex(r => r.id === id);
-        if (idx === -1) return jsonRes({ error: 'Route not found' }, 404);
-        if (data.enabled !== undefined) routes[idx].enabled = data.enabled;
-        await store.saveRoutes(routes);
-        return jsonRes(routes[idx]);
-      }
     }
 
     // --- Usage ---
@@ -390,25 +291,18 @@ function generateApiKeyString() {
   return 'sk-' + hex;
 }
 
-/** 将前端提交的路由数据规范化为 targets 数组（兼容旧单目标格式）。 */
-function normalizeRouteTargets(data, defaultModel = '') {
-  const pub = (data.model || defaultModel || '').trim();
-  const rtrim = s => String(s || '').trim();
-  let targets = [];
-  if (Array.isArray(data.targets)) {
-    targets = data.targets
-      .filter(t => t && t.channel_id)
-      .map(t => ({
-        channel_id: t.channel_id,
-        upstream_model: rtrim(t.upstream_model) || pub,
-      }));
-  } else if (data.channel_id) {
-    targets = [{
-      channel_id: data.channel_id,
-      upstream_model: rtrim(data.upstream_model) || pub,
-    }];
+/** 将前端提交的"公开模型 → 上游模型"映射规范化为 { 公开名: 上游模型 }。
+ *  仅保留公开名与上游模型均非空的条目；上游模型缺省回退为公开名。 */
+function normalizeModelMap(data) {
+  const src = (data && typeof data.model_map === 'object' && !Array.isArray(data.model_map)) ? data.model_map : {};
+  const out = {};
+  for (const key of Object.keys(src)) {
+    const pub = String(key || '').trim();
+    const um = String(src[key] || '').trim();
+    if (!pub) continue;
+    out[pub] = um || pub;
   }
-  return targets;
+  return out;
 }
 
 /** 调用上游 base_url + /models 拉取模型列表（兼容 OpenAI / Claude 响应格式）。 */

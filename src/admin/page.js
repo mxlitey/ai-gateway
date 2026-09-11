@@ -191,7 +191,6 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
     <nav class="sidebar-nav" id="sidebar-nav">
       <a class="nav-item active" data-section="dashboard" onclick="navigate('dashboard')"></a>
       <a class="nav-item" data-section="channels" onclick="navigate('channels')"></a>
-      <a class="nav-item" data-section="routes" onclick="navigate('routes')"></a>
       <a class="nav-item" data-section="usage" onclick="navigate('usage')"></a>
       <a class="nav-item" data-section="apikeys" onclick="navigate('apikeys')"></a>
     </nav>
@@ -224,21 +223,7 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
       </div>
     </section>
 
-    <!-- Model Routes -->
-    <section id="section-routes" class="section" style="display:none">
-      <div class="section-header">
-        <h2 id="rt-title"></h2>
-        <button class="btn btn-primary" onclick="showRouteModal()" id="rt-add-btn"></button>
-      </div>
-      <div class="table-container">
-        <table>
-          <thead><tr id="rt-thead"></tr></thead>
-          <tbody id="rt-tbody"></tbody>
-        </table>
-      </div>
-    </section>
-
-    <!-- Usage Monitor -->
+    <!-- Usage -->
     <section id="section-usage" class="section" style="display:none">
       <div class="section-header">
         <h2 id="usage-title"></h2>
@@ -543,7 +528,6 @@ function t(key) { return I18N[lang]?.[key] || key; }
 let token = localStorage.getItem('ag_token');
 let channels = [];
 let apiKeys = [];
-let routes = [];
 let curSection = 'dashboard';
 
 // 渠道弹窗中"获取上游模型"拉取到的模型缓存（用于勾选列表 + 搜索过滤）
@@ -571,16 +555,14 @@ async function api(path, opts = {}) {
 let apiKeyUsage = {};
 
 async function loadData() {
-  const [ch, ak, aku, rt] = await Promise.all([
+  const [ch, ak, aku] = await Promise.all([
     api('/channels'),
     api('/apikeys'),
     api('/apikeys/usage?date=' + todayBeijing()),
-    api('/routes'),
   ]);
   channels = ch || [];
   apiKeys = ak || [];
   apiKeyUsage = (aku && aku.keys) || {};
-  routes = rt || [];
 }
 
 // ============ Auth ============
@@ -656,20 +638,10 @@ function navigate(section) {
 function render() {
   renderDashboard();
   renderChannelHeaders();
-  renderRouteHeaders();
   renderApiKeyHeaders();
   if (curSection === 'channels') renderChannels();
-  if (curSection === 'routes') renderRoutes();
   if (curSection === 'usage') { renderUsageHeaders(); loadUsage(); }
   if (curSection === 'apikeys') renderApiKeys();
-}
-
-function renderRouteHeaders() {
-  const tb = document.getElementById('rt-title');
-  if (!tb) return;
-  document.getElementById('rt-title').textContent = t('modelRoutes');
-  document.getElementById('rt-add-btn').textContent = t('addRoute');
-  document.getElementById('rt-thead').innerHTML = '<th>'+[t('routeName'),t('publicModel'),t('routeTargetCol'),t('status'),t('actions')].join('</th><th>')+'</th>';
 }
 
 function renderChannelHeaders() {
@@ -844,167 +816,6 @@ async function toggleCh(id) {
 function channelNameById(id) {
   const ch = channels.find(c => c.id === id);
   return ch ? (ch.name || id) : (id || '-');
-}
-
-function renderRoutes() {
-  const tb = document.getElementById('rt-tbody');
-  if (!routes.length) {
-    tb.innerHTML = '<tr><td colspan="5" class="empty">' + t('noRoutes') + '</td></tr>';
-    return;
-  }
-  tb.innerHTML = routes.map(r => \`
-    <tr>
-      <td><strong>\${esc(r.name)}</strong></td>
-      <td style="font-family:monospace;font-size:13px">\${esc(r.model)}</td>
-      <td>\${routeTargetsCell(r)}</td>
-      <td><span class="badge \${r.enabled ? 'badge-on' : 'badge-off'}">\${r.enabled ? t('on') : t('off')}</span></td>
-      <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-ghost" onclick="showRouteModal('\${r.id}')">\${t('edit')}</button>
-        <button class="btn btn-sm btn-ghost" onclick="toggleRoute('\${r.id}')">\${r.enabled ? t('disable') : t('enable')}</button>
-        <button class="btn btn-sm btn-danger" onclick="confirmDel('route','\${r.id}','\${esc(r.model)}')">\${t('delete')}</button>
-      </td>
-    </tr>
-  \`).join('');
-}
-
-function routeTargetsCell(r) {
-  const targets = (Array.isArray(r.targets) && r.targets.length)
-    ? r.targets
-    : (r.channel_id ? [{ channel_id: r.channel_id, upstream_model: r.upstream_model }] : []);
-  const lines = targets.map(t => {
-    const chName = esc(channelNameById(t.channel_id));
-    const up = (t.upstream_model && t.upstream_model !== r.model) ? (' \u2192 ' + esc(t.upstream_model)) : '';
-    return '<div style="font-size:13px;white-space:nowrap;padding:2px 0">' + chName + up + '</div>';
-  }).join('');
-  return lines || '<span style="color:var(--text-2)">-</span>';
-}
-
-let rtSeq = 0;
-function routeTargetRowHtml(target) {
-  const seq = 'rtr' + (++rtSeq);
-  const sel = target && target.channel_id ? target.channel_id : '';
-  const up = (target && target.upstream_model) ? esc(target.upstream_model) : '';
-  const chOptions = ['<option value="">' + t('selectChannel') + '</option>']
-    .concat(channels.map(ch => '<option value="' + ch.id + '"' + (ch.id === sel ? ' selected' : '') + '>' + esc(ch.name) + '</option>'))
-    .join('');
-  // 上游模型为下拉选择（编辑时回带已保存值），选择渠道后自动填充可选项
-  const upOptions = '<option value="">' + t('selectUpstream') + '</option>' +
-    (up ? '<option value="' + up + '" selected>' + up + '</option>' : '');
-  return '<div class="rt-target-row">' +
-    '<div class="rt-trg-cell"><label>' + t('targetChannel') + '</label><select class="rt-trg-ch" data-seq="' + seq + '" onchange="loadChannelModels(this)">' + chOptions + '</select></div>' +
-    '<div class="rt-trg-cell"><label>' + t('upstreamModel') + '</label><select class="rt-trg-up">' + upOptions + '</select></div>' +
-    '<button type="button" class="btn btn-sm btn-danger rt-trg-del" onclick="removeRouteTarget(this)">' + t('removeTarget') + '</button>' +
-  '</div>';
-}
-
-// 选择渠道后，用该渠道里已配置的模型列表填充上游模型下拉（仅可选择）
-function loadChannelModels(sel) {
-  const row = sel.closest('.rt-target-row');
-  const chId = sel.value;
-  const upSel = row.querySelector('.rt-trg-up');
-  const prev = upSel.value; // 编辑回带时若已保存模型，保留为可选项
-  const ch = channels.find(c => c.id === chId);
-  const models = (ch && Array.isArray(ch.models) && ch.models.length) ? ch.models : [];
-  upSel.innerHTML = '<option value="">' + t('selectUpstream') + '</option>';
-  if (models.length === 0) { upSel.value = ''; return; }
-  let hasPrev = false;
-  models.forEach(m => {
-    const opt = document.createElement('option');
-    opt.value = m;
-    opt.textContent = m;
-    if (m === prev) { opt.selected = true; hasPrev = true; }
-    upSel.appendChild(opt);
-  });
-  if (prev && !hasPrev) {
-    // 保存的上游模型不在该渠道配置的模型列表中时，仍保留以方便编辑
-    const opt = document.createElement('option');
-    opt.value = prev; opt.textContent = prev; opt.selected = true;
-    upSel.appendChild(opt);
-  } else if (!prev) {
-    upSel.value = '';
-  }
-}
-
-function addRouteTarget() {
-  const box = document.getElementById('f-rt-targets');
-  box.insertAdjacentHTML('beforeend', routeTargetRowHtml(null));
-}
-
-function removeRouteTarget(btn) {
-  const row = btn.closest('.rt-target-row');
-  if (row) row.remove();
-}
-
-function showRouteModal(id) {
-  const r = id ? routes.find(x => x.id === id) : null;
-  const title = r ? t('editRoute') : t('addRoute');
-  // 初始目标行：编辑时从 targets（或旧单目标字段）恢复；新增时给一空行
-  const targets = r ? (Array.isArray(r.targets) && r.targets.length ? r.targets
-    : (r.channel_id ? [{ channel_id: r.channel_id, upstream_model: r.upstream_model || '' }] : null))
-    : null;
-  const rowsHtml = (targets && targets.length)
-    ? targets.map(tg => routeTargetRowHtml(tg)).join('')
-    : routeTargetRowHtml(null);
-  const html = \`
-    <h3>\${title}</h3>
-    <div class="form-group">
-      <label>\${t('routeName')}</label>
-      <input id="f-rt-name" value="\${r ? esc(r.name) : ''}" placeholder="\${r ? '' : esc(t('publicModel'))}">
-    </div>
-    <div class="form-group">
-      <label>\${t('publicModel')}</label>
-      <input id="f-rt-model" value="\${r ? esc(r.model) : ''}" placeholder="my-model">
-      <div class="form-help">\${t('publicModelHelp')}</div>
-    </div>
-    <div class="form-group">
-      <label>\${t('routeTargetCol')}</label>
-      <div id="f-rt-targets">
-        \${rowsHtml}
-      </div>
-      <button type="button" class="btn btn-sm btn-ghost rt-add-target" onclick="addRouteTarget()">+ \${t('addTarget')}</button>
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="closeModal()">\${t('cancel')}</button>
-      <button class="btn btn-primary" onclick="saveRoute('\${id || ''}')">\${t('save')}</button>
-    </div>
-  \`;
-  openModal(html);
-  // 编辑/新增时：为目标行已经有选中渠道的，自动带出其上游模型候选
-  document.querySelectorAll('#f-rt-targets .rt-trg-ch').forEach(sel => { if (sel.value) loadChannelModels(sel); });
-}
-
-async function saveRoute(id) {
-  const model = document.getElementById('f-rt-model').value.trim();
-  if (!model) { toast(t('routeModelRequired'), 'error'); return; }
-
-  const name = document.getElementById('f-rt-name').value.trim() || model;
-  const rows = Array.from(document.querySelectorAll('#f-rt-targets .rt-target-row'));
-  const targets = rows.map(row => ({
-    channel_id: row.querySelector('.rt-trg-ch').value,
-    upstream_model: row.querySelector('.rt-trg-up').value.trim(),
-  })).filter(t => t.channel_id);
-  if (targets.length === 0) { toast(t('atLeastOneTarget'), 'error'); return; }
-
-  const body = JSON.stringify({ name, model, targets });
-  const r = id
-    ? await api('/routes/' + id, { method: 'PUT', body })
-    : await api('/routes', { method: 'POST', body });
-
-  if (r && !r.error) {
-    toast(id ? t('routeUpdated') : t('routeCreated'), 'success');
-    closeModal();
-    await loadData();
-    render();
-  } else {
-    toast(r?.error || t('saveFailed'), 'error');
-  }
-}
-
-async function toggleRoute(id) {
-  const r = routes.find(x => x.id === id);
-  if (!r) return;
-  const res = await api('/routes/' + id, { method: 'PATCH', body: JSON.stringify({ enabled: !r.enabled }) });
-  if (res && !res.error) { await loadData(); render(); }
 }
 
 // ============ API Keys ============

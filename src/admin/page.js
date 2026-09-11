@@ -531,7 +531,7 @@ const I18N = {
     routeTargetCol: '目标渠道 / 上游模型',
     modelSearchPlaceholder: '搜索模型…',
     modelSearchEmpty: '未找到匹配的模型。',
-    upstreamModelPlaceholder: '选择或输入上游模型',
+    selectUpstream: '请选择上游模型',
   },
 };
 
@@ -887,24 +887,42 @@ function routeTargetRowHtml(target) {
   const chOptions = ['<option value="">' + t('selectChannel') + '</option>']
     .concat(channels.map(ch => '<option value="' + ch.id + '"' + (ch.id === sel ? ' selected' : '') + '>' + esc(ch.name) + '</option>'))
     .join('');
+  // 上游模型为下拉选择（编辑时回带已保存值），选择渠道后自动填充可选项
+  const upOptions = '<option value="">' + t('selectUpstream') + '</option>' +
+    (up ? '<option value="' + up + '" selected>' + up + '</option>' : '');
   return '<div class="rt-target-row">' +
     '<div class="rt-trg-cell"><label>' + t('targetChannel') + '</label><select class="rt-trg-ch" data-seq="' + seq + '" onchange="loadChannelModels(this)">' + chOptions + '</select></div>' +
-    '<div class="rt-trg-cell"><label>' + t('upstreamModel') + '</label><input class="rt-trg-up" list="dl-' + seq + '" value="' + up + '" placeholder="' + t('upstreamModelPlaceholder') + '"><datalist id="dl-' + seq + '"></datalist></div>' +
+    '<div class="rt-trg-cell"><label>' + t('upstreamModel') + '</label><select class="rt-trg-up">' + upOptions + '</select></div>' +
     '<button type="button" class="btn btn-sm btn-danger rt-trg-del" onclick="removeRouteTarget(this)">' + t('removeTarget') + '</button>' +
   '</div>';
 }
 
-// 选择渠道后自动带出该渠道的上游模型列表（datalist 下拉供选择，仍可手动输入）
+// 选择渠道后自动带出该渠道的上游模型列表（下拉选择，仅可选择）
 async function loadChannelModels(sel) {
-  const seq = sel.dataset.seq;
+  const row = sel.closest('.rt-target-row');
   const chId = sel.value;
-  const dl = document.getElementById('dl-' + seq);
-  if (!dl) return;
-  dl.innerHTML = '';
-  if (!chId) return;
+  const upSel = row.querySelector('.rt-trg-up');
+  const prev = upSel.value; // 编辑回带时若已保存模型，保留为可选项
+  upSel.innerHTML = '<option value="">' + t('selectUpstream') + '</option>';
+  if (!chId) { upSel.value = ''; return; }
   const r = await api('/fetch-models', { method: 'POST', body: JSON.stringify({ channel_id: chId }) });
+  let hasPrev = false;
   if (r && !r.error && Array.isArray(r.models) && r.models.length) {
-    dl.innerHTML = r.models.map(m => '<option value="' + esc(m) + '"></option>').join('');
+    r.models.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m;
+      if (m === prev) { opt.selected = true; hasPrev = true; }
+      upSel.appendChild(opt);
+    });
+  }
+  if (prev && !hasPrev) {
+    // 保存的上游模型不在当前渠道模型列表中时，仍保留以方便编辑
+    const opt = document.createElement('option');
+    opt.value = prev; opt.textContent = prev; opt.selected = true;
+    upSel.appendChild(opt);
+  } else if (!prev) {
+    upSel.value = '';
   }
 }
 

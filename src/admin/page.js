@@ -39,7 +39,7 @@ a{color:inherit;text-decoration:none}
 .nav-item.active{background:var(--primary);color:#fff}
 .logout-icon{width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--text-1);border-radius:8px;cursor:pointer;transition:all .15s}
 .logout-icon:hover{background:var(--bg-hover);color:var(--danger)}
-.content{flex:1;margin-left:0;padding:110px 16px 32px;max-width:none}
+.content{flex:1;margin-left:0;padding:128px 16px 32px;max-width:none}
 
 /* Section header */
 .section-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}
@@ -152,7 +152,7 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 
 /* 竖屏小屏补充适配 */
 @media (max-width: 640px){
-  .content{padding-top:104px;padding-left:12px;padding-right:12px}
+  .content{padding-top:124px;padding-left:12px;padding-right:12px}
   .section-header{flex-direction:column;align-items:stretch;gap:10px;margin-bottom:16px}
   .section-header h2{font-size:20px}
   .stats-grid{grid-template-columns:1fr 1fr;gap:10px}

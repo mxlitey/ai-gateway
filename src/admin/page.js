@@ -62,6 +62,14 @@ th{text-align:left;padding:12px 16px;background:var(--bg-3);font-size:12px;color
 td{padding:12px 16px;border-top:1px solid var(--border);font-size:14px;vertical-align:middle}
 tr:hover td{background:var(--bg-hover)}
 .cell-truncate{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 错误日志：单行省略 + 三角展开 + 一键复制 */
+.err-wrap{display:flex;align-items:flex-start;gap:6px;min-width:220px}
+.err-caret{flex:0 0 auto;cursor:pointer;color:var(--text-2);font-size:11px;line-height:20px;transition:transform .15s;user-select:none}
+.err-wrap.open .err-caret{transform:rotate(90deg)}
+.err-text{flex:1 1 auto;min-width:0;font-size:13px;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;word-break:break-all}
+.err-wrap.open .err-text{white-space:pre-wrap;max-width:none;word-break:break-all}
+.err-copy{flex:0 0 auto;border:none;background:var(--bg-1);color:var(--text-1);width:24px;height:24px;border-radius:5px;cursor:pointer;line-height:1;font-size:13px}
+.err-copy:hover{color:var(--primary);background:var(--bg-3)}
 
 /* Badge */
 .badge{display:inline-block;padding:3px 10px;border-radius:9999px;font-size:12px;font-weight:500}
@@ -398,6 +406,10 @@ const I18N = {
     errorStatus: 'Status',
     errorMessage: 'Message',
     errorKey: 'Key',
+    copyMsg: 'Copy',
+    expandMsg: 'Expand',
+    copied: 'Copied',
+    copyFail: 'Copy failed',
     errorsToday: 'errors today',
     keysTotal: 'keys',
     cooldown: 'Cooldown',
@@ -524,6 +536,10 @@ const I18N = {
     errorStatus: '状态码',
     errorMessage: '错误信息',
     errorKey: '密钥',
+    copyMsg: '复制',
+    expandMsg: '展开',
+    copied: '已复制',
+    copyFail: '复制失败',
     errorsToday: '个错误',
     keysTotal: '个密钥',
     cooldown: '冷却倒计时',
@@ -1317,7 +1333,13 @@ function renderErrors(errData) {
         '<td style="white-space:nowrap;font-size:13px;color:var(--text-2)">' + time + '</td>' +
         '<td>' + modelCell + '</td>' +
         '<td>' + statusBadge + '</td>' +
-        '<td title="' + esc(e.message) + '" style="font-size:13px;white-space:pre-wrap;word-break:break-all;min-width:220px">' + esc(e.message) + '</td>' +
+        '<td title="' + esc(e.message) + '">' +
+        '<div class="err-wrap">' +
+          '<span class="err-caret" title="' + t('expandMsg') + '" onclick="toggleErrMsg(this)">▶</span>' +
+          '<span class="err-text">' + esc(e.message) + '</span>' +
+          '<button type="button" class="err-copy" title="' + t('copyMsg') + '" onclick="copyErrMsg(this)">⧉</button>' +
+        '</div>' +
+      '</td>' +
       '</tr>';
     }).join('');
 
@@ -1337,6 +1359,30 @@ function renderErrors(errData) {
       '</div>' +
     '</div>';
   }).join('');
+}
+
+// 错误日志：展开/收起完整报错信息
+function toggleErrMsg(caret) {
+  caret.parentElement.classList.toggle('open');
+}
+
+// 错误日志：一键复制完整报错信息
+async function copyErrMsg(btn) {
+  const textEl = btn.parentElement.querySelector('.err-text');
+  const msg = textEl ? textEl.textContent : '';
+  if (!msg) { toast(t('copyFail'), 'error'); return; }
+  try {
+    await navigator.clipboard.writeText(msg);
+    toast(t('copied'), 'success');
+  } catch {
+    // 剪贴板 API 不可用时回退到 textarea 复制
+    const ta = document.createElement('textarea');
+    ta.value = msg;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); toast(t('copied'), 'success'); } catch { toast(t('copyFail'), 'error'); }
+    document.body.removeChild(ta);
+  }
 }
 
 // ============ Shared ============

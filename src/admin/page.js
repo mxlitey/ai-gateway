@@ -112,6 +112,16 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 .model-pick-search{margin-bottom:12px;padding:8px 12px;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;color:var(--text-0);outline:none}
 .model-pick-search:focus{border-color:var(--primary)}
 .model-pick-list{flex:1;min-height:180px;max-height:52vh;overflow-y:auto;overflow-x:hidden;border:1px solid var(--border);border-radius:8px;background:var(--bg-1);padding:4px}
+.diag-card{min-width:0;max-width:100%;overflow:hidden;margin-bottom:8px;border:1px solid var(--border);border-radius:8px;padding:8px 10px}
+.diag-title{display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;margin-bottom:6px;min-width:0;overflow:hidden}
+.diag-title span,.diag-title code{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.diag-title .diag-title-host{color:var(--text-2);font-weight:400}
+.diag-title .diag-title-model{color:var(--primary)}
+.diag-row{display:flex;align-items:center;gap:6px;padding:2px 0;min-width:0;max-width:100%}
+.diag-row input[type="checkbox"],.diag-all-row input[type="checkbox"]{width:auto;flex:0 0 auto;min-width:0}
+.diag-key-code{flex:1 1 auto;min-width:0;font-size:12px;color:var(--text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.diag-all-row{display:inline-flex;align-items:center;gap:2px;width:fit-content;cursor:pointer;margin-bottom:6px}
+.diag-all-row span{font-size:13px;white-space:nowrap}
 .model-pick-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px;color:var(--text-0)}
 .model-pick-item:hover{background:var(--bg-hover)}
 .model-pick-item input{width:auto;flex:0 0 auto}
@@ -1260,25 +1270,25 @@ function openRouteDiagnose(btn) {
     let rows = '';
     for (const arr of groups.values()) {
       const tk0 = arr[0];
-      rows += '<div style="margin-bottom:8px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-width:0;max-width:100%;overflow:hidden">' +
-        '<div style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;margin-bottom:6px;min-width:0;overflow:hidden">' +
-          '<span style="flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(tk0.channel) + '</span>' +
-          '<span style="color:var(--text-2);font-weight:400;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">(' + esc(tk0.host) + ')</span>' +
-          '<code style="color:var(--primary);flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(tk0.upstream) + '</code>' +
+      rows += '<div class="diag-card">' +
+        '<div class="diag-title">' +
+          '<span>' + esc(tk0.channel) + '</span>' +
+          '<span class="diag-title-host">(' + esc(tk0.host) + ')</span>' +
+          '<code class="diag-title-model">' + esc(tk0.upstream) + '</code>' +
         '</div>' +
         arr.map(tk =>
-          '<div class="diag-row" style="display:flex;align-items:center;gap:6px;padding:2px 0;min-width:0;max-width:100%">' +
-            '<input type="checkbox" style="flex:0 0 auto" class="diag-key" checked data-channel="' + esc(tk.channel_id) + '" data-key="' + esc(tk.key) + '" data-model="' + esc(tk.upstream) + '">' +
-            '<code style="flex:1 1 auto;min-width:0;font-size:12px;color:var(--text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(maskKey(tk.key)) + '</code>' +
+          '<div class="diag-row">' +
+            '<input type="checkbox" style="width:auto;flex:0 0 auto" class="diag-key" checked data-channel="' + esc(tk.channel_id) + '" data-key="' + esc(tk.key) + '" data-model="' + esc(tk.upstream) + '">' +
+            '<code class="diag-key-code">' + esc(maskKey(tk.key)) + '</code>' +
           '</div>'
         ).join('') +
       '</div>';
     }
     listHtml =
       '<div style="color:var(--text-2);font-size:13px;margin-bottom:10px">' + t('diagModel') + ' <code style="color:var(--text-1)">' + esc(pubValue) + '</code></div>' +
-      '<label style="display:inline-flex;align-items:center;gap:2px;width:fit-content;cursor:pointer;margin-bottom:6px" for="diag-all">' +
-        '<input type="checkbox" id="diag-all" checked onchange="diagToggleAll(this)">' +
-        '<span style="font-size:13px;white-space:nowrap">' + t('selectAll') + '</span>' +
+      '<label class="diag-all-row" for="diag-all">' +
+        '<input type="checkbox" id="diag-all" style="width:auto;flex:0 0 auto" checked onchange="diagToggleAll(this)">' +
+        '<span>' + t('selectAll') + '</span>' +
       '</label>' +
       rows +
       '<div id="diag-result" style="margin-top:10px"></div>';

@@ -230,6 +230,8 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
   .key-row{flex-wrap:wrap}
   .key-row input.key-val{flex:1 1 45%}
   .model-modal{width:min(560px,94vw);max-width:94vw;padding:20px}
+  .diag-title{flex-wrap:wrap;row-gap:2px}
+  .diag-title .diag-title-model{flex:0 0 100%;min-width:100%}
 }
 </style>
 </head>

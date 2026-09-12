@@ -1257,16 +1257,16 @@ function openRouteDiagnose(btn) {
           ' <span style="color:var(--text-2);font-weight:400">(' + esc(tk0.host) + ')</span>' +
           ' <code style="color:var(--primary)">' + esc(tk0.upstream) + '</code></div>' +
         arr.map(tk =>
-          '<label style="display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer">' +
+          '<label style="display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer;min-width:0;overflow:hidden">' +
             '<input type="checkbox" class="diag-key" checked data-channel="' + esc(tk.channel_id) + '" data-key="' + esc(tk.key) + '" data-model="' + esc(tk.upstream) + '">' +
-            '<code style="font-size:12px;color:var(--text-1)">' + esc(maskKey(tk.key)) + '</code>' +
+            '<code style="font-size:12px;color:var(--text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">' + esc(maskKey(tk.key)) + '</code>' +
           '</label>'
         ).join('') +
       '</div>';
     }
     listHtml =
       '<div style="color:var(--text-2);font-size:13px;margin-bottom:10px">' + t('diagModel') + ' <code style="color:var(--text-1)">' + esc(pubValue) + '</code></div>' +
-      '<label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;margin-bottom:6px"><input type="checkbox" checked onchange="diagToggleAll(this)"> ' + t('selectAll') + '</label>' +
+      '<label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;margin-bottom:6px;white-space:nowrap"><input type="checkbox" checked onchange="diagToggleAll(this)"> ' + t('selectAll') + '</label>' +
       rows +
       '<div id="diag-result" style="margin-top:10px"></div>';
   }
@@ -1325,7 +1325,10 @@ async function runRouteDiagnose() {
       '<span style="min-width:56px;color:var(--text-2)">' + r.duration_ms + 'ms</span>' +
       '<span style="color:var(--text-1)">' + esc(r.channel || r.channel_id) + '</span>' +
       '<span style="color:var(--text-2)">' + esc(r.key_hint || '') + '</span>' +
-      '<span style="color:var(--text-2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(meta) + '">' + esc(meta) + '</span>' +
+      '<span class="err-wrap" style="flex:1;min-width:0">' +
+        '<span class="err-caret" title="' + t('expandMsg') + '" onclick="toggleErrMsg(this)">▶</span>' +
+        '<span class="err-text">' + esc(meta) + '</span>' +
+      '</span>' +
     '</div>';
   }).join('');
   resBox.innerHTML = '<div style="font-weight:600;font-size:13px;margin-bottom:4px">' + t('diagResult') + ' (' + okCount + '/' + results.length + ')</div>' + rows;

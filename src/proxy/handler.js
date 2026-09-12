@@ -82,9 +82,10 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
     let consecutive429 = 0;
 
     for (const target of targets) {
+      let targetUrl = '';
       try {
         const baseUrl = target.channel.base_url.replace(/\/+$/, '');
-        const targetUrl = baseUrl + resolveChatPath(target.channel) + url.search;
+        targetUrl = baseUrl + resolveChatPath(target.channel) + url.search;
 
         console.log(`[proxy][claude] -> ${target.channel.name} ${targetUrl}${round > 0 ? ` (retry #${round})` : ''}`);
 
@@ -225,9 +226,10 @@ async function handleResponses(request, url, body, store, allowedChannelIds) {
     let consecutive429 = 0;
 
     for (const target of targets) {
+      let targetUrl = '';
       try {
         const baseUrl = target.channel.base_url.replace(/\/+$/, '');
-        const targetUrl = baseUrl + resolveChatPath(target.channel) + url.search;
+        targetUrl = baseUrl + resolveChatPath(target.channel) + url.search;
 
         console.log(`[proxy][responses] -> ${target.channel.name} ${targetUrl}${round > 0 ? ` (retry #${round})` : ''}`);
 
@@ -366,11 +368,12 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
     let consecutive429 = 0;
 
     for (const target of targets) {
+      let targetUrl = '';
       try {
         const baseUrl = target.channel.base_url.replace(/\/+$/, '');
         // 对话接口可被渠道协议接口覆盖（如 /chat/completions）；其他端点（embeddings 等）沿用请求路径
         const opPath = upstreamPath.includes('/chat/completions') ? resolveChatPath(target.channel) : upstreamPath;
-        const targetUrl = baseUrl + opPath + url.search;
+        targetUrl = baseUrl + opPath + url.search;
 
         console.log(`[proxy] -> ${target.channel.name} ${targetUrl}${round > 0 ? ` (retry #${round})` : ''}`);
 

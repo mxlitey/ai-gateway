@@ -487,7 +487,7 @@ const I18N = {
     addHeader: 'Add Header',
     headerNamePh: 'Header name',
     headerValuePh: 'Header value',
-    headersHelp: 'Sent on every upstream request of this channel and overrides built-in headers with the same name. Placeholder {{header-name}} copies the client request header of that name (case-insensitive), e.g. {{x-session-id}}, {{x-conversation-id}}. Built-in generators: {{uuid}} {{timestamp}} {{random}}',
+    headersHelp: 'Sent on every upstream request of this channel and overrides built-in headers with the same name. Placeholder {{header-name}} copies the client request header of that name (case-insensitive), e.g. {{x-session-id}}. Use {{a | b | c}} to take the first client header that is present, e.g. {{x-session-id | x-conversation-id | session_id}}, so one channel can serve clients that name the same value differently. Built-in generators: {{uuid}} {{timestamp}} {{random}}',
   },
   zh: {
     loginSub: '请输入管理员密码或 API Key 继续',
@@ -628,7 +628,7 @@ const I18N = {
     addHeader: '添加请求头',
     headerNamePh: '请求头名称',
     headerValuePh: '请求头值',
-    headersHelp: '该渠道每次上游请求都会携带这些请求头，同名会覆盖内置请求头。占位符 {{请求头名}} 直接取客户端同名请求头（大小写不敏感），例如 {{x-session-id}}、{{x-conversation-id}}，可适配任意客户端私有头。内置生成器：{{uuid}} {{timestamp}} {{random}}',
+    headersHelp: '该渠道每次上游请求都会携带这些请求头，同名会覆盖内置请求头。占位符 {{请求头名}} 直接取客户端同名请求头（大小写不敏感），例如 {{x-session-id}}。支持多候选回退 {{a | b | c}}：依次取第一个存在的客户端请求头，例如 {{x-session-id | x-conversation-id | session_id}}，可让同一渠道适配对同一值使用不同头名的不同客户端。内置生成器：{{uuid}} {{timestamp}} {{random}}',
   },
 };
 

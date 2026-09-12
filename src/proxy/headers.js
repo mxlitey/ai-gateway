@@ -39,10 +39,13 @@ function resolveCandidate(key, request) {
 /**
  * 解析请求头值中的占位符：
  *   {{名称}}        取客户端同名请求头（大小写不敏感）
- *   {{a | b | c}}   从左到右取第一个非空命中，全部落空则置空
+ *   {{a | b | c}}   从左到右取第一个非空命中，全部落空则用 fallback
  * 生成器 {{uuid}}/{{timestamp}}/{{random}} 恒为非空，宜放在候选末尾作兜底。
+ *
+ * fallback 供「无真实客户端请求」的场景使用（如后台诊断/拉模型）：此时占位符
+ * 解析不到来源，若不兜底就会发出空值头，导致上游拒绝。真实转发不传该参数（默认空）。
  */
-export function resolveHeaderValue(value, request) {
+export function resolveHeaderValue(value, request, fallback = '') {
   return String(value == null ? '' : value).replace(/\{\{([^{}]+)\}\}/g, (m, rawKey) => {
     if (!rawKey.trim()) return m;
     for (const cand of rawKey.split('|')) {
@@ -51,7 +54,7 @@ export function resolveHeaderValue(value, request) {
       const v = resolveCandidate(key, request);
       if (v != null) return v;
     }
-    return '';
+    return fallback;
   });
 }
 
@@ -78,14 +81,21 @@ export function normalizeHeaders(raw) {
   return out;
 }
 
-/** 把渠道自定义请求头写入 Headers（同名覆盖内置头）；request 可为空（如后台诊断） */
-export function applyChannelHeaders(headers, channel, request) {
+/** 把渠道自定义请求头写入 Headers（同名覆盖内置头）。
+ *  request 可为空（如后台诊断/拉模型），此时占位符解析不到来源，用 fallback 兜底。 */
+export function applyChannelHeaders(headers, channel, request, fallback = '') {
   const list = normalizeHeaders(channel && channel.headers);
   for (const h of list) {
-    headers.set(h.name, resolveHeaderValue(h.value, request));
+    headers.set(h.name, resolveHeaderValue(h.value, request, fallback));
   }
   return headers;
 }
+
+/**
+ * 诊断/拉模型等「无真实客户端请求」场景下，占位符解析不到来源时的固定兜底值。
+ * 目的仅是让请求头非空、能通过上游的基本校验，并不代表真实会话。
+ */
+export const DIAG_PLACEHOLDER_FALLBACK = 'diag';
 
 // 透传时排除的头：连接类、由网关接管、以及客户端对网关的认证凭据
 const PASSTHROUGH_BLOCKED = new Set([

@@ -1,5 +1,5 @@
 import { enabledKeys } from '../lb/balancer.js';
-import { normalizeHeaders, applyChannelHeaders } from '../proxy/headers.js';
+import { normalizeHeaders, applyChannelHeaders, DIAG_PLACEHOLDER_FALLBACK } from '../proxy/headers.js';
 
 /** 北京时区日期（用于用量/错误日志的读写保持一致，避免 UTC 跨日错位）。 */
 function beijingToday() {
@@ -217,7 +217,7 @@ export async function handleAdminApi(request, env, store) {
               const reqHeaders = new Headers();
               reqHeaders.set('Content-Type', 'application/json');
               reqHeaders.set('Authorization', `Bearer ${key}`);
-              applyChannelHeaders(reqHeaders, ch, null);
+              applyChannelHeaders(reqHeaders, ch, null, DIAG_PLACEHOLDER_FALLBACK);
               const resp = await fetch(testUrl, {
                 method: 'POST',
                 headers: reqHeaders,
@@ -311,7 +311,7 @@ async function fetchUpstreamModels(ch) {
       const reqHeaders = new Headers();
       reqHeaders.set('Content-Type', 'application/json');
       reqHeaders.set('Authorization', `Bearer ${key}`);
-      applyChannelHeaders(reqHeaders, ch, null);
+      applyChannelHeaders(reqHeaders, ch, null, DIAG_PLACEHOLDER_FALLBACK);
       const resp = await fetch(baseUrl + '/models', {
         headers: reqHeaders,
       });

@@ -111,7 +111,7 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 .model-modal h3{font-size:18px;margin-bottom:16px;font-weight:600}
 .model-pick-search{margin-bottom:12px;padding:8px 12px;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;color:var(--text-0);outline:none}
 .model-pick-search:focus{border-color:var(--primary)}
-.model-pick-list{flex:1;min-height:180px;max-height:52vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-1);padding:4px}
+.model-pick-list{flex:1;min-height:180px;max-height:52vh;overflow-y:auto;overflow-x:hidden;border:1px solid var(--border);border-radius:8px;background:var(--bg-1);padding:4px}
 .model-pick-item{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px;color:var(--text-0)}
 .model-pick-item:hover{background:var(--bg-hover)}
 .model-pick-item input{width:auto;flex:0 0 auto}
@@ -219,6 +219,7 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
   .map-del{flex:1 0 auto;margin-top:4px}
   .key-row{flex-wrap:wrap}
   .key-row input.key-val{flex:1 1 45%}
+  .model-modal{width:min(560px,94vw);max-width:94vw;padding:20px}
 }
 </style>
 </head>
@@ -1259,12 +1260,12 @@ function openRouteDiagnose(btn) {
     let rows = '';
     for (const arr of groups.values()) {
       const tk0 = arr[0];
-      rows += '<div style="margin-bottom:8px;border:1px solid var(--border);border-radius:8px;padding:8px 10px">' +
-        '<div style="font-weight:600;font-size:13px;margin-bottom:6px">' + esc(tk0.channel) +
+      rows += '<div style="margin-bottom:8px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-width:0;max-width:100%;overflow:hidden">' +
+        '<div style="font-weight:600;font-size:13px;margin-bottom:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(tk0.channel) +
           ' <span style="color:var(--text-2);font-weight:400">(' + esc(tk0.host) + ')</span>' +
           ' <code style="color:var(--primary)">' + esc(tk0.upstream) + '</code></div>' +
         arr.map(tk =>
-          '<label style="display:flex;align-items:center;gap:6px;margin:0">' +
+          '<label style="display:flex;align-items:center;gap:6px;margin:0;min-width:0;max-width:100%">' +
             '<input type="checkbox" style="flex:0 0 auto" class="diag-key" checked data-channel="' + esc(tk.channel_id) + '" data-key="' + esc(tk.key) + '" data-model="' + esc(tk.upstream) + '">' +
             '<code style="flex:1 1 auto;min-width:0;font-size:12px;color:var(--text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(maskKey(tk.key)) + '</code>' +
           '</label>'
@@ -1273,7 +1274,7 @@ function openRouteDiagnose(btn) {
     }
     listHtml =
       '<div style="color:var(--text-2);font-size:13px;margin-bottom:10px">' + t('diagModel') + ' <code style="color:var(--text-1)">' + esc(pubValue) + '</code></div>' +
-      '<label style="display:flex;align-items:center;gap:4px;width:fit-content;cursor:pointer;margin-bottom:6px" for="diag-all">' +
+      '<label style="display:inline-flex;align-items:center;gap:2px;width:fit-content;cursor:pointer;margin-bottom:6px" for="diag-all">' +
         '<input type="checkbox" id="diag-all" checked onchange="diagToggleAll(this)">' +
         '<span style="font-size:13px;white-space:nowrap">' + t('selectAll') + '</span>' +
       '</label>' +

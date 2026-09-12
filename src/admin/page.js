@@ -1154,7 +1154,14 @@ function renderRoutes() {
   const order = [];    // 公开模型唯一顺序
   const idx = new Map();
   for (const ch of channels) {
-    if (ch.enabled === false || !ch.keys || ch.keys.length === 0) continue;
+    if (ch.enabled === false) continue;
+    // 与诊断收集一致：需存在至少一个「启用」的 key
+    const hasEnabledKey = (ch.keys || []).some(k => {
+      const keyVal = typeof k === 'string' ? k : String(k.key || '').trim();
+      const enabled = typeof k === 'string' ? true : k.enabled !== false;
+      return !!keyVal && enabled;
+    });
+    if (!hasEnabledKey) continue;
     const mm = (ch.model_map && typeof ch.model_map === 'object') ? ch.model_map : {};
     for (const pub of Object.keys(mm)) {
       const p = String(pub).trim();

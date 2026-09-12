@@ -117,7 +117,7 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
           consecutive429++;
           try { last429Body = await resp.text(); } catch { last429Body = ''; }
           lastError = `HTTP 429 (rate limited)`;
-          const rlReason = await classifyAndRecord429(store, target, model, resp, rateHeaders);
+          const rlReason = await classifyAndRecord429(store, target, model, last429Body, rateHeaders);
           logError(store, target, model, 429, `${lastError}${rlReason ? `: ${rlReason}` : ''}`);
           await sleep(calc429Delay(rateHeaders, consecutive429));
           continue;
@@ -263,7 +263,7 @@ async function handleResponses(request, url, body, store, allowedChannelIds) {
           consecutive429++;
           try { last429Body = await resp.text(); } catch { last429Body = ''; }
           lastError = `HTTP 429 (rate limited)`;
-          const rlReason = await classifyAndRecord429(store, target, model, resp, rateHeaders);
+          const rlReason = await classifyAndRecord429(store, target, model, last429Body, rateHeaders);
           logError(store, target, model, 429, `${lastError}${rlReason ? `: ${rlReason}` : ''}`);
           await sleep(calc429Delay(rateHeaders, consecutive429));
           continue;
@@ -408,7 +408,7 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
           consecutive429++;
           try { last429Body = await resp.text(); } catch { last429Body = ''; }
           lastError = `HTTP 429 (rate limited)`;
-          const rlReason = await classifyAndRecord429(store, target, model, resp, rateHeaders);
+          const rlReason = await classifyAndRecord429(store, target, model, last429Body, rateHeaders);
           logError(store, target, model, 429, `${lastError}${rlReason ? `: ${rlReason}` : ''}`);
           await sleep(calc429Delay(rateHeaders, consecutive429));
           continue;
@@ -417,7 +417,7 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
         if (resp.ok || resp.status < 500) {
           if (!resp.ok) {
             let errBody = '';
-            try { errBody = (await resp.text()).slice(0, 300); } catch {}
+            try { errBody = (await resp.clone().text()).slice(0, 300); } catch {}
             logError(store, target, model, resp.status, errBody || `HTTP ${resp.status}`);
           }
 
@@ -570,9 +570,8 @@ function extractRateLimitHeaders(headers) {
   return info;
 }
 
-async function classifyAndRecord429(store, target, model, resp, rateHeaders) {
-  let errText = '';
-  try { errText = await resp.text(); } catch { errText = ''; }
+async function classifyAndRecord429(store, target, model, errText, rateHeaders) {
+  errText = String(errText || '');
 
   let code = '';
   let message = errText;

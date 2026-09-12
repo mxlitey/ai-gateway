@@ -73,7 +73,7 @@ tr:hover td{background:var(--bg-hover)}
 .err-copy:hover{color:var(--primary);background:var(--bg-3)}
 
 /* Badge */
-.badge{display:inline-block;padding:3px 10px;border-radius:9999px;font-size:12px;font-weight:500}
+.badge{display:inline-block;padding:3px 10px;border-radius:9999px;font-size:12px;font-weight:500;white-space:nowrap}
 .badge-on{background:rgba(34,197,94,.12);color:var(--success)}
 .badge-off{background:rgba(239,68,68,.12);color:var(--danger)}
 .tag-direct{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:11px;font-weight:500;background:rgba(99,102,241,.12);color:var(--primary)}
@@ -136,6 +136,8 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 
 /* Key display */
 .key-mono{font-family:'SF Mono',SFMono-Regular,Consolas,monospace;font-size:13px;background:var(--bg-0);padding:3px 8px;border-radius:4px;display:inline-block}
+.key-copy-btn{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text-1);cursor:pointer;font-size:14px;line-height:1;vertical-align:middle}
+.key-copy-btn:hover{background:var(--bg-hover);color:var(--text-0)}
 
 /* Empty state */
 .empty{text-align:center;color:var(--text-2);padding:48px 20px;font-size:14px}
@@ -1435,13 +1437,13 @@ function renderApiKeys() {
     const chIds = k.channel_ids || [];
     const chNames = chIds.length > 0
       ? chIds.map(id => { const ch = channels.find(c => c.id === id); return ch ? esc(ch.name) : '?'; }).join(', ')
-      : '<span style="color:var(--text-2)">' + t('allChannels') + '</span>';
+      : '<span style="color:var(--text-2)">' + t('all') + '</span>';
 
     return \`
     <tr>
-      <td>\${esc(k.name)}</td>
-      <td><span class="key-mono">\${maskKey(k.key)}</span>
-        <button class="btn btn-sm btn-ghost" style="margin-left:8px" data-key="\${esc(k.key)}" onclick="copyKey(this)">\${t('copy')}</button>
+      <td style="white-space:nowrap">\${esc(k.name)}</td>
+      <td style="white-space:nowrap"><span class="key-mono">\${maskKey(k.key)}</span>
+        <button class="key-copy-btn" style="margin-left:8px" title="\${t('copy')}" data-key="\${esc(k.key)}" onclick="copyKey(this)">⧉</button>
       </td>
       <td>\${chNames}</td>
       <td>\${fmtDate(k.created_at)}</td>

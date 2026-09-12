@@ -1,9 +1,28 @@
 import { enabledKeys } from '../lb/balancer.js';
-import { normalizeHeaders, applyChannelHeaders, DIAG_PLACEHOLDER_FALLBACK } from '../proxy/headers.js';
+import { normalizeHeaders, applyChannelHeaders } from '../proxy/headers.js';
+import { resolveChatPath, resolveModelsPath } from '../proxy/utils.js';
 
 /** 北京时区日期（用于用量/错误日志的读写保持一致，避免 UTC 跨日错位）。 */
 function beijingToday() {
   return new Date(new Date().getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * 按与真实转发相同的标准检查上游 200 响应体：
+ * 内嵌 error / choices 不是数组 / choices 为空，都视为失败。
+ * 否则「状态码 200 但内容其实是错误」的渠道会被诊断显示成健康的。
+ * @returns 失败原因；正常或无法判断时返回 ''
+ */
+function describeInvalidChatBody(bodyText) {
+  let data;
+  try { data = JSON.parse(bodyText); } catch { return ''; }
+  if (!data || typeof data !== 'object') return '';
+  if (data.error && typeof data.error === 'object') {
+    return String(data.error.message || data.error.code || data.error.type || 'upstream error');
+  }
+  if (!Array.isArray(data.choices)) return 'choices 字段异常（' + JSON.stringify(data.choices) + '）';
+  if (data.choices.length === 0) return 'choices 为空';
+  return '';
 }
 
 export async function handleAdminApi(request, env, store) {
@@ -200,7 +219,7 @@ export async function handleAdminApi(request, env, store) {
 
       const results = [];
       for (const tk of tasks) {
-        const model = String(tk.model || '').trim() || 'gpt-3.5-turbo';
+        const model = String(tk.model || '').trim();
         const targetChannels = tk.channel_id
           ? channels.filter(ch => ch.id === tk.channel_id)
           : channels.filter(ch => ch.enabled && enabledKeys(ch).length > 0);
@@ -208,6 +227,14 @@ export async function handleAdminApi(request, env, store) {
           let keys = enabledKeys(ch);
           if (tk.key) keys = keys.filter(k => k === tk.key);
           if (keys.length === 0) continue;
+          if (!model) {
+            // 不再偷偷用某个写死的模型兜底：那会把「没指定模型」显示成渠道故障
+            results.push({
+              model: '', channel: ch.name, channel_id: ch.id, key_hint: '',
+              status: 0, duration_ms: 0, error: '未指定模型，无法诊断',
+            });
+            continue;
+          }
           for (const key of keys) {
             const keyHint = key.length > 12 ? key.slice(0, 7) + '...' + key.slice(-4) : key;
             const baseUrl = ch.base_url.replace(/\/+$/, '');
@@ -217,7 +244,7 @@ export async function handleAdminApi(request, env, store) {
               const reqHeaders = new Headers();
               reqHeaders.set('Content-Type', 'application/json');
               reqHeaders.set('Authorization', `Bearer ${key}`);
-              applyChannelHeaders(reqHeaders, ch, null, DIAG_PLACEHOLDER_FALLBACK);
+              applyChannelHeaders(reqHeaders, ch, null);
               const resp = await fetch(testUrl, {
                 method: 'POST',
                 headers: reqHeaders,
@@ -235,12 +262,15 @@ export async function handleAdminApi(request, env, store) {
                 const v = resp.headers.get(h);
                 if (v != null) rateHeaders[h] = v;
               }
-              let body = '';
-              try { body = (await resp.text()).slice(0, 300); } catch {}
+              let rawText = '';
+              try { rawText = await resp.text(); } catch {}
+              // 与真实转发同一判定标准：200 也可能是「内容为错误」的假成功
+              const invalid = resp.status === 200 ? describeInvalidChatBody(rawText) : '';
               results.push({
                 model: model, channel: ch.name, channel_id: ch.id, key_hint: keyHint,
                 status: resp.status, duration_ms: duration,
-                rate_headers: rateHeaders, body,
+                rate_headers: rateHeaders, body: rawText.slice(0, 300),
+                ...(invalid ? { error: invalid } : {}),
               });
             } catch (err) {
               results.push({
@@ -249,7 +279,6 @@ export async function handleAdminApi(request, env, store) {
                 error: err.message,
               });
             }
-            await new Promise(r => setTimeout(r, 800));
           }
         }
       }
@@ -259,9 +288,9 @@ export async function handleAdminApi(request, env, store) {
       }
 
       const count429 = results.filter(r => r.status === 429).length;
-      const count200 = results.filter(r => r.status === 200).length;
+      const countOk = results.filter(r => r.status === 200 && !r.error).length;
       return jsonRes({
-        summary: { total: results.length, ok: count200, rate_limited: count429 },
+        summary: { total: results.length, ok: countOk, rate_limited: count429 },
         results,
       });
     }
@@ -294,16 +323,11 @@ function normalizeModelMap(data) {
   return out;
 }
 
-/** 渠道对话接口路径：未配置协议接口时默认 /chat/completions */
-function resolveChatPath(channel) {
-  const p = (channel && channel.path) || '';
-  const trimmed = p.trim();
-  return trimmed ? (trimmed.startsWith('/') ? trimmed : '/' + trimmed) : '/chat/completions';
-}
-
-/** 调用上游 base_url + /models 拉取模型列表（兼容 OpenAI / Claude 响应格式）。 */
+/** 调用上游「模型列表」接口拉取模型（兼容 OpenAI / Claude 响应格式）。
+ *  接口路径与转发用同一套推导（resolveModelsPath），不再无脑拼 /models。 */
 async function fetchUpstreamModels(ch) {
   const baseUrl = String(ch.base_url || '').replace(/\/+$/, '');
+  const modelsUrl = baseUrl + resolveModelsPath(ch);
   let lastErr = null;
   const keys = enabledKeys(ch);
   for (const key of keys) {
@@ -311,21 +335,16 @@ async function fetchUpstreamModels(ch) {
       const reqHeaders = new Headers();
       reqHeaders.set('Content-Type', 'application/json');
       reqHeaders.set('Authorization', `Bearer ${key}`);
-      applyChannelHeaders(reqHeaders, ch, null, DIAG_PLACEHOLDER_FALLBACK);
-      const resp = await fetch(baseUrl + '/models', {
+      applyChannelHeaders(reqHeaders, ch, null);
+      const resp = await fetch(modelsUrl, {
         headers: reqHeaders,
       });
       const text = await resp.text();
       if (resp.ok) {
         let data = null;
         try { data = JSON.parse(text); } catch { data = null; }
-        // 保留分组信息：优先取 group，其次 category；无分组则仅 id
         const items = Array.isArray(data?.data) ? data.data.filter(m => m && m.id) : [];
-        const models = items.map(m => {
-          const g = (m.group != null && m.group !== '') ? m.group : (m.category || '');
-          return g ? { id: m.id, group: g } : { id: m.id };
-        });
-        return { models };
+        return { models: items.map(m => String(m.id)) };
       }
       lastErr = `HTTP ${resp.status}: ${text.slice(0, 200)}`;
     } catch (e) {

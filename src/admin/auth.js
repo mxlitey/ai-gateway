@@ -42,11 +42,17 @@ export async function handleLogin(request, env, store) {
       return jsonRes({ error: 'Password or API key is required' }, 400);
     }
 
+    // ADMIN_PASSWORD 既是登录密码，也是管理会话 Token 的签名密钥（README 必填项）。
+    // 未配置时无法签发可被 requireAuth 验证的 Token，直接返回明确错误。
     const adminPwd = env.ADMIN_PASSWORD;
+    if (!adminPwd) {
+      return jsonRes({ error: 'ADMIN_PASSWORD not configured on the server' }, 500);
+    }
+
     let authenticated = false;
 
     // 1. Try admin password
-    if (adminPwd && password === adminPwd) {
+    if (password === adminPwd) {
       authenticated = true;
     }
 
@@ -60,15 +66,11 @@ export async function handleLogin(request, env, store) {
     }
 
     if (!authenticated) {
-      if (!adminPwd) {
-        return jsonRes({ error: 'ADMIN_PASSWORD not configured and no matching API key found' }, 500);
-      }
       return jsonRes({ error: 'Invalid password or API key' }, 401);
     }
 
-    // Use ADMIN_PASSWORD as token signing secret; fallback to a derived secret from the input
-    const secret = adminPwd || password;
-    const token = await createToken(secret);
+    // 始终用 ADMIN_PASSWORD 作为签名密钥，保证 Token 可被 requireAuth 验证
+    const token = await createToken(adminPwd);
     return jsonRes({ token });
   } catch (err) {
     return jsonRes({ error: 'Invalid request' }, 400);

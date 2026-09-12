@@ -1,6 +1,6 @@
 /**
  * EdgeOne Blob 存储适配层，实现与 Cloudflare KV 一致的接口。
- * 使用强一致读取（read-after-write），保证计数 / 限流等状态能读到最新值。
+ * 使用强一致读取（read-after-write），保证配置 / 错误日志等状态能读到最新值。
  *
  * Interface:
  *   await kv.get(key, 'json') -> parsed object or null

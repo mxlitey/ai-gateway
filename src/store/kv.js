@@ -1,9 +1,8 @@
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-const DEFAULT_COOLDOWN_MS = 90 * 1000;
 
 class KVStore {
   /**
-   * @param {object} kv   Blob/File 适配层（config、ratelimit、errors）
+   * @param {object} kv   Blob/File 适配层（config、errors）
    */
   constructor(kv) {
     this.kv = kv;
@@ -45,15 +44,6 @@ class KVStore {
     await this.set('config:apikeys', keys);
   }
 
-  // ── Model routes (路由表：公开模型名 → 渠道 + 上游模型) ──
-  async getRoutes() {
-    return (await this.get('config:routes')) || [];
-  }
-
-  async saveRoutes(routes) {
-    await this.set('config:routes', routes);
-  }
-
   // ── Error logs (per-channel, per-day, last 100 entries) ──
 
   _todayKey() {
@@ -77,148 +67,6 @@ class KVStore {
     try { return (await this.kv.get(key, 'json')) || []; } catch { return []; }
   }
 
-  // ── Rate-limit state (per key+model, per day) ──
-  // Storage: ratelimit:{channelId}:{date} →
-  // {
-  //   "keyId": {
-  //     "daily_models": ["modelA"],              // exhausted for current day
-  //     "cooldowns": { "modelB": 1770000000000 },// temporary cooldown until timestamp(ms)
-  //     "header": {
-  //       "user_limit": 2000,
-  //       "user_remaining": 1500,
-  //       "model_limits": { "modelA": { "limit": 100, "remaining": 12, "updated_at": 1770000000000 } },
-  //       "updated_at": 1770000000000
-  //     }
-  //   }
-  // }
-
-  _normalizeRateLimitData(rawData) {
-    const data = rawData && typeof rawData === 'object' ? rawData : {};
-    const normalized = {};
-
-    for (const [kid, entry] of Object.entries(data)) {
-      // Backward compatibility: old format was { keyId: ["model1", ...] }
-      if (Array.isArray(entry)) {
-        normalized[kid] = {
-          daily_models: [...new Set(entry.filter(Boolean))],
-          cooldowns: {},
-          header: { model_limits: {} },
-        };
-        continue;
-      }
-
-      const dailyModels = Array.isArray(entry?.daily_models)
-        ? [...new Set(entry.daily_models.filter(Boolean))]
-        : [];
-      const cooldowns = (entry?.cooldowns && typeof entry.cooldowns === 'object')
-        ? { ...entry.cooldowns }
-        : {};
-      const header = (entry?.header && typeof entry.header === 'object')
-        ? { ...entry.header, model_limits: { ...(entry.header.model_limits || {}) } }
-        : { model_limits: {} };
-
-      normalized[kid] = { daily_models: dailyModels, cooldowns, header };
-    }
-
-    return normalized;
-  }
-
-  async _loadRateLimitData(channelId, date) {
-    const kvKey = `ratelimit:${channelId}:${date || this._todayKey()}`;
-    let data;
-    try {
-      data = (await this.kv.get(kvKey, 'json')) || {};
-    } catch {
-      data = {};
-    }
-    return { kvKey, data: this._normalizeRateLimitData(data) };
-  }
-
-  async _saveRateLimitData(kvKey, data) {
-    await this.kv.put(kvKey, JSON.stringify(data));
-    this.cache.set(kvKey, { value: data, time: Date.now() });
-  }
-
-  _ensureRateLimitEntry(data, kid) {
-    if (!data[kid]) {
-      data[kid] = {
-        daily_models: [],
-        cooldowns: {},
-        header: { model_limits: {} },
-      };
-    }
-    if (!Array.isArray(data[kid].daily_models)) data[kid].daily_models = [];
-    if (!data[kid].cooldowns || typeof data[kid].cooldowns !== 'object') data[kid].cooldowns = {};
-    if (!data[kid].header || typeof data[kid].header !== 'object') data[kid].header = { model_limits: {} };
-    if (!data[kid].header.model_limits || typeof data[kid].header.model_limits !== 'object') {
-      data[kid].header.model_limits = {};
-    }
-    return data[kid];
-  }
-
-  async markRateLimited(channelId, apiKey, model) {
-    const date = this._todayKey();
-    const { kvKey, data } = await this._loadRateLimitData(channelId, date);
-    const kid = this._keyId(apiKey);
-    const entry = this._ensureRateLimitEntry(data, kid);
-    const modelKey = model || '*';
-    if (!entry.daily_models.includes(modelKey)) {
-      entry.daily_models.push(modelKey);
-    }
-    await this._saveRateLimitData(kvKey, data);
-  }
-
-  async markRateLimitedTemporary(channelId, apiKey, model, cooldownMs = DEFAULT_COOLDOWN_MS) {
-    const date = this._todayKey();
-    const { kvKey, data } = await this._loadRateLimitData(channelId, date);
-    const kid = this._keyId(apiKey);
-    const entry = this._ensureRateLimitEntry(data, kid);
-    const modelKey = model || '*';
-    const until = Date.now() + Math.max(1, cooldownMs);
-    entry.cooldowns[modelKey] = Math.max(until, Number(entry.cooldowns[modelKey]) || 0);
-    await this._saveRateLimitData(kvKey, data);
-  }
-
-  /** 生成密钥标识（安全起见取哈希，不存储明文密钥）。 */
-  _keyId(apiKey) {
-    const str = String(apiKey || '');
-    let hash = 5381;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) + hash + str.charCodeAt(i)) | 0;
-    }
-    return 'k' + (hash >>> 0).toString(36);
-  }
-
-  async getRateLimits(channelId, date) {
-    const { data } = await this._loadRateLimitData(channelId, date);
-    return data;
-  }
-
-  isRateLimitedWithData(apiKey, model, rateLimitData) {
-    const kid = this._keyId(apiKey);
-    const entry = this._normalizeRateLimitData(rateLimitData)[kid];
-    if (!entry) return false;
-
-    if (entry.daily_models.includes(model) || entry.daily_models.includes('*')) return true;
-
-    const now = Date.now();
-    const modelUntil = Number(entry.cooldowns?.[model]) || 0;
-    const globalUntil = Number(entry.cooldowns?.['*']) || 0;
-    return modelUntil > now || globalUntil > now;
-  }
-
-  getRateLimitInfoWithData(apiKey, rateLimitData) {
-    const kid = this._keyId(apiKey);
-    const entry = this._normalizeRateLimitData(rateLimitData)[kid];
-    if (!entry) {
-      return {
-        daily_models: [],
-        cooldowns: {},
-        header: { model_limits: {} },
-      };
-    }
-    return entry;
-  }
 }
 
 export function createStore(kv) {

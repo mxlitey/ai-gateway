@@ -5,6 +5,8 @@
  * Response: OpenAI -> Claude  (openAIToClaude / openAIStreamToClaudeStream)
  */
 
+import { rid } from './utils.js';
+
 // ─── Request conversion ────────────────────────────────────────────
 
 /**
@@ -340,12 +342,6 @@ export function openAIStreamToClaudeStream(body, model) {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────
-
-function rid() {
-  const b = new Uint8Array(12);
-  crypto.getRandomValues(b);
-  return Array.from(b, v => v.toString(16).padStart(2, '0')).join('');
-}
 
 function safeParse(s) {
   try { return JSON.parse(s); } catch { return {}; }

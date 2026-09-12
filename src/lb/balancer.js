@@ -62,14 +62,8 @@ export class LoadBalancer {
       return { targets: [], error: 'No available channel for model: ' + model };
     }
 
-    // 预加载相关渠道限流状态
-    const rateLimitMap = new Map();
-    await Promise.all(targetRows.map(tr =>
-      this.store.getRateLimits(tr.channel.id).then(d => rateLimitMap.set(tr.channel.id, d))
-    ));
-
     // 依渠道顺序展开，同一渠道+key+上游模型去重
-    const allTargets = [];
+    const targets = [];
     const seen = new Set(); // 去重：channelId:key:upstreamModel
     for (const tr of targetRows) {
       const keys = await this.getOrderedKeys(tr.channel);
@@ -77,18 +71,8 @@ export class LoadBalancer {
         const dedupeKey = `${tr.channel.id}:${key}:${tr.upstream_model}`;
         if (seen.has(dedupeKey)) continue;
         seen.add(dedupeKey);
-        allTargets.push({ channel: tr.channel, key, model: tr.upstream_model, publicModel: tr.publicModel });
+        targets.push({ channel: tr.channel, key, model: tr.upstream_model, publicModel: tr.publicModel });
       }
-    }
-
-    // 按 429 限流状态过滤
-    const targets = allTargets.filter(t => {
-      const rlData = rateLimitMap.get(t.channel.id) || {};
-      return !this.store.isRateLimitedWithData(t.key, t.publicModel, rlData);
-    });
-
-    if (targets.length === 0 && allTargets.length > 0) {
-      return { targets: [], error: 'All keys are rate-limited for model: ' + model };
     }
 
     if (targets.length === 0) {

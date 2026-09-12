@@ -158,8 +158,6 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 /* Empty state */
 .empty{text-align:center;color:var(--text-2);padding:48px 20px;font-size:14px}
 
-/* 渠道模型勾选 */
-.model-picker{background:var(--bg-0);border:1px solid var(--border);border-radius:6px;padding:12px;max-height:220px;overflow-y:auto;margin-bottom:8px}
 .date-picker{display:flex;gap:8px;align-items:center;margin-bottom:20px}
 .date-picker input[type="date"]{width:180px}
 
@@ -170,11 +168,6 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 .pagination button:disabled{opacity:.35;cursor:default}
 .pagination .pg-active{background:var(--primary);color:#fff;border-color:var(--primary);font-weight:600}
 .pagination .pg-info{font-size:12px;color:var(--text-2);margin:0 4px}
-
-/* 路由多目标编辑 */
-.rt-target-row{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px}
-.rt-target-row label{font-size:12px;margin-bottom:4px}
-.rt-add-target{width:100%;margin-bottom:8px}
 
 /* 渠道模型勾选 */
 .model-picker{background:var(--bg-0);border:1px solid var(--border);border-radius:6px;padding:12px;max-height:220px;overflow-y:auto;margin-bottom:8px}
@@ -217,16 +210,6 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
   .map-row .map-del{margin-left:auto}
 }
 
-/* 「获取上游模型」分组展示 */
-.model-pick-group-head{display:flex;align-items:center;gap:6px;padding:8px 10px;cursor:pointer;font-weight:600;font-size:13px;color:var(--text-0);border-bottom:1px solid var(--border);position:sticky;top:0;background:var(--bg-1)}
-.model-pick-group-head:hover{background:var(--bg-hover)}
-.group-tri{font-size:9px;color:var(--text-2);display:inline-block;transform:rotate(0);transition:transform .15s}
-.group-tri.open{transform:rotate(90deg)}
-.group-name{flex:1}
-.group-count{color:var(--text-2);font-weight:400;font-size:12px}
-.model-pick-group-body{display:none}
-.model-pick-group-body > .model-pick-item{padding-left:26px}
-
 /* 竖屏小屏补充适配 */
 @media (max-width: 640px){
   .content{padding-top:124px;padding-left:12px;padding-right:12px}
@@ -246,8 +229,6 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
   .toast{min-width:0;width:100%}
   .date-picker{flex-wrap:wrap}
   .date-picker input[type="date"]{width:100%}
-  .rt-target-row{grid-template-columns:1fr 1fr;gap:8px}
-  .rt-trg-del{grid-column:span 2}
   .map-row{flex-wrap:wrap}
   .map-row .map-arrow{display:none}
   .map-row input{flex:1 1 45%}
@@ -429,7 +410,6 @@ const I18N = {
   urlPlaceholder: '例如 https://integrate.api.nvidia.com/v1',
   modelsLabel: '模型列表',
   modelsPlaceholder: 'gpt-4o',
-  modelsHelp: '无映射的模型，请求同名模型时直接透传到此渠道。留空则无同名透传，仅映射生效。',
   cancel: '取消',
   save: '保存',
   generateKey: '生成密钥',
@@ -477,8 +457,6 @@ const I18N = {
   errorUpstream: '上游模型',
   errorDetail: '展开详情',
   copyMsg: '复制',
-  expandMsg: '展开',
-  copied: '已复制',
   copyFail: '复制失败',
   errorsToday: '个错误',
   modelRoutes: '模型路由',
@@ -490,25 +468,9 @@ const I18N = {
   diagResult: '诊断结果',
   noDiagTarget: '没有可诊断的目标渠道/key',
   direct: '透传',
-  addRoute: '添加路由',
-  editRoute: '编辑路由',
-  routeName: '名称（别名）',
   publicModel: '公开模型名',
-  targetChannel: '目标渠道',
-  upstreamModel: '上游模型',
-  publicModelHelp: '客户端使用的模型名，需与请求中的 model 一致。',
-  upstreamModelHelp: '实际转发给上游渠道的模型名，默认等于公开模型名。',
-  noRoutes: '暂无路由，点击「添加路由」创建。',
-  routeCreated: '路由已创建',
-  routeUpdated: '路由已更新',
-  routeModelRequired: '公开模型名不能为空',
-  selectChannel: '选择一个渠道',
-  addTarget: '添加目标渠道',
-  removeTarget: '移除',
-  atLeastOneTarget: '公开模型名不能为空，且至少关联一个上游渠道模型',
   fetchModels: '获取上游模型',
   fetchingModels: '获取中…',
-  modelPickerHelp: '勾选模型即添加到该渠道；也可手动在下方输入。',
   modelPickerEmpty: '未获取到模型，请检查基础 URL 与密钥。',
   modelPickerLoading: '正在获取上游模型…',
   modelPickTitle: '选择上游模型',
@@ -529,7 +491,7 @@ const I18N = {
   addHeader: '添加请求头',
   headerNamePh: '请求头名称',
   headerValuePh: '请求头值',
-  headersHelp: '该渠道每次上游请求都会携带这些请求头，同名会覆盖内置请求头。占位符 {{请求头名}} 直接取客户端同名请求头（大小写不敏感），例如 {{x-session-id}}。支持多候选回退 {{a | b | c}}：依次取第一个存在的客户端请求头，例如 {{x-session-id | x-conversation-id | session_id}}，可让同一渠道适配对同一值使用不同头名的不同客户端。内置生成器：{{uuid}} {{timestamp}} {{random}}',
+  headersHelp: '该渠道每次上游请求都会携带这些请求头，同名会覆盖内置请求头。占位符 {{请求头名}} 直接取客户端同名请求头（大小写不敏感），例如 {{x-session-id}}。支持多候选回退 {{a | b | c}}：依次取第一个存在的客户端请求头，例如 {{x-session-id | x-conversation-id | session_id}}，可让同一渠道适配对同一值使用不同头名的不同客户端。候选用方括号包裹表示固定常量，恒命中，适合放在末尾兜底，例如 {{x-session-id | [gw-session-001]}}（客户端没传时用 gw-session-001）。内置生成器：{{uuid}} {{timestamp}} {{random}}',
 };
 
 // 项目仅保留中文界面，字典即中文文案
@@ -762,7 +724,7 @@ function showChModal(id) {
     <div class="form-group">
       <label>\${t('modelsLabel')}</label>
       <button type="button" class="btn btn-sm btn-ghost" style="margin-bottom:8px" onclick="openModelPickerModal()">\${t('fetchModels')}</button>
-      <textarea id="f-models" style="min-height:80px" placeholder="\${t('modelsPlaceholder')}">\${ch ? (ch.models||[]).join('\\n') : ''}</textarea>
+      <textarea id="f-models" style="min-height:80px" placeholder="\${t('modelsPlaceholder')}">\${ch ? (ch.models||[]).join(String.fromCharCode(10)) : ''}</textarea>
     </div>
     <div class="form-group">
       <label>\${t('modelMapLabel')}</label>
@@ -849,34 +811,7 @@ function renderModelPickList(q) {
   const query = String(q || '').trim().toLowerCase();
   const list = modelPickList.filter(o => !query || String(o.id ?? o).toLowerCase().includes(query));
   if (list.length === 0) { box.innerHTML = '<div class="model-picker-empty">' + t('modelSearchEmpty') + '</div>'; return; }
-
-  // 有分组信息时按分组折叠显示，否则平铺
-  const hasGroup = list.some(o => o.group);
-  if (!hasGroup) {
-    box.innerHTML = list.map(o => modelPickItemHtml(o.id ?? o)).join('');
-    return;
-  }
-  const order = Array.from(new Set(list.map(o => o.group).filter(Boolean)));
-  let html = '';
-  for (const g of order) {
-    const items = list.filter(o => (o.group || '') === g);
-    const gid = 'pg' + Math.random().toString(36).slice(2, 8);
-    html += '<div class="model-pick-group">' +
-      '<div class="model-pick-group-head" onclick="togglePickGroup(this)">' +
-        '<span class="group-tri">▸</span><span class="group-name">' + esc(g) + '</span><span class="group-count">' + items.length + '</span>' +
-      '</div>' +
-      '<div class="model-pick-group-body" style="display:none">' + items.map(o => modelPickItemHtml(o.id)).join('') + '</div>' +
-    '</div>';
-  }
-  box.innerHTML = html;
-}
-
-function togglePickGroup(head) {
-  const body = head.nextElementSibling;
-  if (!body) return;
-  const hidden = body.style.display === 'none';
-  body.style.display = hidden ? 'block' : 'none';
-  head.querySelector('.group-tri').classList.toggle('open', hidden);
+  box.innerHTML = list.map(o => modelPickItemHtml(o.id ?? o)).join('');
 }
 
 function toggleModelPick(cb) {
@@ -890,8 +825,12 @@ function confirmModelPick() {
   const taLines = ta.value.split(String.fromCharCode(10)).map(s => s.trim()).filter(Boolean);
   const ids = modelPickList.map(o => o.id ?? o);
   const ordered = [...taLines, ...ids].filter(m => modelPickState.has(m));
-  ta.value = Array.from(new Set(ordered)).join(String.fromCharCode(10));
-  if (modelPickState.size > 0) toast(t('addedNModels').replace('{n}', modelPickState.size));
+  const finalList = Array.from(new Set(ordered));
+  ta.value = finalList.join(String.fromCharCode(10));
+  // 仅提示「本次新增」的模型数量（已存在的勾选项不算）
+  const prev = new Set(taLines);
+  const added = finalList.filter(m => !prev.has(m)).length;
+  if (added > 0) toast(t('addedNModels').replace('{n}', added));
   closeModelPicker();
 }
 
@@ -1079,7 +1018,7 @@ async function saveCh(id) {
   const base_url = document.getElementById('f-url').value.trim();
   const path = document.getElementById('f-path').value.trim();
   const keys = keyRows.map(r => ({ key: r.key.trim(), enabled: r.enabled })).filter(r => r.key);
-  const models = document.getElementById('f-models').value.split('\\n').map(s=>s.trim()).filter(Boolean);
+  const models = document.getElementById('f-models').value.split(String.fromCharCode(10)).map(s=>s.trim()).filter(Boolean);
 
   if (!name || !base_url) { toast(t('nameUrlRequired'), 'error'); return; }
 
@@ -1308,9 +1247,11 @@ async function runRouteDiagnose() {
     resBox.innerHTML = '<div class="model-picker-empty">' + t('noDiagTarget') + '</div>';
     return;
   }
-  const okCount = results.filter(r => r.status === 200).length;
+  // 与后端一致：状态码 200 但带 error 的属于「假成功」，不计入成功
+  const isOk = r => r.status === 200 && !r.error;
+  const okCount = results.filter(isOk).length;
   const rows = results.map(r => {
-    const ok = r.status === 200;
+    const ok = isOk(r);
     const color = r.status === 429 ? 'var(--warning)' : (ok ? 'var(--success)' : 'var(--danger)');
     const statusText = r.status > 0 ? r.status : 'ERR';
     return '<div style="display:flex;gap:10px;align-items:baseline;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px">' +
@@ -1318,6 +1259,7 @@ async function runRouteDiagnose() {
       '<span style="min-width:56px;color:var(--text-2)">' + r.duration_ms + 'ms</span>' +
       '<span style="color:var(--text-1)">' + esc(r.channel || r.channel_id) + '</span>' +
       '<span style="color:var(--text-2)">' + esc(r.key_hint || '') + '</span>' +
+      (!ok && r.error ? '<span style="color:var(--danger);min-width:0;overflow:hidden;text-overflow:ellipsis">' + esc(String(r.error)) + '</span>' : '') +
     '</div>';
   }).join('');
   resBox.innerHTML = '<div style="font-weight:600;font-size:13px;margin-bottom:4px">' + t('diagResult') + ' (' + okCount + '/' + results.length + ')</div>' + rows;
@@ -1593,8 +1535,8 @@ function confirmDel(type, id, name) {
   \`);
   document.getElementById('del-btn').onclick = async () => {
     closeModal();
-    const paths = { channel: '/channels/', apikey: '/apikeys/', route: '/routes/' };
-    const r = await api((paths[type] || '/routing/') + id, { method: 'DELETE' });
+    const paths = { channel: '/channels/', apikey: '/apikeys/' };
+    const r = await api(paths[type] + id, { method: 'DELETE' });
     if (r && !r.error) {
       toast(t('deleted'), 'success');
       await loadData();

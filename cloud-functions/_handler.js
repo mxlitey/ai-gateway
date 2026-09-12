@@ -32,7 +32,7 @@ function getKv() {
  */
 export async function handleRequest(context) {
   const env = context.env || {};
-  const kv = await getKv(env);
+  const kv = await getKv();
   return worker.fetch(context.request, {
     ADMIN_PASSWORD: env.ADMIN_PASSWORD || '',
     KV: kv,

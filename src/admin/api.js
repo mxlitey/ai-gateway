@@ -209,12 +209,17 @@ export async function handleAdminApi(request, env, store) {
             const testUrl = baseUrl + resolveChatPath(ch);
             const start = Date.now();
             try {
+              const reqHeaders = {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${key}`,
+              };
+              if (isOpencodeChannel(ch)) {
+                reqHeaders['x-opencode-session'] = generateOpencodeSession();
+                reqHeaders['User-Agent'] = 'ai-gateway/1.0';
+              }
               const resp = await fetch(testUrl, {
                 method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${key}`,
-                },
+                headers: reqHeaders,
                 body: JSON.stringify({
                   model: model,
                   messages: [{ role: 'user', content: 'say ok' }],
@@ -295,6 +300,18 @@ function resolveChatPath(channel) {
   return trimmed ? (trimmed.startsWith('/') ? trimmed : '/' + trimmed) : '/chat/completions';
 }
 
+/** 判定上游是否为 opencode.ai：其 Go 服务要求 x-opencode-session 头与专属 UA，否则返回 400 MissingSessionID */
+function isOpencodeChannel(channel) {
+  return /opencode\.ai/i.test((channel && channel.base_url) || '');
+}
+
+/** 生成 opencode 会话 ID（诊断无客户端会话可透传，故随机生成） */
+function generateOpencodeSession() {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return 'gw-' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 /** 调用上游 base_url + /models 拉取模型列表（兼容 OpenAI / Claude 响应格式）。 */
 async function fetchUpstreamModels(ch) {
   const baseUrl = String(ch.base_url || '').replace(/\/+$/, '');
@@ -302,11 +319,16 @@ async function fetchUpstreamModels(ch) {
   const keys = enabledKeys(ch);
   for (const key of keys) {
     try {
+      const reqHeaders = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`,
+      };
+      if (isOpencodeChannel(ch)) {
+        reqHeaders['x-opencode-session'] = generateOpencodeSession();
+        reqHeaders['User-Agent'] = 'ai-gateway/1.0';
+      }
       const resp = await fetch(baseUrl + '/models', {
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${key}`,
-        },
+        headers: reqHeaders,
       });
       const text = await resp.text();
       if (resp.ok) {

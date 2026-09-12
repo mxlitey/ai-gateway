@@ -96,6 +96,7 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
         headers.set('Content-Type', 'application/json');
         headers.set('Authorization', `Bearer ${target.key}`);
         if (isStream) headers.set('Accept', 'text/event-stream');
+        applyOpencodeHeaders(headers, target.channel, request);
 
         const resp = await fetch(targetUrl, {
           method: 'POST',
@@ -240,6 +241,7 @@ async function handleResponses(request, url, body, store, allowedChannelIds) {
         headers.set('Content-Type', 'application/json');
         headers.set('Authorization', `Bearer ${target.key}`);
         if (isStream) headers.set('Accept', 'text/event-stream');
+        applyOpencodeHeaders(headers, target.channel, request);
 
         const resp = await fetch(targetUrl, {
           method: 'POST',
@@ -387,6 +389,7 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
         // Forward Accept header (important for streaming)
         const accept = request.headers.get('Accept');
         if (accept) headers.set('Accept', accept);
+        applyOpencodeHeaders(headers, target.channel, request);
 
         const resp = await fetch(targetUrl, {
           method: 'POST',
@@ -610,6 +613,30 @@ async function classifyAndRecord429(store, target, model, resp, rateHeaders) {
 function resolveChatPath(channel) {
   const trimmed = ((channel && channel.path) || '').trim();
   return trimmed ? (trimmed.startsWith('/') ? trimmed : '/' + trimmed) : '/chat/completions';
+}
+
+/** 判定上游是否为 opencode.ai：其 Go 服务要求 x-opencode-session 头与专属 UA，否则返回 400 MissingSessionID */
+function isOpencodeChannel(channel) {
+  return /opencode\.ai/i.test((channel && channel.base_url) || '');
+}
+
+/** opencode 会话 ID：优先透传客户端的 x-opencode-session，缺失时生成随机值 */
+function resolveOpencodeSession(request) {
+  try {
+    const sid = request && request.headers.get('x-opencode-session');
+    if (sid) return sid;
+  } catch {}
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return 'gw-' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** 为 opencode 上游补齐专属请求头（会话 ID + 专属 UA）；非 opencode 上游原样返回 */
+function applyOpencodeHeaders(headers, channel, request) {
+  if (!isOpencodeChannel(channel)) return headers;
+  headers.set('x-opencode-session', resolveOpencodeSession(request));
+  headers.set('User-Agent', 'ai-gateway/1.0');
+  return headers;
 }
 
 function jsonRes(body, status = 200) {

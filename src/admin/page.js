@@ -13,6 +13,7 @@ export function getAdminPage() {
   --border:#27272a;--primary:#6366f1;--primary-hover:#818cf8;
   --success:#22c55e;--danger:#ef4444;--danger-hover:#dc2626;--warning:#f59e0b;
   --radius:8px;
+  --page-max:1200px;--page-pad:40px;
 }
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg-0);color:var(--text-0);min-height:100vh}
 a{color:inherit;text-decoration:none}
@@ -30,16 +31,16 @@ a{color:inherit;text-decoration:none}
 /* Layout — 顶部导航栏（全设备统一，竖屏/横屏手机、桌面皆同） */
 .main-view{flex-direction:column;min-height:100vh}
 .sidebar{width:100%;background:var(--bg-1);border-right:none;border-bottom:1px solid var(--border);display:flex;flex-direction:column;position:fixed;top:0;left:0;right:0;z-index:50}
-.sidebar-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border)}
+.sidebar-header{display:flex;align-items:center;justify-content:space-between;padding:12px max(16px,calc((100% - var(--page-max))/2 + var(--page-pad)));border-bottom:1px solid var(--border)}
 .sidebar-header .logo{font-size:20px;font-weight:700;background:linear-gradient(135deg,#6366f1,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.sidebar-nav{display:flex;flex-direction:row;gap:4px;overflow-x:auto;padding:6px 8px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.sidebar-nav{display:flex;flex-direction:row;gap:4px;overflow-x:auto;padding:6px max(8px,calc((100% - var(--page-max))/2 + var(--page-pad)));-webkit-overflow-scrolling:touch;scrollbar-width:none}
 .sidebar-nav::-webkit-scrollbar{display:none}
 .nav-item{display:block;padding:8px 12px;color:var(--text-1);border-radius:var(--radius);margin-bottom:0;cursor:pointer;transition:all .15s;font-size:14px;font-weight:500;white-space:nowrap;flex:0 0 auto}
 .nav-item:hover{background:var(--bg-hover);color:var(--text-0)}
 .nav-item.active{background:var(--primary);color:#fff}
 .logout-icon{width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--text-1);border-radius:8px;cursor:pointer;transition:all .15s}
 .logout-icon:hover{background:var(--bg-hover);color:var(--danger)}
-.content{flex:1;margin:0 auto;width:100%;padding:128px 40px 40px;max-width:1200px}
+.content{flex:1;margin:0 auto;width:100%;padding:128px var(--page-pad) 40px;max-width:var(--page-max)}
 
 /* Section header */
 .section-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}

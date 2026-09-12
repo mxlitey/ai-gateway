@@ -1261,14 +1261,16 @@ function openRouteDiagnose(btn) {
     for (const arr of groups.values()) {
       const tk0 = arr[0];
       rows += '<div style="margin-bottom:8px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;min-width:0;max-width:100%;overflow:hidden">' +
-        '<div style="font-weight:600;font-size:13px;margin-bottom:6px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(tk0.channel) +
-          ' <span style="color:var(--text-2);font-weight:400">(' + esc(tk0.host) + ')</span>' +
-          ' <code style="color:var(--primary)">' + esc(tk0.upstream) + '</code></div>' +
+        '<div style="display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;margin-bottom:6px;min-width:0;overflow:hidden">' +
+          '<span style="flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(tk0.channel) + '</span>' +
+          '<span style="color:var(--text-2);font-weight:400;flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">(' + esc(tk0.host) + ')</span>' +
+          '<code style="color:var(--primary);flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(tk0.upstream) + '</code>' +
+        '</div>' +
         arr.map(tk =>
-          '<label style="display:flex;align-items:center;gap:6px;margin:0;min-width:0;max-width:100%">' +
+          '<div class="diag-row" style="display:flex;align-items:center;gap:6px;padding:2px 0;min-width:0;max-width:100%">' +
             '<input type="checkbox" style="flex:0 0 auto" class="diag-key" checked data-channel="' + esc(tk.channel_id) + '" data-key="' + esc(tk.key) + '" data-model="' + esc(tk.upstream) + '">' +
             '<code style="flex:1 1 auto;min-width:0;font-size:12px;color:var(--text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(maskKey(tk.key)) + '</code>' +
-          '</label>'
+          '</div>'
         ).join('') +
       '</div>';
     }

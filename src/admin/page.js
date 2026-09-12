@@ -104,6 +104,8 @@ tr:hover td{background:var(--bg-hover)}
 .btn-ghost{background:transparent;color:var(--text-1);border:1px solid var(--border)}
 .btn-ghost:hover{background:var(--bg-hover);color:var(--text-0)}
 .btn-sm{padding:5px 10px;font-size:12px}
+.btn-icon{padding:5px 7px;line-height:1}
+.btn-icon svg{display:block}
 .btn-full{width:100%;justify-content:center}
 
 /* Forms */
@@ -1132,8 +1134,10 @@ function renderRoutes() {
           '<code style="background:var(--bg-0);padding:2px 8px;border-radius:4px;font-size:12px;color:var(--primary)">' + esc(r.upstream) + '</code>' +
         '</td>' +
         (first
-          ? '<td rowspan="' + n + '" style="width:80px;text-align:right;vertical-align:top">' +
-              '<button type="button" class="btn btn-sm btn-ghost" data-pub="' + esc(p) + '" onclick="openRouteDiagnose(this)">' + t('diagnose') + '</button>' +
+          ? '<td rowspan="' + n + '" style="width:56px;text-align:right;vertical-align:top">' +
+              '<button type="button" class="btn btn-sm btn-ghost btn-icon" data-pub="' + esc(p) + '" onclick="openRouteDiagnose(this)" title="' + t('diagnose') + '" aria-label="' + t('diagnose') + '">' +
+                '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>' +
+              '</button>' +
             '</td>'
           : '') +
       '</tr>';

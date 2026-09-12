@@ -8,20 +8,12 @@
  * 候选用方括号包裹表示「字面常量」，恒命中，适合放在末尾兜底
  * （上游强制要求会话ID、而客户端可能不传时）：
  *   {{x-session-id | x-conversation-id | [gw-session-001]}}
- * 另保留三个与请求头无关的生成器：
+ * 另保留两个与请求头无关的生成器：
  *   {{uuid}}      每次请求随机 UUID
  *   {{timestamp}} 当前毫秒时间戳
- *   {{random}}    每次请求随机十六进制串
  */
 
 const HEADER_NAME_RE = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/;
-
-/** 生成十六进制随机串 */
-function randomHex(bytes = 16) {
-  const arr = new Uint8Array(bytes);
-  crypto.getRandomValues(arr);
-  return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
-}
 
 /** 解析单个候选：先取客户端同名请求头（非空），再尝试内置生成器；未命中返回 null */
 function resolveCandidate(key, request) {
@@ -34,7 +26,6 @@ function resolveCandidate(key, request) {
   switch (key.toLowerCase()) {
     case 'uuid': return crypto.randomUUID();
     case 'timestamp': return String(Date.now());
-    case 'random': return randomHex(16);
     default: return null;
   }
 }
@@ -44,7 +35,7 @@ function resolveCandidate(key, request) {
  *   {{名称}}        取客户端同名请求头（大小写不敏感）
  *   {{a | b | c}}   从左到右取第一个命中，全部落空则置空
  *   {{[常量]}}      候选字面量，恒命中（如 [gw-session-001]），用作兜底
- * 生成器 {{uuid}}/{{timestamp}}/{{random}} 恒为非空，亦可作兜底。
+ * 生成器 {{uuid}}/{{timestamp}} 恒为非空，亦可作兜底。
  */
 export function resolveHeaderValue(value, request) {
   return String(value == null ? '' : value).replace(/\{\{([^{}]+)\}\}/g, (m, rawKey) => {

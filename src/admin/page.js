@@ -489,7 +489,7 @@ const I18N = {
   modelSearchPlaceholder: '搜索模型…',
   modelSearchEmpty: '未找到匹配的模型。',
   selectUpstream: '请选择上游模型',
-  routesInfo: '以下为各公开模型在当前所有启用渠道中的路由路径（按优先级从大到小尝试，相同则按渠道存储顺序；渠道内密钥随机起点轮换）。可直接修改渠道名前的优先级，数字越大越先试。如需调整映射，请前往「渠道管理」编辑。',
+  routesInfo: '优先级0-9999，数字越大越先试。',
   routesNone: '暂无任何模型路由。请在「渠道管理」中为渠道配置「公开模型 → 上游模型」映射。',
   modelMapLabel: '公开模型 → 上游模型　映射',
   addMapping: '添加映射',
@@ -500,7 +500,7 @@ const I18N = {
   addHeader: '添加请求头',
   headerNamePh: '请求头名称',
   headerValuePh: '请求头值',
-  headersHelp: '该渠道每次上游请求都会携带这些请求头，同名会覆盖内置请求头。占位符 {{请求头名}} 直接取客户端同名请求头（大小写不敏感），例如 {{x-session-id}}。支持多候选回退 {{a | b | c}}：依次取第一个存在的客户端请求头，例如 {{x-session-id | x-conversation-id | session_id}}，可让同一渠道适配对同一值使用不同头名的不同客户端。候选用方括号包裹表示固定常量，恒命中，适合放在末尾兜底，例如 {{x-session-id | [gw-session-001]}}（客户端没传时用 gw-session-001）。内置生成器：{{uuid}} {{timestamp}} {{random}}',
+  headersHelp: '例如：{{x-session-id}}<br>多候选：{{请求头名 | uuid | [固定常量]}}<br>内置生成器：{{uuid}} {{timestamp}}',
 };
 
 // 项目仅保留中文界面，字典即中文文案

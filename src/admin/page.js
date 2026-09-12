@@ -335,7 +335,10 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
     <section id="section-errors" class="section" style="display:none">
       <div class="section-header">
         <h2 id="error-title"></h2>
-        <button class="btn btn-ghost" onclick="loadErrors()" id="error-refresh-btn"></button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost" onclick="loadErrors()" id="error-refresh-btn"></button>
+          <button class="btn btn-ghost" onclick="clearErrorLogs()" id="error-clear-btn" style="color:var(--danger)"></button>
+        </div>
       </div>
       <div class="date-picker">
         <label id="error-date-label" style="margin:0;white-space:nowrap"></label>
@@ -462,6 +465,9 @@ const I18N = {
   copyMsg: '复制',
   copyFail: '复制失败',
   errorsToday: '个错误',
+  clearLogs: '清理',
+  confirmClearLogs: '确定要清理 7 天前的错误日志吗（所有渠道）？此操作不可撤销。',
+  clearedLogs: '已清理过期日志',
   modelRoutes: '模型路由',
   diagnose: '诊断',
   runDiagnose: '运行诊断',
@@ -1456,6 +1462,7 @@ async function saveEditAk(id) {
 function renderErrorHeaders() {
   document.getElementById('error-title').textContent = t('errorLogs');
   document.getElementById('error-refresh-btn').textContent = t('refreshError');
+  document.getElementById('error-clear-btn').textContent = t('clearLogs');
   document.getElementById('error-date-label').textContent = t('errorDate');
   document.getElementById('error-today-btn').textContent = t('today');
   const dateInput = document.getElementById('error-date');
@@ -1466,6 +1473,28 @@ function renderErrorHeaders() {
 function setErrorDateToday() {
   document.getElementById('error-date').value = todayBeijing();
   loadErrors();
+}
+
+// 清理 7 天前的错误日志（所有渠道，二次确认）
+function clearErrorLogs() {
+  openModal(
+    '<h3>' + t('clearLogs') + '</h3>' +
+    '<p style="color:var(--text-1);margin-bottom:24px">' + esc(t('confirmClearLogs')) + '</p>' +
+    '<div class="modal-actions">' +
+      '<button class="btn btn-ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+      '<button class="btn btn-danger" id="clear-log-btn">' + t('clearLogs') + '</button>' +
+    '</div>'
+  );
+  document.getElementById('clear-log-btn').onclick = async () => {
+    closeModal();
+    const r = await api('/errors', { method: 'DELETE' });
+    if (r && !r.error) {
+      toast(t('clearedLogs'), 'success');
+      loadErrors();
+    } else {
+      toast((r && r.error) || t('failed'), 'error');
+    }
+  };
 }
 
 async function loadErrors() {

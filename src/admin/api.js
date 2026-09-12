@@ -153,6 +153,12 @@ export async function handleAdminApi(request, env, store) {
       return jsonRes({ date, channels: errorData.filter(d => d.errors.length > 0) });
     }
 
+    // 清理 7 天前的错误日志（所有渠道）
+    if (path === '/errors' && method === 'DELETE') {
+      const removed = await store.cleanupOldErrors();
+      return jsonRes({ success: true, removed });
+    }
+
     // --- API Keys ---
     if (path === '/apikeys' && method === 'GET') {
       return jsonRes(await store.getApiKeys());

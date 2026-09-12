@@ -2,7 +2,7 @@
 
 # AI Gateway
 
-OpenAI 兼容的 AI API 代理网关：多上游渠道、模型映射、负载均衡、自动故障转移，部署在腾讯云 EdgeOne Makers 边缘节点（Cloud Functions）上。
+OpenAI 兼容的 AI API 代理网关：多上游渠道、模型映射、优先级路由、自动故障转移，部署在腾讯云 EdgeOne Makers 边缘节点（Cloud Functions）上。
 
 ![License](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Node.js](https://img.shields.io/badge/Node.js-20.x-339933)
@@ -31,11 +31,11 @@ OpenAI 兼容的 AI API 代理网关：多上游渠道、模型映射、负载�
 - **统一 API**：OpenAI 兼容接口（`/v1/chat/completions`、`/v1/embeddings`、`/v1/models`），并内置 Claude Messages API（`/v1/messages`）协议互转
 - **多上游渠道**：任意 OpenAI 兼容服务均可作为渠道接入（NVIDIA NIM、OpenRouter、Azure、ModelScope 等）
 - **模型映射**：支持「公开模型名 → 上游模型名」映射（`model_map`），未映射的模型按同名透传（`models`）
-- **负载均衡**：渠道按存储顺序尝试，渠道内 Key 以随机起点轮询展开（并发安全）
-- **自动故障转移**：上游 5xx、网络错误、404 或 HTTP 200 内嵌错误时，自动切换下一个 Key / 渠道
+- **优先级路由**：同一公开模型可被多个渠道提供，按「公开模型 → 渠道」的优先级（`model_priority`）从大到小尝试，相同则按渠道存储顺序；渠道内 Key 以随机起点轮换展开（并发安全）
+- **自动故障转移**：上游 5xx、429、404、网络错误或 HTTP 200 内嵌错误时，自动切换下一个 Key / 渠道
 - **流式支持**：完整 SSE 透传，修复上游 `id: null` 等非规范 chunk，并识别流内 error 事件
 - **渠道自定义请求头**：按渠道配置任意请求头，值支持 `{{占位符}}` 从客户端请求头取值，适配客户端私有头（如会话 ID）
-- **Web 管理面板**：渠道 / 客户端 Key / 模型路由 / 错误日志可视化，支持一键拉取上游模型列表与批量连通性诊断
+- **Web 管理面板**：仪表盘 / 渠道管理 / 模型路由 / API 密钥 / 错误日志可视化，支持一键拉取上游模型列表与批量连通性诊断
 - **API Key 鉴权**：支持 `Authorization: Bearer` 与 Claude 风格 `x-api-key`，单个 Key 可限定可用渠道（`channel_ids`）
 - **管理面板鉴权**：管理员密码或任意客户端 Key 登录，会话 Token 为 HMAC 签名，24 小时有效
 - **CORS 支持**：浏览器端跨域调用开箱即用
@@ -46,9 +46,9 @@ OpenAI 兼容的 AI API 代理网关：多上游渠道、模型映射、负载�
 flowchart LR
     Client[客户端<br/>OpenAI / Claude / 任意兼容客户端] -->|API Key 鉴权| GW[AI Gateway<br/>EdgeOne Cloud Functions]
     Admin[管理员浏览器] -->|HMAC 会话| GW
-    GW -->|负载均衡 + 故障转移| C1[渠道 A<br/>NVIDIA NIM]
-    GW -->|负载均衡 + 故障转移| C2[渠道 B<br/>OpenRouter]
-    GW -->|负载均衡 + 故障转移| C3[渠道 C<br/>Azure / ModelScope]
+    GW -->|优先级路由 + 故障转移| C1[渠道 A<br/>NVIDIA NIM]
+    GW -->|优先级路由 + 故障转移| C2[渠道 B<br/>OpenRouter]
+    GW -->|优先级路由 + 故障转移| C3[渠道 C<br/>Azure / ModelScope]
     GW <-->|渠道配置 / 客户端 Key / 错误日志| Store[(EdgeOne Blob<br/>强一致读取)]
 ```
 
@@ -89,18 +89,7 @@ npm run deploy
 |------|------|------|
 | `ADMIN_PASSWORD` | 是 | 管理面板登录密码 |
 
-执行时长已通过 [edgeone.json](edgeone.json) 配置为 120 秒（默认 30 秒，LLM 调用需要）：
-
-```json
-{
-  "nodeVersion": "20.18.0",
-  "cloudFunctions": {
-    "nodejs": {
-      "maxDuration": 120
-    }
-  }
-}
-```
+执行时长已通过 [edgeone.json](edgeone.json) 配置为 120 秒（默认 30 秒，LLM 调用需要）。
 
 ### 本地开发
 
@@ -133,9 +122,11 @@ ADMIN_PASSWORD=dev-password
 
 ## 使用方法
 
+访问 `https://<你的Makers域名>/`，使用管理员密码登录。面板包含 **仪表盘**、**渠道管理**、**模型路由**、**API 密钥**、**错误日志** 五个页面。
+
 ### 1. 配置渠道
 
-访问 `https://<你的Makers域名>/admin`（根路径 `/` 也会直达面板），使用管理密码登录后进入 **渠道管理** 页面，点击 **添加渠道**：
+进入 **渠道管理** 页面，点击 **添加渠道**：
 
 | 字段 | 说明 |
 |------|------|
@@ -151,13 +142,20 @@ ADMIN_PASSWORD=dev-password
 > [!TIP]
 > 管理面板支持一键拉取上游模型列表（获取上游模型）与对「渠道 + Key + 模型」组合的批量连通性诊断。
 
-### 2. 生成客户端 API Key
+### 2. 调整模型路由优先级
+
+进入 **模型路由** 页面，可查看每个公开模型在当前所有启用渠道中的路由路径（按优先级从大到小、相同则按渠道存储顺序；渠道内密钥随机起点轮换）。
+
+- 公开模型可被多个渠道提供，直接修改渠道行前的 **优先级** 数字即可就地保存（数字越大越先尝试，`0` 为默认值）
+- 如需调整「公开模型 → 上游模型」映射，请前往 **渠道管理** 编辑对应渠道
+
+### 3. 生成客户端 API Key
 
 - 进入 **API 密钥** 页面，点击 **生成密钥**
 - 可设置 Key 名称，并限制其可访问的渠道（不选则使用全部渠道）
 - 复制生成的 `sk-...` Key（关闭弹窗后不再显示完整值）
 
-### 3. 调用 API
+### 4. 调用 API
 
 OpenAI 兼容格式：
 
@@ -197,13 +195,17 @@ curl -X POST https://<你的Makers域名>/v1/messages \
 1. 按请求的公开模型名筛选候选渠道：命中 `model_map` 映射优先，未命中则回退到 `models` 同名透传
 2. 仅启用、且存在至少一个「已启用」Key 的渠道参与
 3. 客户端 Key 若设置了 `channel_ids`，仅在其允许的渠道中筛选
-4. 渠道按存储顺序尝试；每个渠道内的 Key 以随机起点轮询展开（并发安全），并按「渠道:Key:上游模型」去重
-5. 请求失败时自动尝试下一个目标：
+4. 候选渠道按「公开模型 → 渠道」的优先级（`model_priority`）降序尝试，相同优先级保持渠道存储顺序
+5. 每个渠道内的 Key 以随机起点轮换展开（并发安全），并按「渠道 : Key : 上游模型」去重
+6. 请求失败时自动尝试下一个目标：
    - `404`（模型不存在）→ 记录日志并切换
    - `429`（限流）→ 记录日志并立即切换下一个目标，不等待、不重试
    - `5xx` / 网络错误 → 记录日志并切换
    - HTTP 200 但响应体无效（内嵌 `error`、`choices` 非数组或为空）→ 记录日志并切换
-6. 全部目标失败返回 `502`（Claude 端点返回同语义的 Claude 错误结构），并在错误信息中附带最后一次 429 的上游响应片段（截断 200 字符）
+7. 全部目标失败返回 `502`（Claude 端点返回同语义的 Claude 错误结构），并在错误信息中附带最后一次 429 的上游响应片段（截断 200 字符）
+
+> [!NOTE]
+> 找不到任何可用渠道时返回 `503`。诊断与真实转发使用同一套有效性判定标准（`200` 但内容为错误也视为失败）。
 
 ## 渠道自定义请求头
 
@@ -234,7 +236,7 @@ curl -X POST https://<你的Makers域名>/v1/messages \
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | `/health` | 健康检查（返回纯文本） |
-| GET | `/`、`/admin`、`/admin/` | 管理面板 SPA |
+| GET | `/` | 管理面板 SPA |
 | GET | `/v1/models` | 模型列表（按当前 Key 权限过滤） |
 | POST | `/v1/chat/completions` | 聊天补全（OpenAI 格式，支持流式） |
 | POST | `/v1/embeddings` | 文本嵌入 |
@@ -254,11 +256,13 @@ curl -X POST https://<你的Makers域名>/v1/messages \
 | PUT | `/admin/api/channels/:id` | 更新渠道 |
 | DELETE | `/admin/api/channels/:id` | 删除渠道 |
 | PATCH | `/admin/api/channels/:id/toggle` | 启用 / 停用渠道 |
+| PATCH | `/admin/api/channels/:id/priority` | 设置「公开模型 → 渠道」的优先级（传 `model` + 数字 `priority`，`0` 删除条目回退默认） |
 | GET | `/admin/api/apikeys` | 客户端 Key 列表 |
 | POST | `/admin/api/apikeys` | 生成客户端 Key |
 | PATCH | `/admin/api/apikeys/:id` | 更新客户端 Key（名称 / 绑定渠道 / 启停） |
 | DELETE | `/admin/api/apikeys/:id` | 删除客户端 Key |
 | GET | `/admin/api/errors?date=YYYY-MM-DD` | 按渠道 / 日期查询错误日志 |
+| DELETE | `/admin/api/errors` | 清理 7 天前的错误日志（所有渠道） |
 | POST | `/admin/api/fetch-models` | 拉取上游模型列表（传 `channel_id` 或 `base_url` + `keys`） |
 | POST | `/admin/api/test-upstream` | 上游连通性诊断（支持 `tasks: [{ channel_id, key, model }]` 批量） |
 
@@ -275,12 +279,13 @@ curl -X POST https://<你的Makers域名>/v1/messages \
 
 存储使用 EdgeOne Blob（[`@edgeone/pages-blob`](https://www.npmjs.com/package/@edgeone/pages-blob)），命名空间固定为 `ai-gateway`，强一致读取，函数内自动鉴权、首次调用自动创建。存储内容：
 
-- `config:channels`：渠道配置（含密钥、模型、映射、自定义请求头）
+- `config:channels`：渠道配置（含密钥、模型、映射、优先级、自定义请求头）
 - `config:apikeys`：客户端 API Key
-- `errors:<channelId>:<日期>`：按渠道 / 北京日期保存的错误日志，每个渠道每日最多保留 100 条
+- `errors:<channelId>:<日期>`：按渠道 / 北京日期保存的错误日志，每个渠道每日最多保留 100 条；超过 7 天的旧日志自动清理（写日志时惰性触发，每 6 小时最多一次）
+- `meta:errors_cleanup`：上次错误日志清理的时间戳
 
 > [!NOTE]
-> 业务层（`src/store/kv.js`）对 `config:*` 读取有 5 分钟内存缓存；错误日志读写直接落 Blob。
+> 业务层（[kv.js](src/store/kv.js)）对 `config:*` 读取有 5 分钟内存缓存；错误日志读写直接落 Blob。
 
 ## 项目结构
 
@@ -294,7 +299,7 @@ src/
 ├── index.js           # 路由分发 + CORS
 ├── admin/
 │   ├── auth.js        # 管理登录 / HMAC 会话校验（24h）
-│   ├── api.js         # 管理 CRUD API（渠道 / Key / 错误日志 / 诊断）
+│   ├── api.js         # 管理 CRUD API（渠道 / 优先级 / Key / 错误日志 / 诊断）
 │   └── page.js        # 管理面板 SPA（单文件内联 HTML/CSS/JS）
 ├── proxy/
 │   ├── auth.js        # 客户端 API Key 校验
@@ -303,7 +308,7 @@ src/
 │   ├── headers.js     # 渠道自定义请求头与占位符解析
 │   └── utils.js       # ID 生成与上游路径推导
 ├── lb/
-│   └── balancer.js    # 目标（渠道 + Key）选择与负载均衡
+│   └── balancer.js    # 目标（渠道 + Key）选择、优先级排序与负载均衡
 └── store/
     ├── kv.js          # 业务存储（5 分钟内存缓存）
     └── blob-kv.js     # EdgeOne Blob 适配层（强一致读取）

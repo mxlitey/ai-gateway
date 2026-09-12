@@ -26,8 +26,8 @@ export default {
     try {
       // ---- Admin routes ----
 
-      // Admin SPA page (根路径也直达后台，无需 /admin)
-      if (path === '/' || path === '/admin' || path === '/admin/') {
+      // Admin SPA page（仅根路径，后台 API 仍走 /admin/api/*）
+      if (path === '/') {
         return new Response(getAdminPage(), {
           headers: { 'Content-Type': 'text/html; charset=utf-8' },
         });

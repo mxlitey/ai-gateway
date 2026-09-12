@@ -30,10 +30,10 @@ a{color:inherit;text-decoration:none}
 
 /* Layout — 顶部导航栏（全设备统一，竖屏/横屏手机、桌面皆同） */
 .main-view{flex-direction:column;min-height:100vh}
-.sidebar{width:100%;background:var(--bg-1);border-right:none;border-bottom:1px solid var(--border);display:flex;flex-direction:column;position:fixed;top:0;left:0;right:0;z-index:50}
-.sidebar-header{display:flex;align-items:center;justify-content:space-between;padding:12px max(16px,calc((100% - var(--page-max))/2 + var(--page-pad)));border-bottom:1px solid var(--border)}
+.sidebar{width:100%;max-width:var(--page-max);margin:0 auto;background:var(--bg-1);border-right:none;border-bottom:1px solid var(--border);display:flex;flex-direction:column;position:fixed;top:0;left:0;right:0;z-index:50}
+.sidebar-header{display:flex;align-items:center;justify-content:space-between;padding:12px var(--page-pad);border-bottom:1px solid var(--border)}
 .sidebar-header .logo{font-size:20px;font-weight:700;background:linear-gradient(135deg,#6366f1,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-.sidebar-nav{display:flex;flex-direction:row;gap:4px;overflow-x:auto;padding:6px max(8px,calc((100% - var(--page-max))/2 + var(--page-pad)));-webkit-overflow-scrolling:touch;scrollbar-width:none}
+.sidebar-nav{display:flex;flex-direction:row;gap:4px;overflow-x:auto;padding:6px var(--page-pad);-webkit-overflow-scrolling:touch;scrollbar-width:none}
 .sidebar-nav::-webkit-scrollbar{display:none}
 .nav-item{display:block;padding:8px 12px;color:var(--text-1);border-radius:var(--radius);margin-bottom:0;cursor:pointer;transition:all .15s;font-size:14px;font-weight:500;white-space:nowrap;flex:0 0 auto}
 .nav-item:hover{background:var(--bg-hover);color:var(--text-0)}
@@ -208,6 +208,8 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 /* 竖屏小屏补充适配 */
 @media (max-width: 640px){
   .content{padding-top:124px;padding-left:12px;padding-right:12px}
+  .sidebar{max-width:none}
+  .sidebar-header,.sidebar-nav{padding-left:12px;padding-right:12px}
   .section-header{flex-direction:column;align-items:stretch;gap:10px;margin-bottom:16px}
   .section-header h2{font-size:20px}
   .stats-grid{grid-template-columns:1fr 1fr;gap:10px}

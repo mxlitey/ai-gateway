@@ -63,17 +63,30 @@ th{text-align:left;padding:12px 16px;background:var(--bg-3);font-size:12px;color
 td{padding:12px 16px;border-top:1px solid var(--border);font-size:14px;vertical-align:middle}
 tr:hover td{background:var(--bg-hover)}
 .cell-truncate{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-/* 错误日志：固定列宽让所有渠道表格对齐，展开时列宽不跳动 */
-.err-card{background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:16px}
-.err-table{table-layout:fixed;min-width:640px}
-.err-inline-ellipsis{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.err-wrap{display:flex;align-items:flex-start;gap:6px;min-width:0}
-.err-caret{flex:0 0 auto;cursor:pointer;color:var(--text-2);font-size:11px;line-height:20px;transition:transform .15s;user-select:none}
-.err-wrap.open .err-caret{transform:rotate(90deg)}
-.err-text{flex:1 1 auto;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;word-break:break-all}
-.err-wrap.open .err-text{white-space:pre-wrap;word-break:break-all}
-.err-copy{flex:0 0 auto;border:none;background:var(--bg-1);color:var(--text-1);width:24px;height:24px;border-radius:5px;cursor:pointer;line-height:1;font-size:13px}
+/* 错误日志：各渠道共用同一套网格列宽，列对齐；展开整行详情不影响列宽 */
+.err-card{background:var(--bg-2);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px}
+.err-row-head,.err-row{display:grid;grid-template-columns:26px 146px minmax(0,1.1fr) 76px minmax(0,1.5fr) 30px;gap:10px;align-items:start}
+.err-row-head{padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;color:var(--text-2);font-weight:600;text-transform:uppercase;letter-spacing:.5px}
+.err-item{border-bottom:1px solid var(--border)}
+.err-item:last-child{border-bottom:none}
+.err-row{padding:10px 4px;cursor:pointer;border-radius:6px}
+.err-row:hover{background:var(--bg-hover)}
+.err-caret{display:inline-block;color:var(--text-2);font-size:11px;line-height:20px;transition:transform .15s;user-select:none}
+.err-item.open .err-caret{transform:rotate(90deg)}
+.err-col-caret{align-self:start}
+.err-col-time{font-size:13px;color:var(--text-2);overflow-wrap:anywhere}
+.err-col-model{min-width:0;font-family:monospace;font-size:13px;word-break:break-all}
+.err-upstream{display:block;margin-top:2px;font-size:11px;color:var(--text-2)}
+.err-col-status{align-self:start}
+.err-col-msg{min-width:0;font-size:13px;color:var(--text-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;word-break:break-all}
+.err-col-copy{align-self:start;justify-self:end}
+.err-copy{border:none;background:var(--bg-1);color:var(--text-1);width:26px;height:26px;border-radius:5px;cursor:pointer;line-height:1;font-size:13px}
 .err-copy:hover{color:var(--primary);background:var(--bg-3)}
+.err-detail{display:none;padding:2px 4px 14px 36px}
+.err-item.open .err-detail{display:grid;gap:2px}
+.err-detail-item{display:grid;grid-template-columns:88px minmax(0,1fr);gap:10px;padding:4px 0;font-size:13px}
+.err-detail-label{color:var(--text-2)}
+.err-detail-value{min-width:0;font-family:monospace;overflow-wrap:anywhere;white-space:pre-wrap}
 
 /* Badge */
 .badge{display:inline-block;padding:3px 10px;border-radius:9999px;font-size:12px;font-weight:500;white-space:nowrap}
@@ -249,9 +262,16 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
   .diag-title .diag-title-model{flex:0 0 100%;min-width:100%}
   .err-card{padding:14px 12px}
   .err-card h4{font-size:14px}
-  .err-table{min-width:520px}
-  .err-table th,.err-table td{padding:8px 10px}
-  .err-table .err-caret{line-height:18px}
+  .err-row-head{display:none}
+  .err-row{grid-template-columns:26px minmax(0,1fr) auto 30px;grid-template-areas:"caret time status copy" "model model model model" "msg msg msg msg";gap:6px 8px;align-items:center;padding:10px 4px}
+  .err-col-caret{grid-area:caret;align-self:center}
+  .err-col-time{grid-area:time}
+  .err-col-status{grid-area:status;align-self:center}
+  .err-col-copy{grid-area:copy;align-self:center}
+  .err-col-model{grid-area:model;margin-top:2px}
+  .err-col-msg{grid-area:msg;white-space:normal;overflow:visible;text-overflow:clip}
+  .err-detail{padding-left:34px}
+  .err-detail-item{grid-template-columns:78px minmax(0,1fr);gap:8px}
 }
 </style>
 </head>
@@ -454,6 +474,8 @@ const I18N = {
   errorStatus: '状态码',
   errorMessage: '错误信息',
   errorKey: '密钥',
+  errorUpstream: '上游模型',
+  errorDetail: '展开详情',
   copyMsg: '复制',
   expandMsg: '展开',
   copied: '已复制',
@@ -1468,28 +1490,41 @@ function renderErrors(errData) {
     const errors = (ch.errors || []).slice().reverse();
     const rows = errors.map(e => {
       const time = e.time ? new Date(e.time).toLocaleString() : '-';
+      const statusText = e.status > 0 ? String(e.status) : 'ERR';
       const statusBadge = e.status >= 500
-        ? '<span class="badge badge-off">' + e.status + '</span>'
+        ? '<span class="badge badge-off">' + statusText + '</span>'
         : e.status === 404
-          ? '<span class="badge" style="background:rgba(245,158,11,.12);color:var(--warning)">' + e.status + '</span>'
+          ? '<span class="badge" style="background:rgba(245,158,11,.12);color:var(--warning)">' + statusText + '</span>'
           : e.status > 0
-            ? '<span class="badge" style="background:rgba(99,102,241,.12);color:var(--primary)">' + e.status + '</span>'
+            ? '<span class="badge" style="background:rgba(99,102,241,.12);color:var(--primary)">' + statusText + '</span>'
             : '<span class="badge badge-off">ERR</span>';
-      const upstreamLabel = '\u2192 ' + (e.upstream_model || '-') + (e.base_url ? ' @ ' + shortHost(e.base_url) : '');
-      const modelCell = '<div class="err-inline-ellipsis" title="' + esc(e.model || '-') + '" style="font-family:monospace;font-size:13px">' + esc(e.model || '-') + '</div>' +
-        '<div class="err-inline-ellipsis" title="' + esc(upstreamLabel) + '" style="font-family:monospace;font-size:11px;color:var(--text-2);margin-top:2px">' + esc(upstreamLabel) + '</div>';
-      return '<tr>' +
-        '<td style="font-size:13px;color:var(--text-2);overflow-wrap:anywhere">' + time + '</td>' +
-        '<td>' + modelCell + '</td>' +
-        '<td>' + statusBadge + '</td>' +
-        '<td title="' + esc(e.message) + '">' +
-        '<div class="err-wrap">' +
-          '<span class="err-caret" title="' + t('expandMsg') + '" onclick="toggleErrMsg(this)">▶</span>' +
-          '<span class="err-text">' + esc(e.message) + '</span>' +
-          '<button type="button" class="err-copy" title="' + t('copyMsg') + '" onclick="copyErrMsg(this)">⧉</button>' +
+      const upstream = '\u2192 ' + (e.upstream_model || '-') + (e.key_hint ? ' @ ' + e.key_hint : '');
+      const fields = [
+        [t('errorTime'), time],
+        [t('errorModel'), e.model || '-'],
+        [t('errorUpstream'), e.upstream_model || '-'],
+        [t('errorKey'), e.key_hint || '-'],
+        [t('errorStatus'), statusText],
+        [t('errorMessage'), e.message || '-'],
+      ];
+      const detail = '<div class="err-detail">' + fields.map(f =>
+        '<div class="err-detail-item">' +
+          '<span class="err-detail-label">' + esc(f[0]) + '</span>' +
+          '<span class="err-detail-value">' + esc(f[1]) + '</span>' +
+        '</div>').join('') + '</div>';
+      return '<div class="err-item">' +
+        '<div class="err-row" title="' + t('errorDetail') + '" onclick="toggleErrRow(this)">' +
+          '<span class="err-col-caret"><span class="err-caret">▶</span></span>' +
+          '<span class="err-col-time">' + esc(time) + '</span>' +
+          '<span class="err-col-model">' + esc(e.model || '-') +
+            '<span class="err-upstream">' + esc(upstream) + '</span>' +
+          '</span>' +
+          '<span class="err-col-status">' + statusBadge + '</span>' +
+          '<span class="err-col-msg">' + esc(e.message || '-') + '</span>' +
+          '<span class="err-col-copy"><button type="button" class="err-copy" title="' + t('copyMsg') + '" onclick="event.stopPropagation();copyErrMsg(this)">⧉</button></span>' +
         '</div>' +
-      '</td>' +
-      '</tr>';
+        detail +
+      '</div>';
     }).join('');
 
     return '<div class="err-card">' +
@@ -1498,40 +1533,39 @@ function renderErrors(errData) {
         esc(ch.channel_name) +
         ' <span style="color:var(--text-2);font-size:13px;font-weight:400">' + errors.length + ' ' + t('errorsToday') + '</span>' +
       '</h4>' +
-      '<div class="table-container" style="margin-top:12px">' +
-        '<table class="err-table">' +
-          '<colgroup><col style="width:16%"><col style="width:22%"><col style="width:11%"><col style="width:51%"></colgroup>' +
-          '<thead><tr>' +
-          '<th>' + t('errorTime') + '</th>' +
-          '<th>' + t('errorModel') + '</th>' +
-          '<th>' + t('errorStatus') + '</th>' +
-          '<th>' + t('errorMessage') + '</th>' +
-        '</tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<div class="err-list">' +
+        '<div class="err-row-head">' +
+          '<span></span>' +
+          '<span>' + t('errorTime') + '</span>' +
+          '<span>' + t('errorModel') + '</span>' +
+          '<span>' + t('errorStatus') + '</span>' +
+          '<span>' + t('errorMessage') + '</span>' +
+          '<span></span>' +
+        '</div>' +
+        rows +
       '</div>' +
     '</div>';
   }).join('');
 }
 
-// 错误日志：展开/收起完整报错信息
-function toggleErrMsg(caret) {
-  caret.parentElement.classList.toggle('open');
+// 错误日志：展开/收起整条记录的详情
+function toggleErrRow(row) {
+  const item = row.parentElement;
+  if (item) item.classList.toggle('open');
 }
 
-// 错误日志：一键复制（时间 / 模型 / 状态码 / 错误信息）
+// 错误日志：一键复制整条记录（时间 / 模型 / 上游模型 / 密钥 / 状态码 / 错误信息）
 async function copyErrMsg(btn) {
-  const tr = btn.closest('tr');
-  const cells = tr ? tr.querySelectorAll('td') : null;
-  const textEl = tr ? tr.querySelector('.err-text') : null;
-  if (!cells || cells.length < 4 || !textEl) { toast(t('copyFail'), 'error'); return; }
-  const time = (cells[0].textContent || '').trim();
-  const model = (cells[1].textContent || '').trim();
-  const status = (cells[2].textContent || '').trim();
-  const msg = textEl.textContent;
+  const item = btn.closest('.err-item');
+  if (!item) { toast(t('copyFail'), 'error'); return; }
   const NL = String.fromCharCode(10);
-  const text = t('errorTime') + ': ' + time + NL +
-    t('errorModel') + ': ' + model + NL +
-    t('errorStatus') + ': ' + status + NL +
-    t('errorMessage') + ': ' + msg;
+  const lines = [];
+  item.querySelectorAll('.err-detail-item').forEach(row => {
+    const label = row.querySelector('.err-detail-label');
+    const value = row.querySelector('.err-detail-value');
+    if (label && value) lines.push((label.textContent || '').trim() + ': ' + (value.textContent || '').trim());
+  });
+  const text = lines.join(NL);
   if (!text.trim()) { toast(t('copyFail'), 'error'); return; }
   try {
     await navigator.clipboard.writeText(text);

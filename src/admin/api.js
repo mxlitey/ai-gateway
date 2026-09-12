@@ -1,4 +1,5 @@
 import { enabledKeys } from '../lb/balancer.js';
+import { normalizeHeaders, applyChannelHeaders } from '../proxy/headers.js';
 
 /** 北京时区日期（用于用量/错误日志的读写保持一致，避免 UTC 跨日错位）。 */
 function beijingToday() {
@@ -30,6 +31,7 @@ export async function handleAdminApi(request, env, store) {
         keys: Array.isArray(data.keys) ? data.keys.filter(Boolean) : [],
         models: Array.isArray(data.models) ? data.models.filter(Boolean) : [],
         model_map: normalizeModelMap(data),
+        headers: normalizeHeaders(data),
         enabled: data.enabled !== false,
         created_at: new Date().toISOString(),
       };
@@ -60,6 +62,9 @@ export async function handleAdminApi(request, env, store) {
           model_map: (data.model_map !== undefined)
             ? normalizeModelMap(data)
             : ((ch.model_map && typeof ch.model_map === 'object') ? ch.model_map : {}),
+          headers: (data.headers !== undefined)
+            ? normalizeHeaders(data)
+            : (Array.isArray(ch.headers) ? ch.headers : []),
           enabled: data.enabled ?? ch.enabled,
           id,
         };
@@ -209,14 +214,10 @@ export async function handleAdminApi(request, env, store) {
             const testUrl = baseUrl + resolveChatPath(ch);
             const start = Date.now();
             try {
-              const reqHeaders = {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${key}`,
-              };
-              if (isOpencodeChannel(ch)) {
-                reqHeaders['x-opencode-session'] = generateOpencodeSession();
-                reqHeaders['User-Agent'] = 'ai-gateway/1.0';
-              }
+              const reqHeaders = new Headers();
+              reqHeaders.set('Content-Type', 'application/json');
+              reqHeaders.set('Authorization', `Bearer ${key}`);
+              applyChannelHeaders(reqHeaders, ch, null);
               const resp = await fetch(testUrl, {
                 method: 'POST',
                 headers: reqHeaders,
@@ -300,18 +301,6 @@ function resolveChatPath(channel) {
   return trimmed ? (trimmed.startsWith('/') ? trimmed : '/' + trimmed) : '/chat/completions';
 }
 
-/** 判定上游是否为 opencode.ai：其 Go 服务要求 x-opencode-session 头与专属 UA，否则返回 400 MissingSessionID */
-function isOpencodeChannel(channel) {
-  return /opencode\.ai/i.test((channel && channel.base_url) || '');
-}
-
-/** 生成 opencode 会话 ID（诊断无客户端会话可透传，故随机生成） */
-function generateOpencodeSession() {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return 'gw-' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
 /** 调用上游 base_url + /models 拉取模型列表（兼容 OpenAI / Claude 响应格式）。 */
 async function fetchUpstreamModels(ch) {
   const baseUrl = String(ch.base_url || '').replace(/\/+$/, '');
@@ -319,14 +308,10 @@ async function fetchUpstreamModels(ch) {
   const keys = enabledKeys(ch);
   for (const key of keys) {
     try {
-      const reqHeaders = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${key}`,
-      };
-      if (isOpencodeChannel(ch)) {
-        reqHeaders['x-opencode-session'] = generateOpencodeSession();
-        reqHeaders['User-Agent'] = 'ai-gateway/1.0';
-      }
+      const reqHeaders = new Headers();
+      reqHeaders.set('Content-Type', 'application/json');
+      reqHeaders.set('Authorization', `Bearer ${key}`);
+      applyChannelHeaders(reqHeaders, ch, null);
       const resp = await fetch(baseUrl + '/models', {
         headers: reqHeaders,
       });

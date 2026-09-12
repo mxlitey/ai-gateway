@@ -179,6 +179,10 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
 .key-row{display:flex;align-items:center;gap:8px;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px}
 .key-row input.key-val{flex:1;min-width:0}
 .key-row.key-disabled{opacity:.5}
+.hdr-row{display:flex;align-items:center;gap:8px;background:var(--bg-1);border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px}
+.hdr-row input{flex:1;min-width:0}
+.hdr-row .hdr-name{flex:0 0 40%}
+.hdr-help{margin-top:4px;color:var(--text-2);font-size:12px;line-height:1.5;word-break:break-word}
 .key-switch{position:relative;flex:0 0 auto;width:36px;height:20px}
 .key-switch input{position:absolute;opacity:0;width:0;height:0}
 .key-slider{position:relative;display:block;width:36px;height:20px;background:var(--border);border-radius:10px;cursor:pointer;transition:background .2s}
@@ -232,6 +236,9 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
   .map-del{flex:1 0 auto;margin-top:4px}
   .key-row{flex-wrap:wrap}
   .key-row input.key-val{flex:1 1 45%}
+  .hdr-row{flex-wrap:wrap}
+  .hdr-row input{flex:1 1 45%}
+  .hdr-row .hdr-name{flex:1 1 100%}
   .model-modal{width:min(560px,94vw);max-width:94vw;padding:20px}
   .diag-title{flex-wrap:wrap;row-gap:2px}
   .diag-title .diag-title-model{flex:0 0 100%;min-width:100%}
@@ -476,6 +483,11 @@ const I18N = {
     addMapping: 'Add Mapping',
     mapPublicModelPh: 'Public model',
     mapUpstreamPh: 'Upstream model',
+    headersLabel: 'Custom Request Headers',
+    addHeader: 'Add Header',
+    headerNamePh: 'Header name',
+    headerValuePh: 'Header value',
+    headersHelp: 'Sent on every upstream request of this channel and overrides built-in headers with the same name. Placeholders: {{session}} {{uuid}} {{timestamp}} {{random}}',
   },
   zh: {
     loginSub: '请输入管理员密码或 API Key 继续',
@@ -612,6 +624,11 @@ const I18N = {
     mapPublicModelPh: '公开模型名',
     mapUpstreamPh: '上游模型名',
     noMatchingModels: '无匹配的上游模型',
+    headersLabel: '自定义请求头',
+    addHeader: '添加请求头',
+    headerNamePh: '请求头名称',
+    headerValuePh: '请求头值',
+    headersHelp: '该渠道每次上游请求都会携带这些请求头，同名会覆盖内置请求头。支持占位符：{{session}}（会话ID，优先透传客户端会话头）{{uuid}} {{timestamp}} {{random}}',
   },
 };
 
@@ -634,6 +651,9 @@ let modelMapRows = [];
 
 // 渠道弹窗中的 API 密钥列表（{ key, enabled }，未保存前暂存于此）
 let keyRows = [];
+
+// 渠道弹窗中的自定义请求头列表（{ name, value }，未保存前暂存于此）
+let headerRows = [];
 
 // ============ API ============
 async function api(path, opts = {}) {
@@ -850,6 +870,12 @@ function showChModal(id) {
       <div id="f-modelmap"></div>
       <button type="button" class="btn btn-sm btn-ghost" style="width:100%" onclick="addModelMapRow()">+ \${t('addMapping')}</button>
     </div>
+    <div class="form-group">
+      <label>\${t('headersLabel')}</label>
+      <div id="f-headers"></div>
+      <button type="button" class="btn btn-sm btn-ghost" style="width:100%;margin-top:8px" onclick="addHeaderRow()">+ \${t('addHeader')}</button>
+      <div class="hdr-help">\${t('headersHelp')}</div>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeModal()">\${t('cancel')}</button>
       <button class="btn btn-primary" onclick="saveCh('\${id||''}')">\${t('save')}</button>
@@ -862,10 +888,16 @@ function showChModal(id) {
     typeof k === 'string' ? { key: k, enabled: true } : { key: String(k.key || ''), enabled: k.enabled !== false }
   );
   if (keyRows.length === 0) keyRows.push({ key: '', enabled: true });
+  headerRows = (ch && ch.headers)
+    ? (Array.isArray(ch.headers)
+        ? ch.headers.map(h => ({ name: String((h && h.name) || ''), value: String((h && h.value) == null ? '' : h.value) }))
+        : Object.entries(ch.headers).map(([name, value]) => ({ name, value: String(value) })))
+    : [];
   mapUpCtx = { sig: '', list: [] };
   openModal(html);
   renderKeyRows();
   renderModelMapRows();
+  renderHeaderRows();
 }
 
 // 打开「获取上游模型」弹窗：拉取列表 → 搜索筛选 → 单选/多选 → 确定加入模型列表
@@ -1113,6 +1145,36 @@ function removeModelMapRow(i) {
   renderModelMapRows();
 }
 
+function renderHeaderRows() {
+  const box = document.getElementById('f-headers');
+  if (!box) return;
+  if (headerRows.length === 0) { box.innerHTML = ''; return; }
+  box.innerHTML = headerRows.map((row, i) =>
+    '<div class="hdr-row" data-i="' + i + '">' +
+      '<input class="hdr-name" autocomplete="off" value="' + esc(row.name) + '" placeholder="' + t('headerNamePh') + '" oninput="updateHeaderRow(' + i + ')">' +
+      '<input class="hdr-val" autocomplete="off" value="' + esc(row.value) + '" placeholder="' + t('headerValuePh') + '" oninput="updateHeaderRow(' + i + ')">' +
+      '<button type="button" class="map-del" onclick="removeHeaderRow(' + i + ')">✕</button>' +
+    '</div>'
+  ).join('');
+}
+
+function updateHeaderRow(i) {
+  const rowEl = document.querySelector('.hdr-row[data-i="' + i + '"]');
+  if (!rowEl) return;
+  headerRows[i].name = rowEl.querySelector('.hdr-name').value.trim();
+  headerRows[i].value = rowEl.querySelector('.hdr-val').value.trim();
+}
+
+function addHeaderRow() {
+  headerRows.push({ name: '', value: '' });
+  renderHeaderRows();
+}
+
+function removeHeaderRow(i) {
+  headerRows.splice(i, 1);
+  renderHeaderRows();
+}
+
 async function saveCh(id) {
   const name = document.getElementById('f-name').value.trim();
   const base_url = document.getElementById('f-url').value.trim();
@@ -1130,7 +1192,12 @@ async function saveCh(id) {
     model_map[p] = ((row.upstream || '').trim()) || p;
   }
 
-  const body = JSON.stringify({ name, base_url, path, keys, models, model_map });
+  // 收集自定义请求头，忽略名称为空的行
+  const headers = headerRows
+    .map(r => ({ name: (r.name || '').trim(), value: (r.value || '').trim() }))
+    .filter(r => r.name);
+
+  const body = JSON.stringify({ name, base_url, path, keys, models, model_map, headers });
   const r = id
     ? await api('/channels/' + id, { method: 'PUT', body })
     : await api('/channels', { method: 'POST', body });

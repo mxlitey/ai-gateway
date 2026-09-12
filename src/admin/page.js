@@ -336,14 +336,13 @@ label{display:block;margin-bottom:6px;font-size:13px;color:var(--text-1);font-we
       <div class="section-header">
         <h2 id="error-title"></h2>
         <div style="display:flex;gap:8px">
-          <button class="btn btn-ghost" onclick="loadErrors()" id="error-refresh-btn"></button>
+          <button class="btn btn-ghost" onclick="refreshErrors()" id="error-refresh-btn"></button>
           <button class="btn btn-ghost" onclick="clearErrorLogs()" id="error-clear-btn" style="color:var(--danger)"></button>
         </div>
       </div>
       <div class="date-picker">
         <label id="error-date-label" style="margin:0;white-space:nowrap"></label>
         <input type="date" id="error-date" onchange="loadErrors()">
-        <button type="button" class="btn btn-sm btn-ghost" id="error-today-btn" onclick="setErrorDateToday()"></button>
       </div>
       <div id="error-container"></div>
     </section>
@@ -452,7 +451,6 @@ const I18N = {
   errorLogs: '错误日志',
   logs: '日志',
   errorDate: '日期',
-  today: '今日',
   refreshError: '刷新',
   noErrors: '今日暂无错误。',
   errorTime: '时间',
@@ -1464,13 +1462,12 @@ function renderErrorHeaders() {
   document.getElementById('error-refresh-btn').textContent = t('refreshError');
   document.getElementById('error-clear-btn').textContent = t('clearLogs');
   document.getElementById('error-date-label').textContent = t('errorDate');
-  document.getElementById('error-today-btn').textContent = t('today');
   const dateInput = document.getElementById('error-date');
   if (!dateInput.value) dateInput.value = todayBeijing();
 }
 
-// 回到今日日期并加载
-function setErrorDateToday() {
+// 刷新按钮：回到今日并加载
+function refreshErrors() {
   document.getElementById('error-date').value = todayBeijing();
   loadErrors();
 }

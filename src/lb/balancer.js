@@ -6,8 +6,10 @@
  *   - 公开模型可与请求 model 完全一致（trim 后比较）才命中
  *   - 仅启用、且渠道启用且有已启用的 key 的渠道参与
  *   - 客户端 key 的 channel_ids 限定时，非允许渠道被过滤
- *   - 一个公开模型可被多个渠道提供，按渠道存储顺序作为尝试顺序
+ *   - 一个公开模型可被多个渠道提供：按「优先级」从大到小尝试，相同则按渠道存储顺序
  *   - 每个渠道按自身已启用 key 顺序（随机起点轮换）展开，key 与上游模型组合去重
+ *
+ * 优先级存在 channel.model_priority = { 公开模型名: 数字 }，越大越先试，缺省 0。
  *
  * 返回 target 结构：{ channel, key, model（上游模型名）, publicModel（公开名） }。
  */
@@ -17,6 +19,14 @@ export function normalizeKey(k) {
   if (k == null) return null;
   if (typeof k === 'string') return { key: k.trim(), enabled: true };
   return { key: String(k.key || '').trim(), enabled: k.enabled !== false };
+}
+
+/** 读取渠道对某公开模型的优先级（越大越先试）；缺省 0 */
+function mapPriority(channel, publicModel) {
+  const mp = channel && channel.model_priority;
+  if (!mp || typeof mp !== 'object') return 0;
+  const n = Number(mp[publicModel]);
+  return Number.isFinite(n) ? n : 0;
 }
 
 /** 渠道中启用的密钥列表（纯字符串） */
@@ -55,12 +65,20 @@ export class LoadBalancer {
         um = requested; // 无显式映射，公开名=上游名（同名透传）
       }
       if (!um) continue;
-      targetRows.push({ channel: ch, upstream_model: String(um).trim() || requested, publicModel: requested });
+      targetRows.push({
+        channel: ch,
+        upstream_model: String(um).trim() || requested,
+        publicModel: requested,
+        priority: mapPriority(ch, requested),
+      });
     }
 
     if (targetRows.length === 0) {
       return { targets: [], error: 'No available channel for model: ' + model };
     }
+
+    // 优先级降序（越大越先试）；相同优先级保持渠道存储顺序（Array.sort 稳定）
+    targetRows.sort((a, b) => b.priority - a.priority);
 
     // 依渠道顺序展开，同一渠道+key+上游模型去重
     const targets = [];

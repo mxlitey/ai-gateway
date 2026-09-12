@@ -113,6 +113,32 @@ export async function handleAdminApi(request, env, store) {
       return jsonRes(channels[idx]);
     }
 
+    // Match /channels/:id/priority
+    // 设置「某公开模型 → 该渠道」的尝试优先级（越大越先试）。priority 为 0 时删除条目回退默认值。
+    const priMatch = path.match(/^\/channels\/([^/]+)\/priority$/);
+    if (priMatch && method === 'PATCH') {
+      const id = priMatch[1];
+      const data = await request.json();
+      const model = String((data && data.model) || '').trim();
+      const raw = Number(data && data.priority);
+      if (!model || !Number.isFinite(raw)) {
+        return jsonRes({ error: 'model and numeric priority are required' }, 400);
+      }
+      const channels = await store.getChannels();
+      const idx = channels.findIndex(ch => ch.id === id);
+      if (idx === -1) return jsonRes({ error: 'Channel not found' }, 404);
+
+      const priority = Math.max(0, Math.min(9999, Math.floor(raw)));
+      const mp = (channels[idx].model_priority && typeof channels[idx].model_priority === 'object')
+        ? { ...channels[idx].model_priority }
+        : {};
+      if (priority === 0) delete mp[model];
+      else mp[model] = priority;
+      channels[idx].model_priority = mp;
+      await store.saveChannels(channels);
+      return jsonRes({ success: true, model, priority });
+    }
+
     // --- Error Logs ---
     if (path === '/errors' && method === 'GET') {
       const date = url.searchParams.get('date') || beijingToday();

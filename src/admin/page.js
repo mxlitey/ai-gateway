@@ -106,6 +106,7 @@ tr:hover td{background:var(--bg-hover)}
 .btn-sm{padding:5px 10px;font-size:12px}
 .btn-icon{padding:5px 7px;line-height:1}
 .btn-icon svg{display:block}
+.route-pri{width:52px;display:inline-block;padding:2px 6px;margin:0 8px 0 0;font-size:12px;text-align:center;vertical-align:middle}
 .btn-full{width:100%;justify-content:center}
 
 /* Forms */
@@ -480,10 +481,11 @@ const I18N = {
   addedNModels: '已添加 {n} 个模型。',
   routeChannelCol: '目标渠道',
   routeModelCol: '上游模型',
+  routePriority: '优先级（数字越大越先尝试，相同则按渠道顺序）',
   modelSearchPlaceholder: '搜索模型…',
   modelSearchEmpty: '未找到匹配的模型。',
   selectUpstream: '请选择上游模型',
-  routesInfo: '以下为各公开模型在当前所有启用渠道中的路由路径（按渠道存储顺序尝试，渠道内密钥随机起点轮换）。如需调整映射，请前往「渠道管理」编辑。',
+  routesInfo: '以下为各公开模型在当前所有启用渠道中的路由路径（按优先级从大到小尝试，相同则按渠道存储顺序；渠道内密钥随机起点轮换）。可直接修改渠道名前的优先级，数字越大越先试。如需调整映射，请前往「渠道管理」编辑。',
   routesNone: '暂无任何模型路由。请在「渠道管理」中为渠道配置「公开模型 → 上游模型」映射。',
   modelMapLabel: '公开模型 → 上游模型　映射',
   addMapping: '添加映射',
@@ -1074,7 +1076,7 @@ function renderRoutes() {
   const tb = document.getElementById('routes-tbody');
 
   // 汇总所有启用且有密钥渠道的模型（model_map 显式映射 + models 同名透传），按首次出现顺序排列
-  const rows = [];     // { public, channel, upstream, direct }
+  const rows = [];     // { public, channel, upstream, direct, priority }
   const order = [];    // 公开模型唯一顺序
   const idx = new Map();
   for (const ch of channels) {
@@ -1092,7 +1094,7 @@ function renderRoutes() {
       const um = String(mm[pub]).trim();
       if (!p) continue;
       if (!idx.has(p)) { idx.set(p, order.length); order.push(p); }
-      rows.push({ public: p, channel: ch, upstream: um || p, direct: false });
+      rows.push({ public: p, channel: ch, upstream: um || p, direct: false, priority: routePriorityOf(ch, p) });
     }
     // models 同名透传（不应与 model_map 的公开名重复，仅补充未映射的）
     if (Array.isArray(ch.models)) {
@@ -1100,7 +1102,7 @@ function renderRoutes() {
         const p = String(pub || '').trim();
         if (!p || rows.some(r => r.channel.id === ch.id && r.public === p)) continue;
         if (!idx.has(p)) { idx.set(p, order.length); order.push(p); }
-        rows.push({ public: p, channel: ch, upstream: p, direct: true });
+        rows.push({ public: p, channel: ch, upstream: p, direct: true, priority: routePriorityOf(ch, p) });
       }
     }
   }
@@ -1111,7 +1113,8 @@ function renderRoutes() {
   }
 
   tb.innerHTML = order.map(p => {
-    const targets = rows.filter(r => r.public === p);
+    // 优先级降序（越大越先试）；相同则保持渠道存储顺序（sort 稳定）
+    const targets = rows.filter(r => r.public === p).sort((a, b) => b.priority - a.priority);
     const n = targets.length;
     const hasDirect = targets.some(r => r.direct);
 
@@ -1127,6 +1130,9 @@ function renderRoutes() {
             '</td>'
           : '') +
         '<td style="vertical-align:top;white-space:nowrap;' + contStyle + '">' +
+          '<input type="number" class="route-pri" min="0" max="9999" step="1" value="' + r.priority + '"' +
+            ' title="' + t('routePriority') + '" data-ch="' + esc(r.channel.id) + '" data-pub="' + esc(p) + '"' +
+            ' onchange="saveRoutePriority(this)">' +
           esc(r.channel.name || r.channel.id) +
           ' <span style="color:var(--text-2);font-size:12px">(' + esc(shortHost(r.channel.base_url)) + ')</span>' +
         '</td>' +
@@ -1143,6 +1149,37 @@ function renderRoutes() {
       '</tr>';
     }).join('');
   }).join('');
+}
+
+/** 读取渠道对某公开模型的优先级（越大越先试）；缺省 0 */
+function routePriorityOf(ch, pub) {
+  const mp = ch && ch.model_priority;
+  if (!mp || typeof mp !== 'object') return 0;
+  const n = Number(mp[pub]);
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** 模型路由页：就地保存某「公开模型 → 渠道」的优先级 */
+async function saveRoutePriority(el) {
+  const chId = el.dataset.ch;
+  const pub = el.dataset.pub;
+  const ch = channels.find(c => c.id === chId);
+  const cur = routePriorityOf(ch, pub);
+  const raw = Math.floor(Number(el.value));
+  const next = Number.isFinite(raw) ? Math.max(0, Math.min(9999, raw)) : 0;
+  if (next === cur) { el.value = next; return; }
+
+  const r = await api('/channels/' + chId + '/priority', {
+    method: 'PATCH',
+    body: JSON.stringify({ model: pub, priority: next }),
+  });
+  if (r && !r.error) {
+    await loadData();
+    render();
+  } else {
+    toast((r && r.error) || t('saveFailed'), 'error');
+    el.value = cur;
+  }
 }
 
 // ============ Route 连通性诊断 ============

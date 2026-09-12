@@ -173,64 +173,83 @@ export async function handleAdminApi(request, env, store) {
     }
 
     // --- Test Upstream Connectivity (diagnostic) ---
+    // 支持两种入参：
+    //   A) tasks: [{ channel_id?, key?, model }]  批量诊断（指定渠道 + 指定 key + 具体模型）
+    //   B) 旧单点: { channel_id?, key?, model }
     if (path === '/test-upstream' && method === 'POST') {
       const data = await request.json();
       const channels = await store.getChannels();
-      const channelId = data.channel_id;
-      const model = data.model || '';
 
-      const testChannels = channelId
-        ? channels.filter(ch => ch.id === channelId)
-        : channels.filter(ch => ch.enabled && enabledKeys(ch).length > 0);
+      let tasks;
+      if (Array.isArray(data.tasks) && data.tasks.length) {
+        tasks = data.tasks;
+      } else if (data.model || data.channel_id || data.key) {
+        tasks = [{ channel_id: data.channel_id, key: data.key, model: data.model }];
+      } else {
+        tasks = [];
+      }
 
-      if (testChannels.length === 0) {
-        return jsonRes({ error: 'No matching channels found' }, 404);
+      if (tasks.length === 0) {
+        return jsonRes({ error: '请指定要诊断的模型或任务' }, 400);
       }
 
       const results = [];
-      for (const ch of testChannels) {
-        for (const key of enabledKeys(ch)) {
-          const keyHint = key.length > 12 ? key.slice(0, 7) + '...' + key.slice(-4) : key;
-          const baseUrl = ch.base_url.replace(/\/+$/, '');
-          const testUrl = baseUrl + resolveChatPath(ch);
-          const start = Date.now();
-          try {
-            const resp = await fetch(testUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${key}`,
-              },
-              body: JSON.stringify({
-                model: model || 'gpt-3.5-turbo',
-                messages: [{ role: 'user', content: 'say ok' }],
-                max_tokens: 3,
-              }),
-            });
-            const duration = Date.now() - start;
-            const rateHeaders = {};
-            for (const h of ['modelscope-ratelimit-requests-limit', 'modelscope-ratelimit-requests-remaining',
-              'modelscope-ratelimit-model-requests-limit', 'modelscope-ratelimit-model-requests-remaining',
-              'retry-after', 'x-ratelimit-limit-requests', 'x-ratelimit-remaining-requests']) {
-              const v = resp.headers.get(h);
-              if (v != null) rateHeaders[h] = v;
+      for (const tk of tasks) {
+        const model = String(tk.model || '').trim() || 'gpt-3.5-turbo';
+        const targetChannels = tk.channel_id
+          ? channels.filter(ch => ch.id === tk.channel_id)
+          : channels.filter(ch => ch.enabled && enabledKeys(ch).length > 0);
+        for (const ch of targetChannels) {
+          let keys = enabledKeys(ch);
+          if (tk.key) keys = keys.filter(k => k === tk.key);
+          if (keys.length === 0) continue;
+          for (const key of keys) {
+            const keyHint = key.length > 12 ? key.slice(0, 7) + '...' + key.slice(-4) : key;
+            const baseUrl = ch.base_url.replace(/\/+$/, '');
+            const testUrl = baseUrl + resolveChatPath(ch);
+            const start = Date.now();
+            try {
+              const resp = await fetch(testUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${key}`,
+                },
+                body: JSON.stringify({
+                  model: model,
+                  messages: [{ role: 'user', content: 'say ok' }],
+                  max_tokens: 3,
+                }),
+              });
+              const duration = Date.now() - start;
+              const rateHeaders = {};
+              for (const h of ['modelscope-ratelimit-requests-limit', 'modelscope-ratelimit-requests-remaining',
+                'modelscope-ratelimit-model-requests-limit', 'modelscope-ratelimit-model-requests-remaining',
+                'retry-after', 'x-ratelimit-limit-requests', 'x-ratelimit-remaining-requests']) {
+                const v = resp.headers.get(h);
+                if (v != null) rateHeaders[h] = v;
+              }
+              let body = '';
+              try { body = (await resp.text()).slice(0, 300); } catch {}
+              results.push({
+                model: model, channel: ch.name, channel_id: ch.id, key_hint: keyHint,
+                status: resp.status, duration_ms: duration,
+                rate_headers: rateHeaders, body,
+              });
+            } catch (err) {
+              results.push({
+                model: model, channel: ch.name, channel_id: ch.id, key_hint: keyHint,
+                status: 0, duration_ms: Date.now() - start,
+                error: err.message,
+              });
             }
-            let body = '';
-            try { body = (await resp.text()).slice(0, 300); } catch {}
-            results.push({
-              channel: ch.name, channel_id: ch.id, key_hint: keyHint,
-              status: resp.status, duration_ms: duration,
-              rate_headers: rateHeaders, body,
-            });
-          } catch (err) {
-            results.push({
-              channel: ch.name, channel_id: ch.id, key_hint: keyHint,
-              status: 0, duration_ms: Date.now() - start,
-              error: err.message,
-            });
+            await new Promise(r => setTimeout(r, 800));
           }
-          await new Promise(r => setTimeout(r, 1000));
         }
+      }
+
+      if (results.length === 0) {
+        return jsonRes({ error: '没有可诊断的目标（渠道/key/模型不匹配）' }, 404);
       }
 
       const count429 = results.filter(r => r.status === 429).length;

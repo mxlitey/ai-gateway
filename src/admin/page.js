@@ -433,6 +433,13 @@ const I18N = {
     copyFail: 'Copy failed',
     errorsToday: 'errors today',
     modelRoutes: 'Model Routes',
+    diagnose: 'Diagnose',
+    runDiagnose: 'Run',
+    selectAll: 'Select all',
+    diagModel: 'Model',
+    diagTesting: 'Diagnosing…',
+    diagResult: 'Diagnostic Results',
+    noDiagTarget: 'No targets to diagnose',
     direct: 'Passthrough',
     addRoute: 'Add Route',
     editRoute: 'Edit Route',
@@ -546,6 +553,13 @@ const I18N = {
     copyFail: '复制失败',
     errorsToday: '个错误',
     modelRoutes: '模型路由',
+    diagnose: '诊断',
+    runDiagnose: '运行诊断',
+    selectAll: '全选',
+    diagModel: '模型',
+    diagTesting: '诊断中…',
+    diagResult: '诊断结果',
+    noDiagTarget: '没有可诊断的目标渠道/key',
     direct: '透传',
     addRoute: '添加路由',
     editRoute: '编辑路由',
@@ -1131,7 +1145,7 @@ function renderRoutes() {
   document.getElementById('routes-info').innerHTML = '<p>' + t('routesInfo') + '</p>';
 
   const head = document.getElementById('routes-thead');
-  head.innerHTML = '<th>' + [t('publicModel'), t('routeTargetCol')].join('</th><th>') + '</th>';
+  head.innerHTML = '<th>' + [t('publicModel'), t('routeTargetCol'), ''].join('</th><th>') + '</th>';
 
   const tb = document.getElementById('routes-tbody');
 
@@ -1181,8 +1195,140 @@ function renderRoutes() {
         (targets.some(r => r.direct) ? ' <span class="tag-direct">' + t('direct') + '</span>' : '') +
       '</td>' +
       '<td style="padding-top:4px;padding-bottom:4px">' + targetHtml + '</td>' +
+      '<td style="width:80px;text-align:right;vertical-align:top">' +
+        '<button type="button" class="btn btn-sm btn-ghost" data-pub="' + esc(p) + '" onclick="openRouteDiagnose(this)">' + t('diagnose') + '</button>' +
+      '</td>' +
     '</tr>';
   }).join('');
+}
+
+// ============ Route 连通性诊断 ============
+// 采集某公开模型下的所有可诊断目标：渠道 + 上游模型名 + 启用 key
+function collectRouteTasks(pub) {
+  const tasks = [];
+  for (const ch of channels) {
+    if (ch.enabled === false) continue;
+    const keys = (ch.keys || [])
+      .map(k => typeof k === 'string' ? { key: k, enabled: true } : { key: String(k.key || '').trim(), enabled: k.enabled !== false })
+      .filter(k => k.key && k.enabled)
+      .map(k => k.key);
+    if (keys.length === 0) continue;
+    let upstream = (ch.model_map && typeof ch.model_map === 'object') ? ch.model_map[pub] : null;
+    if (!upstream && Array.isArray(ch.models) && ch.models.includes(pub)) upstream = pub;
+    if (!upstream) continue;
+    for (const key of keys) {
+      tasks.push({
+        channel_id: ch.id,
+        channel: ch.name || ch.id,
+        host: shortHost(ch.base_url),
+        upstream: String(upstream).trim() || pub,
+        key,
+      });
+    }
+  }
+  return tasks;
+}
+
+// 打开诊断弹窗
+function openRouteDiagnose(btn) {
+  const pubValue = btn.dataset.pub;
+  closeDiagnose();
+  const tasks = collectRouteTasks(pubValue);
+
+  const ov = document.createElement('div');
+  ov.className = 'model-modal-overlay';
+  ov.id = 'diag-overlay';
+
+  let listHtml;
+  if (tasks.length === 0) {
+    listHtml = '<div class="model-picker-empty">' + t('noDiagTarget') + '</div>';
+  } else {
+    const groups = new Map();
+    for (const tk of tasks) {
+      const gkey = tk.channel_id + '|' + tk.channel + '|' + tk.host + '|' + tk.upstream;
+      if (!groups.has(gkey)) groups.set(gkey, []);
+      groups.get(gkey).push(tk);
+    }
+    let rows = '';
+    for (const arr of groups.values()) {
+      const tk0 = arr[0];
+      rows += '<div style="margin-bottom:8px;border:1px solid var(--border);border-radius:8px;padding:8px 10px">' +
+        '<div style="font-weight:600;font-size:13px;margin-bottom:6px">' + esc(tk0.channel) +
+          ' <span style="color:var(--text-2);font-weight:400">(' + esc(tk0.host) + ')</span>' +
+          ' <code style="color:var(--primary)">' + esc(tk0.upstream) + '</code></div>' +
+        arr.map(tk =>
+          '<label style="display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer">' +
+            '<input type="checkbox" class="diag-key" checked data-channel="' + esc(tk.channel_id) + '" data-key="' + esc(tk.key) + '" data-model="' + esc(tk.upstream) + '">' +
+            '<code style="font-size:12px;color:var(--text-1)">' + esc(maskKey(tk.key)) + '</code>' +
+          '</label>'
+        ).join('') +
+      '</div>';
+    }
+    listHtml =
+      '<div style="color:var(--text-2);font-size:13px;margin-bottom:10px">' + t('diagModel') + ' <code style="color:var(--text-1)">' + esc(pubValue) + '</code></div>' +
+      '<label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;margin-bottom:6px"><input type="checkbox" checked onchange="diagToggleAll(this)"> ' + t('selectAll') + '</label>' +
+      rows +
+      '<div id="diag-result" style="margin-top:10px"></div>';
+  }
+
+  ov.innerHTML = '<div class="model-modal">' +
+    '<h3>' + t('diagnose') + ' · ' + esc(pubValue) + '</h3>' +
+    '<div class="model-pick-list" style="max-height:50vh;overflow:auto">' + listHtml + '</div>' +
+    '<div class="modal-actions">' +
+      '<button class="btn btn-ghost" onclick="closeDiagnose()">' + t('cancel') + '</button>' +
+      (tasks.length ? '<button class="btn btn-primary" onclick="runRouteDiagnose()">' + t('runDiagnose') + '</button>' : '') +
+    '</div>' +
+  '</div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('mousedown', e => { if (e.target === ov) closeDiagnose(); });
+}
+
+// 诊断弹窗全选/取消全选
+function diagToggleAll(cb) {
+  const box = document.getElementById('diag-overlay');
+  if (!box) return;
+  box.querySelectorAll('.diag-key').forEach(k => { k.checked = cb.checked; });
+}
+
+// 关闭诊断弹窗
+function closeDiagnose() {
+  const ov = document.getElementById('diag-overlay');
+  if (ov) ov.remove();
+}
+
+// 运行诊断：对勾选的每个 渠道 + key + 上游模型 发起真实对话请求
+async function runRouteDiagnose() {
+  const box = document.getElementById('diag-overlay');
+  if (!box) return;
+  const boxes = Array.from(box.querySelectorAll('.diag-key:checked'));
+  if (boxes.length === 0) { toast(t('copyFail'), 'error'); return; }
+  const tasks = boxes.map(cb => ({ channel_id: cb.dataset.channel, key: cb.dataset.key, model: cb.dataset.model }));
+  const resBox = document.getElementById('diag-result');
+  resBox.innerHTML = '<div class="model-picker-empty">' + t('diagTesting') + '</div>';
+
+  let resp = null;
+  try { resp = await api('/test-upstream', { method: 'POST', body: JSON.stringify({ tasks }) }); }
+  catch (e) { resp = null; }
+  const results = (resp && Array.isArray(resp.results)) ? resp.results : [];
+  if (results.length === 0) {
+    resBox.innerHTML = '<div class="model-picker-empty">' + t('noDiagTarget') + '</div>';
+    return;
+  }
+  const okCount = results.filter(r => r.status === 200).length;
+  const rows = results.map(r => {
+    const ok = r.status === 200;
+    const color = r.status === 429 ? 'var(--warning)' : (ok ? 'var(--success)' : 'var(--danger)');
+    const statusText = r.status > 0 ? r.status : 'ERR';
+    const meta = r.error ? r.error : r.body;
+    return '<div style="display:flex;gap:10px;align-items:baseline;padding:7px 0;border-bottom:1px solid var(--border);font-size:13px">' +
+      '<span style="min-width:50px;font-weight:600;color:' + color + '">' + statusText + '</span>' +
+      '<span style="min-width:56px;color:var(--text-2)">' + r.duration_ms + 'ms</span>' +
+      '<span style="color:var(--text-1)">' + esc(r.channel || r.channel_id) + '</span>' +
+      '<span style="color:var(--text-2)">' + esc(r.key_hint || '') + '</span>' +
+      '<span style="color:var(--text-2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(meta) + '">' + esc(meta) + '</span>' +
+    '</div>';
+  }).join('');
+  resBox.innerHTML = '<div style="font-weight:600;font-size:13px;margin-bottom:4px">' + t('diagResult') + ' (' + okCount + '/' + results.length + ')</div>' + rows;
 }
 
 // ============ API Keys ============

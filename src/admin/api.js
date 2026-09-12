@@ -31,7 +31,7 @@ export async function handleAdminApi(request, env, store) {
         keys: Array.isArray(data.keys) ? data.keys.filter(Boolean) : [],
         models: Array.isArray(data.models) ? data.models.filter(Boolean) : [],
         model_map: normalizeModelMap(data),
-        headers: normalizeHeaders(data),
+        headers: normalizeHeaders(data.headers),
         enabled: data.enabled !== false,
         created_at: new Date().toISOString(),
       };
@@ -63,7 +63,7 @@ export async function handleAdminApi(request, env, store) {
             ? normalizeModelMap(data)
             : ((ch.model_map && typeof ch.model_map === 'object') ? ch.model_map : {}),
           headers: (data.headers !== undefined)
-            ? normalizeHeaders(data)
+            ? normalizeHeaders(data.headers)
             : (Array.isArray(ch.headers) ? ch.headers : []),
           enabled: data.enabled ?? ch.enabled,
           id,

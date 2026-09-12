@@ -1,6 +1,6 @@
 import { verifyApiKey } from './auth.js';
 import { LoadBalancer, enabledKeys } from '../lb/balancer.js';
-import { applyChannelHeaders } from './headers.js';
+import { applyChannelHeaders, applyPassthroughHeaders } from './headers.js';
 import { claudeToOpenAI, openAIToClaude, openAIStreamToClaudeStream } from './claude.js';
 import { responsesToChatCompletions, chatCompletionsToResponses, chatCompletionsStreamToResponsesStream } from './responses.js';
 
@@ -94,6 +94,7 @@ async function handleClaudeMessages(request, url, claudeBody, store, allowedChan
         openaiBody.model = target.model;
 
         const headers = new Headers();
+        applyPassthroughHeaders(headers, request);
         headers.set('Content-Type', 'application/json');
         headers.set('Authorization', `Bearer ${target.key}`);
         if (isStream) headers.set('Accept', 'text/event-stream');
@@ -239,6 +240,7 @@ async function handleResponses(request, url, body, store, allowedChannelIds) {
         openaiBody.model = target.model;
 
         const headers = new Headers();
+        applyPassthroughHeaders(headers, request);
         headers.set('Content-Type', 'application/json');
         headers.set('Authorization', `Bearer ${target.key}`);
         if (isStream) headers.set('Accept', 'text/event-stream');
@@ -384,12 +386,9 @@ async function handleOpenAIProxy(request, url, path, body, store, allowedChannel
         if (target.model) body.model = target.model;
 
         const headers = new Headers();
+        applyPassthroughHeaders(headers, request);
         headers.set('Content-Type', 'application/json');
         headers.set('Authorization', `Bearer ${target.key}`);
-
-        // Forward Accept header (important for streaming)
-        const accept = request.headers.get('Accept');
-        if (accept) headers.set('Accept', accept);
         applyChannelHeaders(headers, target.channel, request);
 
         const resp = await fetch(targetUrl, {

@@ -74,3 +74,26 @@ export function applyChannelHeaders(headers, channel, request) {
   }
   return headers;
 }
+
+// 透传时排除的头：连接类、由网关接管、以及客户端对网关的认证凭据
+const PASSTHROUGH_BLOCKED = new Set([
+  'connection', 'keep-alive', 'proxy-connection', 'transfer-encoding',
+  'te', 'trailer', 'upgrade',
+  'host', 'content-length', 'content-encoding', 'accept-encoding',
+  'authorization', 'x-api-key',
+  'cookie',
+]);
+
+/** 透传客户端请求头（排除连接类/网关接管/认证凭据等头），用于「在原有基础上」叠加 */
+export function applyPassthroughHeaders(headers, request) {
+  if (!request || !request.headers) return headers;
+  try {
+    for (const [name, value] of request.headers) {
+      const lower = name.toLowerCase();
+      if (PASSTHROUGH_BLOCKED.has(lower)) continue;
+      if (/[\r\n]/.test(value)) continue;
+      headers.set(name, value);
+    }
+  } catch {}
+  return headers;
+}

@@ -1273,10 +1273,10 @@ function openRouteDiagnose(btn) {
     }
     listHtml =
       '<div style="color:var(--text-2);font-size:13px;margin-bottom:10px">' + t('diagModel') + ' <code style="color:var(--text-1)">' + esc(pubValue) + '</code></div>' +
-      '<div style="display:flex;align-items:center;gap:4px;width:fit-content;cursor:pointer;margin-bottom:6px" onclick="var c=document.getElementById(\'diag-all\');c.checked=!c.checked;diagToggleAll(c)">' +
+      '<label style="display:flex;align-items:center;gap:4px;width:fit-content;cursor:pointer;margin-bottom:6px" for="diag-all">' +
         '<input type="checkbox" id="diag-all" checked onchange="diagToggleAll(this)">' +
         '<span style="font-size:13px;white-space:nowrap">' + t('selectAll') + '</span>' +
-      '</div>' +
+      '</label>' +
       rows +
       '<div id="diag-result" style="margin-top:10px"></div>';
   }

@@ -39,7 +39,7 @@ a{color:inherit;text-decoration:none}
 .nav-item.active{background:var(--primary);color:#fff}
 .logout-icon{width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;border:none;background:transparent;color:var(--text-1);border-radius:8px;cursor:pointer;transition:all .15s}
 .logout-icon:hover{background:var(--bg-hover);color:var(--danger)}
-.content{flex:1;margin-left:0;padding:128px 16px 32px;max-width:none}
+.content{flex:1;margin:0 auto;width:100%;padding:128px 40px 40px;max-width:1200px}
 
 /* Section header */
 .section-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px}

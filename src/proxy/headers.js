@@ -1,7 +1,8 @@
 /**
  * 渠道自定义请求头：允许为任意上游渠道配置请求头，同名覆盖内置头。
- * 值支持动态占位符：
- *   {{session}}   会话 ID（优先透传客户端会话头，缺失时生成，保证同一对话稳定）
+ * 值支持占位符 {{名称}}：直接取「客户端同名的请求头」（大小写不敏感），
+ * 例如 {{x-session-id}}、{{x-conversation-id}}，可适配任意客户端私有头。
+ * 另保留三个与请求头无关的生成器：
  *   {{uuid}}      每次请求随机 UUID
  *   {{timestamp}} 当前毫秒时间戳
  *   {{random}}    每次请求随机十六进制串
@@ -16,29 +17,22 @@ function randomHex(bytes = 16) {
   return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** 会话 ID：优先透传客户端已有会话头，缺失时生成 */
-export function resolveSessionId(request) {
-  const names = ['x-opencode-session', 'x-session-id', 'session_id', 'x-conversation-id', 'conversation_id'];
-  try {
-    if (request && request.headers) {
-      for (const n of names) {
-        const v = request.headers.get(n);
-        if (v) return v;
-      }
-    }
-  } catch {}
-  return 'gw-' + randomHex(16);
-}
-
-/** 解析请求头值中的占位符；未知占位符原样保留 */
+/** 解析请求头值中的占位符 {{名称}}：优先取客户端同名请求头，其次内置生成器；均无则置空 */
 export function resolveHeaderValue(value, request) {
-  return String(value == null ? '' : value).replace(/\{\{(\w+)\}\}/g, (m, key) => {
-    switch (key) {
-      case 'session': return resolveSessionId(request);
+  return String(value == null ? '' : value).replace(/\{\{([^{}]+)\}\}/g, (m, rawKey) => {
+    const key = rawKey.trim();
+    if (!key) return m;
+    if (request && request.headers) {
+      try {
+        const v = request.headers.get(key);
+        if (v != null) return v;
+      } catch {}
+    }
+    switch (key.toLowerCase()) {
       case 'uuid': return crypto.randomUUID();
       case 'timestamp': return String(Date.now());
       case 'random': return randomHex(16);
-      default: return m;
+      default: return '';
     }
   });
 }

@@ -487,7 +487,7 @@ const I18N = {
     addHeader: 'Add Header',
     headerNamePh: 'Header name',
     headerValuePh: 'Header value',
-    headersHelp: 'Sent on every upstream request of this channel and overrides built-in headers with the same name. Placeholders: {{session}} {{uuid}} {{timestamp}} {{random}}',
+    headersHelp: 'Sent on every upstream request of this channel and overrides built-in headers with the same name. Placeholder {{header-name}} copies the client request header of that name (case-insensitive), e.g. {{x-session-id}}, {{x-conversation-id}}. Built-in generators: {{uuid}} {{timestamp}} {{random}}',
   },
   zh: {
     loginSub: '请输入管理员密码或 API Key 继续',
@@ -628,7 +628,7 @@ const I18N = {
     addHeader: '添加请求头',
     headerNamePh: '请求头名称',
     headerValuePh: '请求头值',
-    headersHelp: '该渠道每次上游请求都会携带这些请求头，同名会覆盖内置请求头。支持占位符：{{session}}（会话ID，优先透传客户端会话头）{{uuid}} {{timestamp}} {{random}}',
+    headersHelp: '该渠道每次上游请求都会携带这些请求头，同名会覆盖内置请求头。占位符 {{请求头名}} 直接取客户端同名请求头（大小写不敏感），例如 {{x-session-id}}、{{x-conversation-id}}，可适配任意客户端私有头。内置生成器：{{uuid}} {{timestamp}} {{random}}',
   },
 };
 

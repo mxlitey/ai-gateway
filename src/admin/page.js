@@ -476,7 +476,8 @@ const I18N = {
   modelPickTitle: '选择上游模型',
   confirmAdd: '确定添加',
   addedNModels: '已添加 {n} 个模型。',
-  routeTargetCol: '目标渠道 / 上游模型',
+  routeChannelCol: '目标渠道',
+  routeModelCol: '上游模型',
   modelSearchPlaceholder: '搜索模型…',
   modelSearchEmpty: '未找到匹配的模型。',
   selectUpstream: '请选择上游模型',
@@ -1066,7 +1067,7 @@ function renderRoutes() {
   document.getElementById('routes-info').innerHTML = '<p>' + t('routesInfo') + '</p>';
 
   const head = document.getElementById('routes-thead');
-  head.innerHTML = '<th>' + [t('publicModel'), t('routeTargetCol'), ''].join('</th><th>') + '</th>';
+  head.innerHTML = '<th>' + [t('publicModel'), t('routeChannelCol'), t('routeModelCol'), ''].join('</th><th>') + '</th>';
 
   const tb = document.getElementById('routes-tbody');
 
@@ -1103,30 +1104,40 @@ function renderRoutes() {
   }
 
   if (order.length === 0) {
-    tb.innerHTML = '<tr><td colspan="2" class="empty">' + t('routesNone') + '</td></tr>';
+    tb.innerHTML = '<tr><td colspan="4" class="empty">' + t('routesNone') + '</td></tr>';
     return;
   }
 
   tb.innerHTML = order.map(p => {
     const targets = rows.filter(r => r.public === p);
-    const targetHtml = targets.map(r => {
-      return '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--border)">' +
-        '<span>' + esc(r.channel.name || r.channel.id) +
-          ' <span style="color:var(--text-2);font-size:12px">(' + esc(shortHost(r.channel.base_url)) + ')</span></span>' +
-        '<span><code style="background:var(--bg-0);padding:2px 8px;border-radius:4px;font-size:12px;color:var(--primary)">' + esc(r.upstream) + '</code></span>' +
-      '</div>';
-    }).join('');
+    const n = targets.length;
+    const hasDirect = targets.some(r => r.direct);
 
-    return '<tr>' +
-      '<td style="vertical-align:top;white-space:nowrap">' +
-        '<code style="background:var(--bg-0);padding:3px 8px;border-radius:4px;font-size:13px">' + esc(p) + '</code>' +
-        (targets.some(r => r.direct) ? ' <span class="tag-direct">' + t('direct') + '</span>' : '') +
-      '</td>' +
-      '<td style="padding-top:4px;padding-bottom:4px">' + targetHtml + '</td>' +
-      '<td style="width:80px;text-align:right;vertical-align:top">' +
-        '<button type="button" class="btn btn-sm btn-ghost" data-pub="' + esc(p) + '" onclick="openRouteDiagnose(this)">' + t('diagnose') + '</button>' +
-      '</td>' +
-    '</tr>';
+    // 每个「公开模型 → 目标」占一行，公开模型列与诊断按钮列用 rowspan 合并
+    return targets.map((r, i) => {
+      const first = i === 0;
+      const contStyle = first ? '' : 'border-top:none;';
+      return '<tr>' +
+        (first
+          ? '<td rowspan="' + n + '" style="vertical-align:top;white-space:nowrap">' +
+              '<code style="background:var(--bg-0);padding:3px 8px;border-radius:4px;font-size:13px">' + esc(p) + '</code>' +
+              (hasDirect ? ' <span class="tag-direct">' + t('direct') + '</span>' : '') +
+            '</td>'
+          : '') +
+        '<td style="vertical-align:top;white-space:nowrap;' + contStyle + '">' +
+          esc(r.channel.name || r.channel.id) +
+          ' <span style="color:var(--text-2);font-size:12px">(' + esc(shortHost(r.channel.base_url)) + ')</span>' +
+        '</td>' +
+        '<td style="vertical-align:top;white-space:nowrap;' + contStyle + '">' +
+          '<code style="background:var(--bg-0);padding:2px 8px;border-radius:4px;font-size:12px;color:var(--primary)">' + esc(r.upstream) + '</code>' +
+        '</td>' +
+        (first
+          ? '<td rowspan="' + n + '" style="width:80px;text-align:right;vertical-align:top">' +
+              '<button type="button" class="btn btn-sm btn-ghost" data-pub="' + esc(p) + '" onclick="openRouteDiagnose(this)">' + t('diagnose') + '</button>' +
+            '</td>'
+          : '') +
+      '</tr>';
+    }).join('');
   }).join('');
 }
 

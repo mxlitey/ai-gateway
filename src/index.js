@@ -26,8 +26,8 @@ export default {
     try {
       // ---- Admin routes ----
 
-      // Admin SPA page
-      if (path === '/admin' || path === '/admin/') {
+      // Admin SPA page (根路径也直达后台，无需 /admin)
+      if (path === '/' || path === '/admin' || path === '/admin/') {
         return new Response(getAdminPage(), {
           headers: { 'Content-Type': 'text/html; charset=utf-8' },
         });
@@ -56,7 +56,7 @@ export default {
       }
 
       // ---- Health check ----
-      if (path === '/' || path === '/health') {
+      if (path === '/health') {
         return new Response('AI Gateway is running.', {
           headers: { 'Content-Type': 'text/plain' },
         });

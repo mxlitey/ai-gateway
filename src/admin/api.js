@@ -25,6 +25,24 @@ function describeInvalidChatBody(bodyText) {
   return '';
 }
 
+/**
+ * 诊断命中的上游错误同样计入错误日志：诊断走 /admin/api/*，不经过转发流程的 logError，
+ * 否则「只有诊断才能复现」的渠道故障不会出现在错误日志里。字段与转发侧 logError 保持一致。
+ */
+function logDiagnoseError(store, ch, key, model, status, message) {
+  const hint = key.length > 12 ? key.slice(0, 7) + '...' + key.slice(-4) : key;
+  store.appendError(ch.id || '', {
+    channel_id: ch.id || '',
+    channel_name: ch.name || '',
+    base_url: ch.base_url || '',
+    model,
+    upstream_model: model,
+    status,
+    key_hint: hint,
+    message: String(message).slice(0, 2000),
+  }).catch(e => console.error('[errorlog] write failed:', e));
+}
+
 export async function handleAdminApi(request, env, store) {
   const url = new URL(request.url);
   const path = url.pathname.replace('/admin/api', '');
@@ -298,6 +316,11 @@ export async function handleAdminApi(request, env, store) {
               try { rawText = await resp.text(); } catch {}
               // 与真实转发同一判定标准：200 也可能是「内容为错误」的假成功
               const invalid = resp.status === 200 ? describeInvalidChatBody(rawText) : '';
+              if (invalid) {
+                logDiagnoseError(store, ch, key, model, 200, `HTTP 200 with error: ${invalid}`);
+              } else if (resp.status !== 200) {
+                logDiagnoseError(store, ch, key, model, resp.status, `HTTP ${resp.status}: ${rawText.slice(0, 200)}`);
+              }
               results.push({
                 model: model, channel: ch.name, channel_id: ch.id, key_hint: keyHint,
                 status: resp.status, duration_ms: duration,
@@ -305,6 +328,7 @@ export async function handleAdminApi(request, env, store) {
                 ...(invalid ? { error: invalid } : {}),
               });
             } catch (err) {
+              logDiagnoseError(store, ch, key, model, 0, `network error: ${err.message}`);
               results.push({
                 model: model, channel: ch.name, channel_id: ch.id, key_hint: keyHint,
                 status: 0, duration_ms: Date.now() - start,

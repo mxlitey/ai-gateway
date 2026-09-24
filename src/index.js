@@ -1,4 +1,5 @@
 import { createStore } from './store/kv.js';
+import { createAccessLogger } from './store/sls.js';
 import { handleLogin, requireAuth } from './admin/auth.js';
 import { handleAdminApi } from './admin/api.js';
 import { getAdminPage } from './admin/page.js';
@@ -52,7 +53,8 @@ export default {
 
       // ---- Proxy routes ----
       if (path.startsWith('/v1/')) {
-        return handleProxy(request, env, store);
+        // 未配置 SLS 时 createAccessLogger 返回 null，成功日志自动跳过
+        return handleProxy(request, env, store, createAccessLogger(env));
       }
 
       // ---- Health check ----

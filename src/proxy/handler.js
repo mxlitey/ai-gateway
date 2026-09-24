@@ -4,7 +4,7 @@ import { applyChannelHeaders, applyPassthroughHeaders } from './headers.js';
 import { claudeToOpenAI, openAIToClaude, openAIStreamToClaudeStream } from './claude.js';
 import { rid, resolveChatPath } from './utils.js';
 
-export async function handleProxy(request, env, store, accessLogger) {
+export async function handleProxy(request, env, store) {
   // Verify client API key
   const authResult = await verifyApiKey(request, store);
   if (!authResult.valid) {
@@ -16,8 +16,7 @@ export async function handleProxy(request, env, store, accessLogger) {
   const url = new URL(request.url);
   const path = url.pathname;
 
-  const apiKey = authResult.apiKey;
-  const allowedChannelIds = apiKey.channel_ids || null;
+  const allowedChannelIds = authResult.apiKey.channel_ids || null;
 
   // GET /v1/models
   if (path.endsWith('/models') && request.method === 'GET') {
@@ -36,15 +35,13 @@ export async function handleProxy(request, env, store, accessLogger) {
     return jsonRes({ error: { message: 'Invalid JSON body' } }, 400);
   }
 
-  const ctx = { request, url, body, store, allowedChannelIds, apiKey, accessLogger };
-
   // ---- Claude Messages API (/v1/messages) ----
   if (path.endsWith('/messages')) {
-    return handleClaudeMessages(ctx);
+    return handleClaudeMessages(request, url, body, store, allowedChannelIds);
   }
 
   // ---- OpenAI-compatible passthrough ----
-  return handleOpenAIProxy({ ...ctx, path });
+  return handleOpenAIProxy(request, url, path, body, store, allowedChannelIds);
 }
 
 // 转发循环中「本条上游响应无效，继续尝试下一个目标」的信号
@@ -95,14 +92,8 @@ function validateUpstreamResult(data, store, target, model) {
 async function forwardWithFailover(ctx) {
   let lastError = null;
   let last429Body = '';
-  const startedAt = Date.now();
-  const requestId = rid();
-  const failedTargets = [];
-  let attempts = 0;
-  let ttfbMs = null;
 
   for (const target of ctx.targets) {
-    attempts++;
     let targetUrl = '';
     try {
       const baseUrl = target.channel.base_url.replace(/\/+$/, '');
@@ -125,13 +116,10 @@ async function forwardWithFailover(ctx) {
         headers,
         body: JSON.stringify(ctx.body),
       });
-      // 首个上游响应头到达时刻，用于成功日志的 ttfb（秒级首包延迟）
-      if (ttfbMs === null) ttfbMs = Date.now() - startedAt;
 
       if (resp.status === 404) {
         lastError = `HTTP 404 (model not found)`;
         logError(ctx.store, target, ctx.model, 404, lastError);
-        failedTargets.push(targetLabel(target));
         continue;
       }
 
@@ -139,18 +127,13 @@ async function forwardWithFailover(ctx) {
         try { last429Body = await resp.text(); } catch { last429Body = ''; }
         lastError = `HTTP 429 (rate limited)`;
         logError(ctx.store, target, ctx.model, 429, lastError);
-        failedTargets.push(targetLabel(target));
         continue;
       }
 
       if (resp.ok || resp.status < 500) {
-        const out = await ctx.onUpstreamResponse({
-          resp, target,
-          meta: { requestId, attempts, failedTargets, startedAt, ttfbMs },
-        });
+        const out = await ctx.onUpstreamResponse({ resp, target });
         if (out && typeof out === 'object' && RETRY in out) {
           lastError = out[RETRY];
-          failedTargets.push(targetLabel(target));
           continue;
         }
         return out;
@@ -158,11 +141,9 @@ async function forwardWithFailover(ctx) {
 
       lastError = `HTTP ${resp.status}`;
       logError(ctx.store, target, ctx.model, resp.status, lastError);
-      failedTargets.push(targetLabel(target));
     } catch (err) {
       lastError = `network error: ${err.message}`;
       logError(ctx.store, target, ctx.model, 0, `${lastError}${targetUrl ? ` (${targetUrl})` : ''}`);
-      failedTargets.push(targetLabel(target));
     }
   }
 
@@ -171,7 +152,7 @@ async function forwardWithFailover(ctx) {
 
 // ─── Claude Messages API handler ───────────────────────────────────
 
-async function handleClaudeMessages({ request, url, body: claudeBody, store, allowedChannelIds, apiKey, accessLogger }) {
+async function handleClaudeMessages(request, url, claudeBody, store, allowedChannelIds) {
   const model = claudeBody.model || '';
   const isStream = claudeBody.stream || false;
 
@@ -191,9 +172,6 @@ async function handleClaudeMessages({ request, url, body: claudeBody, store, all
     return claudeErrorRes(error || 'No available channel for model: ' + model, 503);
   }
 
-  // 成功日志的公共字段（两条协议共用同一套采集逻辑）
-  const access = { request, url, apiKey, protocol: 'claude', model, accessLogger };
-
   return forwardWithFailover({
     store, request, url, targets, model,
     body: openaiBody,
@@ -202,7 +180,7 @@ async function handleClaudeMessages({ request, url, body: claudeBody, store, all
     logPrefix: '[proxy][claude]',
     buildPath: (target) => resolveChatPath(target.channel),
     applyModel: (target) => { openaiBody.model = target.model; },
-    onUpstreamResponse: async ({ resp, target, meta }) => {
+    onUpstreamResponse: async ({ resp, target }) => {
       if (!resp.ok) {
         const errBody = await resp.text();
         logError(store, target, model, resp.status, errBody);
@@ -215,13 +193,9 @@ async function handleClaudeMessages({ request, url, body: claudeBody, store, all
         (resp.headers.get('Content-Type') || '').includes('text/event-stream');
 
       if (upstreamIsSSE) {
-        let usage = null;
         const processedStream = processStream(resp.body, err => {
           const msg = (err && (err.message || err.code || err.type)) || 'upstream error';
           logError(store, target, model, 200, 'HTTP 200 stream error: ' + msg);
-        }, async () => {
-          // 流已结束：此时 usage 已收集完整，且响应尚未关闭，投递不会丢
-          await emitAccess(access, { target, meta, status: resp.status, stream: true, usage, upstreamReqId: upstreamRequestId(resp) });
         });
         const claudeStream = openAIStreamToClaudeStream(processedStream, model);
 
@@ -247,8 +221,6 @@ async function handleClaudeMessages({ request, url, body: claudeBody, store, all
       const invalid = validateUpstreamResult(openaiData, store, target, model);
       if (invalid) return invalid;
 
-      await emitAccess(access, { target, meta, status: resp.status, stream: false, usage: openaiData.usage, upstreamReqId: upstreamRequestId(resp) });
-
       // 非流式：转换回 Claude 格式
       const claudeResponse = openAIToClaude(openaiData, model);
       return jsonRes(claudeResponse, 200);
@@ -262,7 +234,7 @@ async function handleClaudeMessages({ request, url, body: claudeBody, store, all
 
 // ─── OpenAI passthrough handler ────────────────────────────────────
 
-async function handleOpenAIProxy({ request, url, path, body, store, allowedChannelIds, apiKey, accessLogger }) {
+async function handleOpenAIProxy(request, url, path, body, store, allowedChannelIds) {
   const model = body.model || '';
   const lb = new LoadBalancer(store);
   const { targets, error } = await lb.selectTarget(model, allowedChannelIds);
@@ -282,9 +254,6 @@ async function handleOpenAIProxy({ request, url, path, body, store, allowedChann
     body.stream_options.include_usage = true;
   }
 
-  // 成功日志的公共字段（两条协议共用同一套采集逻辑）
-  const access = { request, url, apiKey, protocol: 'openai', model, accessLogger };
-
   return forwardWithFailover({
     store, request, url, targets, model,
     body,
@@ -295,10 +264,9 @@ async function handleOpenAIProxy({ request, url, path, body, store, allowedChann
     // 对话接口可被渠道协议接口覆盖（如 /chat/completions）；其他端点（embeddings 等）沿用请求路径
     buildPath: (target) => upstreamPath.includes('/chat/completions') ? resolveChatPath(target.channel) : upstreamPath,
     applyModel: (target) => { if (target.model) body.model = target.model; },
-    onUpstreamResponse: async ({ resp, target, meta }) => {
+    onUpstreamResponse: async ({ resp, target }) => {
       const ct = resp.headers.get('Content-Type');
-      const ok = resp.ok;
-      if (!ok) {
+      if (!resp.ok) {
         let errBody = '';
         try { errBody = (await resp.clone().text()).slice(0, 300); } catch {}
         logError(store, target, model, resp.status, errBody || `HTTP ${resp.status}`);
@@ -322,14 +290,9 @@ async function handleOpenAIProxy({ request, url, path, body, store, allowedChann
 
         // 处理流：修复 id 字段（参考 one-api 流式处理方案）；
         // 顺带识别 HTTP 200 流中夹带的 error 事件（如向非多模态模型发送图片）并记录日志
-        let usage = null;
         const stream = processStream(resp.body, err => {
           const msg = (err && (err.message || err.code || err.type)) || 'upstream error';
           logError(store, target, model, 200, 'HTTP 200 stream error: ' + msg);
-        }, async () => {
-          // 流已结束：此时 usage 已收集完整，且响应尚未关闭，投递不会丢
-          if (!ok) return;
-          await emitAccess(access, { target, meta, status: resp.status, stream: true, usage, upstreamReqId: upstreamRequestId(resp) });
         });
 
         return new Response(stream, { status: resp.status, headers: respHeaders });
@@ -341,24 +304,18 @@ async function handleOpenAIProxy({ request, url, path, body, store, allowedChann
       }
 
       // Non-streaming: validate chat/completions responses
-      if (ok && upstreamPath.includes('/chat/completions')) {
+      if (resp.ok && upstreamPath.includes('/chat/completions')) {
         const respText = await resp.text();
-        let data = null;
-        try { data = JSON.parse(respText); } catch { /* not valid JSON — pass through as-is */ }
-        if (data) {
+        try {
+          const data = JSON.parse(respText);
           // 上游可能以 HTTP 200 返回错误（如向非多模态模型发送图片）：
           // 1) 带 error 字段 2) choices 不是数组 3) choices 为空数组
           const invalid = validateUpstreamResult(data, store, target, model);
           if (invalid) return invalid;
-          await emitAccess(access, { target, meta, status: resp.status, stream: false, usage: data.usage, upstreamReqId: upstreamRequestId(resp) });
-        }
+        } catch { /* not valid JSON — pass through as-is */ }
         return new Response(respText, { status: resp.status, headers: respHeaders });
       }
 
-      // 其他端点（embeddings 等）：原样透传，成功时记录日志（无 token 用量）
-      if (ok) {
-        await emitAccess(access, { target, meta, status: resp.status, stream: false, usage: null, upstreamReqId: upstreamRequestId(resp) });
-      }
       return new Response(resp.body, { status: resp.status, headers: respHeaders });
     },
     onAllFailed: ({ lastError, last429Body }) => {
@@ -429,6 +386,8 @@ function jsonRes(body, status = 200) {
 
 function logError(store, target, model, status, message) {
   const ch = target.channel || {};
+  const key = target.key || '';
+  const hint = key.length > 12 ? key.slice(0, 7) + '...' + key.slice(-4) : key;
   store.appendError(ch.id || '', {
     channel_id: ch.id || '',
     channel_name: ch.name || '',
@@ -436,89 +395,9 @@ function logError(store, target, model, status, message) {
     model,
     upstream_model: target.model || model,
     status,
-    key_hint: keyHint(target.key),
+    key_hint: hint,
     message: String(message).slice(0, 2000),
   }).catch(e => console.error('[errorlog] write failed:', e));
-}
-
-// ─── 成功日志（阿里云 SLS）────────────────────────────────────────
-
-/** 密钥脱敏：仅保留前 7 位与后 4 位，避免日志泄露明文 Key */
-function keyHint(key) {
-  const k = String(key || '');
-  return k.length > 12 ? k.slice(0, 7) + '...' + k.slice(-4) : k;
-}
-
-/** 渠道 + 密钥的组合标识，用于记录「成功前被哪些目标挡下」 */
-function targetLabel(target) {
-  const ch = (target && target.channel) || {};
-  return `${ch.name || ch.id || 'unknown'}:${keyHint(target && target.key)}`;
-}
-
-/** 客户端 IP：边缘平台注入的转发头，不同平台头名不同，逐个尝试 */
-function clientIp(request) {
-  for (const h of ['eo-connecting-ip', 'x-forwarded-for', 'x-real-ip', 'cf-connecting-ip']) {
-    const v = request.headers.get(h);
-    if (v) return v.split(',')[0].trim();
-  }
-  return '';
-}
-
-/** 上游请求 ID：出问题时可直接向上游对账 */
-function upstreamRequestId(resp) {
-  for (const h of ['x-request-id', 'request-id', 'x-amzn-requestid', 'cf-ray', 'x-trace-id']) {
-    const v = resp.headers.get(h);
-    if (v) return v;
-  }
-  return '';
-}
-
-/** 从上游 usage 提取 token 用量字段 */
-function usageFields(usage) {
-  if (!usage || typeof usage !== 'object') return {};
-  return {
-    prompt_tokens: usage.prompt_tokens,
-    completion_tokens: usage.completion_tokens,
-    total_tokens: usage.total_tokens,
-  };
-}
-
-/**
- * 投递一条「请求成功」日志到 SLS。未配置 SLS（accessLogger 为 null）时静默跳过。
- *
- * @param {object} access { request, url, apiKey, protocol, model, accessLogger }
- * @param {object} ev     { target, meta, status, stream, usage, upstreamReqId }
- */
-async function emitAccess(access, { target, meta, status, stream, usage, upstreamReqId }) {
-  const { accessLogger } = access;
-  if (!accessLogger) return;
-
-  const ch = target.channel || {};
-  const k = access.apiKey || {};
-
-  await accessLogger.log({
-    request_id: meta.requestId,
-    api_key_id: k.id,
-    api_key_name: k.name,
-    api_key_hint: keyHint(k.key),
-    endpoint: access.url.pathname,
-    protocol: access.protocol,
-    model: access.model,
-    upstream_model: target.model || access.model,
-    channel_id: ch.id,
-    channel_name: ch.name,
-    upstream_key_hint: keyHint(target.key),
-    status,
-    stream: stream ? 'true' : 'false',
-    duration_ms: Date.now() - meta.startedAt,
-    attempts: meta.attempts,
-    failed_targets: meta.failedTargets.join(' | '),
-    ttfb_ms: meta.ttfbMs,
-    ...usageFields(usage),
-    upstream_request_id: upstreamReqId,
-    client_ip: clientIp(access.request),
-    user_agent: (access.request.headers.get('user-agent') || '').slice(0, 100),
-  });
 }
 
 function claudeErrorRes(message, status = 500) {
@@ -539,10 +418,10 @@ function claudeErrorRes(message, status = 500) {
 
 /**
  * 单条 SSE 事件的最小修补：仅在 id 非字符串时补一个（国内模型如 GLM 会返回 id: null），
- * 顺带记录流里夹带的 error 事件（如向非多模态模型发送图片）与 token 用量。
+ * 顺带记录流里夹带的 error 事件（如向非多模态模型发送图片）。
  * 无法识别的内容一律原样返回，不做「猜属性丢包」，避免误丢 usage 等信息。
  */
-function rewriteSseEvent(part, streamId, onError, onUsage) {
+function rewriteSseEvent(part, streamId, onError) {
   const trimmed = part.trim();
   if (!trimmed.startsWith('data: ') || trimmed === 'data: [DONE]') return part;
 
@@ -554,11 +433,6 @@ function rewriteSseEvent(part, streamId, onError, onUsage) {
   if (data.error && typeof data.error === 'object') {
     if (onError) onError(data.error);
     return part;
-  }
-
-  // 流式用量：上游在最后一个 chunk 携带 usage（由网关注入 stream_options.include_usage 触发）
-  if (onUsage && data.usage && typeof data.usage === 'object') {
-    onUsage(data.usage);
   }
 
   // id 已是字符串则无需修补，原样透传
@@ -574,22 +448,14 @@ function rewriteSseEvent(part, streamId, onError, onUsage) {
  * 只做「最小必要修补」，其余内容原样透传：
  * 1. 兼容 \n\n 与 \r\n\r\n 两种事件分隔符（部分上游使用 Windows 风格换行）
  * 2. 仅在 id 非字符串时补一个，同一次回复内复用同一个 id，保证多包 id 一致
- * 3. 顺带收集流内 error 事件与 usage
  *
  * 返回修补后的 ReadableStream，可直接返回给客户端。
- *
- * @param {ReadableStream} body 上游响应体
- * @param {(err: object) => void} [onError] 流内 error 事件回调
- * @param {(ctx: { usage: object|null }) => Promise<void>|void} [onFinish]
- *        流结束回调（在响应关闭前触发，此时函数仍存活，可安全投递日志）。
- *        返回 Promise 时，流的关闭会等待其 settle，因此回调内部必须有超时上限。
  */
-function processStream(body, onError, onFinish) {
+function processStream(body, onError) {
   const dec = new TextDecoder();
   const enc = new TextEncoder();
   const streamId = 'chatcmpl-' + rid();
   let buf = '';
-  let usage = null;
 
   return body.pipeThrough(new TransformStream({
     transform(chunk, ctrl) {
@@ -599,12 +465,11 @@ function processStream(body, onError, onFinish) {
       const parts = buf.split('\n\n');
       buf = parts.pop() ?? '';
       for (const part of parts) {
-        ctrl.enqueue(enc.encode(rewriteSseEvent(part, streamId, onError, u => { usage = u; }) + '\n\n'));
+        ctrl.enqueue(enc.encode(rewriteSseEvent(part, streamId, onError) + '\n\n'));
       }
     },
-    async flush(ctrl) {
+    flush(ctrl) {
       if (buf.trim()) ctrl.enqueue(enc.encode(buf));
-      if (onFinish) await onFinish({ usage });
     },
   }));
 }

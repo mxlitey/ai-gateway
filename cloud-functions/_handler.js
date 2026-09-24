@@ -35,14 +35,6 @@ export async function handleRequest(context) {
   const kv = await getKv();
   return worker.fetch(context.request, {
     ADMIN_PASSWORD: env.ADMIN_PASSWORD || '',
-    // 阿里云 SLS 成功日志（未配置时不启用，见 src/store/sls.js）
-    SLS_ENDPOINT: env.SLS_ENDPOINT || '',
-    SLS_PROJECT: env.SLS_PROJECT || '',
-    SLS_LOGSTORE: env.SLS_LOGSTORE || '',
-    SLS_ACCESS_KEY_ID: env.SLS_ACCESS_KEY_ID || '',
-    SLS_ACCESS_KEY_SECRET: env.SLS_ACCESS_KEY_SECRET || '',
-    SLS_TOPIC: env.SLS_TOPIC || '',
-    SLS_SOURCE: env.SLS_SOURCE || '',
     KV: kv,
   });
 }

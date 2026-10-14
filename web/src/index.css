@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+/* 与桌面窗口（cmd/gateway-wails/assets/index.html）统一设计语言：
+   主色改用窗口的 iOS 蓝（#007aff），此处直接覆盖 emerald 调色板，
+   让面板内既有的 emerald-* 类统一呈现为窗口同款蓝色主色；卡片圆角对齐窗口的 14px。 */
+@theme {
+  --radius-xl: 14px;
+  --color-emerald-50: #eaf3ff;
+  --color-emerald-100: #d6e9ff;
+  --color-emerald-200: #aed2ff;
+  --color-emerald-300: #7db4ff;
+  --color-emerald-400: #4899ff;
+  --color-emerald-500: #208cff;
+  --color-emerald-600: #007aff;
+  --color-emerald-700: #0062d9;
+  --color-emerald-800: #0052b4;
+  --color-emerald-900: #00418f;
+  --color-emerald-950: #002c66;
+}
+
+:root {
+  color-scheme: light dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui,
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 统一的细节滚动条 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.35);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+/* 渠道翻转卡片：正面概览，点击翻到背面看操作 */
+.flip-card {
+  perspective: 1000px;
+}
+.flip-card-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+  transform-style: preserve-3d;
+}
+.flip-card.flipped .flip-card-inner {
+  transform: rotateY(180deg);
+}
+.flip-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.flip-face-back {
+  transform: rotateY(180deg);
+}

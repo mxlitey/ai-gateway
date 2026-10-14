@@ -1,0 +1,201 @@
+package plugin
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func writePlugin(t *testing.T, root, id, manifest, entry string) string {
+	t.Helper()
+	dir := filepath.Join(root, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("创建插件目录失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, manifestFileName), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("写入清单失败: %v", err)
+	}
+	if entry != "" {
+		if err := os.WriteFile(filepath.Join(dir, entry), []byte("stub"), 0o644); err != nil {
+			t.Fatalf("写入入口失败: %v", err)
+		}
+	}
+	return dir
+}
+
+const validManifest = `{
+  "id": "hello",
+  "name": "Hello",
+  "version": "1.0.0",
+  "entry": "main.js",
+  "base_url": "http://127.0.0.1:{{port}}/v1",
+  "api_key_env": "DEMO_KEY",
+  "channels": [{ "name": "Hello", "public_models": ["hello-model"] }]
+}`
+
+func TestLoadAndValidateValidPlugin(t *testing.T) {
+	dir := writePlugin(t, t.TempDir(), "hello", validManifest, "main.js")
+
+	manifest, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatalf("加载清单失败: %v", err)
+	}
+	if err := Validate(dir, manifest); err != nil {
+		t.Fatalf("应校验通过，实际: %v", err)
+	}
+	if manifest.HealthURLPath() != defaultHealthPath {
+		t.Fatalf("未声明 health_path 时应回落到 %s，实际 %q", defaultHealthPath, manifest.HealthURLPath())
+	}
+	if manifest.HealthTimeoutMS != defaultHealthTimeout {
+		t.Fatalf("默认探活超时应为 %d，实际 %d", defaultHealthTimeout, manifest.HealthTimeoutMS)
+	}
+	if manifest.StartupTimeoutMS != defaultStartupTimeout {
+		t.Fatalf("默认启动超时应为 %d，实际 %d", defaultStartupTimeout, manifest.StartupTimeoutMS)
+	}
+	specs := manifest.ChannelSpecs()
+	if len(specs) != 1 || specs[0].Name != "Hello" {
+		t.Fatalf("渠道声明解析错误: %+v", specs)
+	}
+}
+
+func TestValidateRejectsIDMismatch(t *testing.T) {
+	dir := writePlugin(t, t.TempDir(), "hello", validManifest, "main.js")
+	manifest, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.ID = "other"
+	if err := Validate(dir, manifest); err == nil {
+		t.Fatal("id 与目录名不一致时应报错")
+	}
+}
+
+func TestValidateRejectsBadID(t *testing.T) {
+	dir := writePlugin(t, t.TempDir(), "Hello", `{"id":"Hello","name":"H","entry":"main.js","base_url":"http://x"}`, "main.js")
+	manifest, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(dir, manifest); err == nil {
+		t.Fatal("id 含大写字母时应报错")
+	}
+}
+
+func TestValidateRejectsEntryEscape(t *testing.T) {
+	dir := writePlugin(t, t.TempDir(), "hello", validManifest, "")
+	manifest, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Entry = "../evil.exe"
+
+	if err := Validate(dir, manifest); err == nil {
+		t.Fatal("entry 逃出插件目录时应报错")
+	} else if !strings.Contains(err.Error(), "逃出") {
+		t.Fatalf("错误信息应说明路径逃逸，实际: %v", err)
+	}
+}
+
+func TestValidateRejectsAbsoluteEntry(t *testing.T) {
+	dir := writePlugin(t, t.TempDir(), "hello", validManifest, "")
+	manifest, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Entry = filepath.Join(dir, "main.js")
+	if err := Validate(dir, manifest); err == nil {
+		t.Fatal("entry 为绝对路径时应报错")
+	}
+}
+
+func TestValidateRejectsMissingEntry(t *testing.T) {
+	dir := writePlugin(t, t.TempDir(), "hello", validManifest, "")
+	manifest, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(dir, manifest); err == nil {
+		t.Fatal("entry 文件不存在时应报错")
+	}
+}
+
+func TestValidateRejectsEmptyBaseURL(t *testing.T) {
+	dir := writePlugin(t, t.TempDir(), "hello", `{"id":"hello","name":"H","entry":"main.js"}`, "main.js")
+	manifest, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Validate(dir, manifest); err == nil {
+		t.Fatal("base_url 为空时应报错")
+	}
+}
+
+func TestHealthPathExplicitEmptyDisablesHTTPProbe(t *testing.T) {
+	dir := writePlugin(t, t.TempDir(), "hello",
+		`{"id":"hello","name":"H","entry":"main.js","base_url":"http://x","health_path":""}`, "main.js")
+	manifest, err := LoadManifest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.HealthURLPath() != "" {
+		t.Fatalf("显式空 health_path 应禁用 HTTP 探活，实际 %q", manifest.HealthURLPath())
+	}
+}
+
+func TestSubstitute(t *testing.T) {
+	vars := substVars{Port: 20001, Data: `C:\data\p`, APIKey: "sk-abc", PluginDir: `C:\plugins\p`}
+	got := substitute("serve --port {{port}} --auth-dir {{data}} --key {{api_key}}", vars)
+	want := `serve --port 20001 --auth-dir C:\data\p --key sk-abc`
+	if got != want {
+		t.Fatalf("替换结果不符\n实际: %s\n期望: %s", got, want)
+	}
+	if substitute("{{unknown}}", vars) != "{{unknown}}" {
+		t.Fatal("未知占位符应原样保留")
+	}
+}
+
+func TestIsInside(t *testing.T) {
+	base := t.TempDir()
+	inside := filepath.Join(base, "sub", "a.exe")
+	outside := filepath.Join(base, "..", "b.exe")
+
+	if !IsInside(base, inside) {
+		t.Fatal("子路径应判定为目录内")
+	}
+	if IsInside(base, outside) {
+		t.Fatal("上级路径不应判定为目录内")
+	}
+	if !IsInside(base, base) {
+		t.Fatal("目录自身应判定为目录内")
+	}
+}
+
+func TestValidateDirSkipsManifestMissing(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := ValidateDir(dir); err == nil {
+		t.Fatal("缺少 plugin.json 时应报错")
+	}
+}
+
+func TestStablePortForIsDeterministic(t *testing.T) {
+	first := stablePortFor("hello")
+	second := stablePortFor("hello")
+	if first != second {
+		t.Fatalf("同一 id 应推导出同一端口，实际 %d / %d", first, second)
+	}
+	if first < portRangeStart || first > portRangeEnd {
+		t.Fatalf("端口 %d 超出 %d-%d 范围", first, portRangeStart, portRangeEnd)
+	}
+	t.Logf("hello -> %d, workbuddy -> %d", first, stablePortFor("workbuddy"))
+}
+
+func TestAllocatePortInRange(t *testing.T) {
+	port, err := allocatePort()
+	if err != nil {
+		t.Fatalf("分配端口失败: %v", err)
+	}
+	if port < portRangeStart || port > portRangeEnd {
+		t.Fatalf("端口 %d 超出 %d-%d 范围", port, portRangeStart, portRangeEnd)
+	}
+}

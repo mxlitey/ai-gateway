@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>AI Gateway</title>
+<style>
+  :root {
+    --bg: #f2f2f7;
+    --card: #ffffff;
+    --edge: #e8e8ee;
+    --sep: #efeff4;
+    --field-edge: #d1d1d6;
+    --label: #1d1d1f;
+    --second: #6e6e73;
+    --tertiary: #8e8e93;
+    --blue: #007aff;
+    --blue-hover: #208cff;
+    --blue-press: #0062d9;
+    --fill: #f2f2f7;
+    --fill-hover: #e7e7ec;
+    --fill-press: #dcdce2;
+    --green: #34c759;
+    --gray: #c7c7cc;
+    --red: #ff3b30;
+    --radius-card: 14px;
+    --radius-ctl: 8px;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { height: 100%; margin: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--label);
+    font: 400 13px/1.45 -apple-system, "Segoe UI Variable Text", "Segoe UI",
+          system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    overflow: hidden;
+  }
+
+  .app {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ---- 自绘标题栏（无系统边框窗口）---- */
+  .titlebar {
+    flex: none;
+    height: 38px;
+    display: flex;
+    align-items: stretch;
+  }
+  .drag {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0 4px 0 16px;
+    min-width: 0;
+    /* WebView2 原生非客户区支持：本区域可拖动窗口 */
+    app-region: drag;
+    -webkit-app-region: drag;
+    --wails-non-client-region: caption;
+  }
+  .winbtn {
+    flex: none;
+    width: 46px;
+    height: 38px;
+    border: 0;
+    background: transparent;
+    color: var(--second);
+    font: 400 13px/1 inherit;
+    cursor: default;
+  }
+  .winbtn:hover { background: var(--fill-hover); color: var(--label); }
+  .winbtn.close:hover { background: var(--red); color: #fff; }
+  /* 交给 WebView2 原生非客户区处理，避免自绘按钮被算进拖拽区 */
+  .winbtn.min { --wails-non-client-region: minimize; }
+  .winbtn.close { --wails-non-client-region: close; }
+
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--gray);
+    flex: none;
+  }
+  .dot.on { background: var(--green); }
+  .status-text { font-weight: 600; }
+
+  /* ---- 内容 ---- */
+  .content {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 4px 14px 14px;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--edge);
+    border-radius: var(--radius-card);
+    padding: 12px 14px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .card.grow { flex: 1 1 auto; min-height: 0; }
+
+  .row { display: flex; align-items: center; gap: 8px; }
+  .spacer { flex: 1 1 auto; }
+
+  .field-label { color: var(--second); font-size: 12px; flex: none; }
+
+  input.port {
+    width: 84px;
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--field-edge);
+    border-radius: var(--radius-ctl);
+    background: var(--card);
+    color: var(--label);
+    font: inherit;
+    font-variant-numeric: tabular-nums;
+    outline: none;
+    user-select: text;
+  }
+  input.port:focus { border-color: var(--blue); }
+
+  button {
+    height: 30px;
+    padding: 0 14px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-ctl);
+    font: 600 13px/1 inherit;
+    cursor: default;
+    background: var(--fill);
+    color: var(--label);
+    transition: background .12s ease;
+    flex: none;
+  }
+  button:hover { background: var(--fill-hover); }
+  button:active { background: var(--fill-press); }
+  button.primary { background: var(--blue); color: #fff; }
+  button.primary:hover { background: var(--blue-hover); }
+  button.primary:active { background: var(--blue-press); }
+  button.danger { background: var(--fill); color: var(--red); }
+  button.danger:hover { background: #ffeceb; }
+  button:disabled { opacity: .45; }
+  button.small { height: 26px; padding: 0 10px; font-size: 12px; }
+
+  /* 分段控件（iOS 风格） */
+  .segmented {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    background: var(--fill);
+    border-radius: 9px;
+    flex: none;
+  }
+  .segmented button {
+    height: 24px;
+    padding: 0 12px;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--second);
+    font: 500 12px/1 inherit;
+  }
+  .segmented button:hover { background: transparent; color: var(--label); }
+  .segmented button.on,
+  .segmented button.on:hover {
+    background: var(--card);
+    color: var(--label);
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .10);
+  }
+
+  /* API 基础地址 + 复制 */
+  .endpoint {
+    color: var(--second);
+    font: 400 12px/1 "Cascadia Mono", Consolas, "SF Mono", monospace;
+    user-select: text;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .icon-btn {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    color: var(--tertiary);
+    border-radius: 6px;
+  }
+  .icon-btn:hover { background: var(--fill-hover); color: var(--label); }
+  .icon-btn .ico-check { display: none; }
+  .icon-btn.copied,
+  .icon-btn.copied:hover { background: transparent; color: var(--green); }
+  .icon-btn.copied .ico-copy { display: none; }
+  .icon-btn.copied .ico-check { display: block; }
+
+  .section-head { display: flex; align-items: center; gap: 8px; }
+  .section-title { font-weight: 600; }
+  .count { color: var(--tertiary); font-size: 12px; }
+
+  .list { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  .item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 8px;
+    border-radius: 8px;
+    cursor: default;
+  }
+  .item:hover { background: var(--fill); }
+  .item.sel { background: var(--fill-hover); }
+  .item .grow { flex: 1 1 auto; min-width: 0; }
+  .item .name { font-weight: 600; }
+  .item .meta { color: var(--tertiary); font-size: 12px; }
+  .item .name, .item .meta {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .empty {
+    color: var(--tertiary); font-size: 12px;
+    padding: 16px 2px; text-align: center;
+  }
+
+  .logs {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    background: var(--fill);
+    border-radius: 10px;
+    padding: 8px 10px;
+    font: 400 12px/1.6 "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+    color: var(--second);
+    user-select: text;
+    white-space: pre-wrap;
+    word-break: break-all;
+    /* 关掉滚动锚定，避免新增内容时浏览器回调整滚动位置 */
+    overflow-anchor: none;
+  }
+
+  /* ---- 确认弹层 ---- */
+  .overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, .18);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .overlay.show { display: flex; }
+  .sheet {
+    width: 100%;
+    max-width: 340px;
+    background: var(--card);
+    border-radius: var(--radius-card);
+    padding: 18px;
+    box-shadow: 0 18px 48px rgba(0, 0, 0, .22);
+  }
+  .sheet-title { font-weight: 600; font-size: 15px; margin-bottom: 8px; }
+  .sheet-body { color: var(--second); font-size: 12px; line-height: 1.6; word-break: break-all; white-space: pre-line; }
+  .sheet-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+  .sheet-actions .danger { background: var(--red); color: #fff; }
+  .sheet-actions .danger:hover { background: #e6352b; }
+</style>
+</head>
+<body>
+  <div class="app">
+
+    <!-- 自绘标题栏：状态圆点 + 窗口标题 -->
+    <header class="titlebar">
+      <div class="drag">
+        <span class="dot" id="dot"></span>
+        <span class="status-text">AI Gateway</span>
+      </div>
+      <button class="winbtn min" id="btnMin" title="最小化">&#x2013;</button>
+      <button class="winbtn close" id="btnClose" title="关闭到托盘">&#x2715;</button>
+    </header>
+
+    <div class="content">
+
+      <!-- 网关控制 -->
+      <div class="card">
+        <div class="row">
+          <span class="field-label">运行端口</span>
+          <input class="port" id="port" type="text" inputmode="numeric" spellcheck="false" autocomplete="off">
+          <button class="primary" id="btnStart">启动</button>
+          <button id="btnStop">停止</button>
+          <span class="spacer"></span>
+          <button id="btnPanel">管理面板</button>
+        </div>
+        <div class="row">
+          <span class="field-label">访问范围</span>
+          <div class="segmented" id="scope">
+            <button data-lan="0" id="scopeLocal">仅本机</button>
+            <button data-lan="1" id="scopeLan">局域网</button>
+          </div>
+          <span class="spacer"></span>
+          <span class="endpoint" id="endpoint" title="API 基础地址"></span>
+          <button class="icon-btn" id="btnCopy" title="复制地址">
+            <svg class="ico-copy" width="14" height="14" viewBox="0 0 16 16" fill="none"
+                 stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
+              <rect x="5.5" y="5.5" width="8.5" height="8.5" rx="2.2"/>
+              <path d="M10.5 5.5V4.2A2.2 2.2 0 0 0 8.3 2H4.2A2.2 2.2 0 0 0 2 4.2v4.1a2.2 2.2 0 0 0 2.2 2.2h1.3"/>
+            </svg>
+            <svg class="ico-check" width="14" height="14" viewBox="0 0 16 16" fill="none"
+                 stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3.5 8.5l3 3 6-6.5"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- 插件 -->
+      <div class="card">
+        <div class="section-head">
+          <span class="section-title">插件</span>
+          <span class="count" id="plugCount">0 个</span>
+          <span class="spacer"></span>
+          <button class="small" id="btnAdd">添加</button>
+          <button class="small danger" id="btnRemove" disabled>移除</button>
+          <button class="small" id="btnRescan">重扫</button>
+          <button class="small" id="btnDir">目录</button>
+        </div>
+        <div class="list" id="plugList">
+          <div class="empty">还没有插件</div>
+        </div>
+      </div>
+
+      <!-- 日志 -->
+      <div class="card grow">
+        <div class="section-head"><span class="section-title">日志</span></div>
+        <div class="logs" id="logs"></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 确认弹层 -->
+  <div class="overlay" id="overlay">
+    <div class="sheet">
+      <div class="sheet-title" id="sheetTitle">删除插件</div>
+      <div class="sheet-body" id="sheetBody"></div>
+      <div class="sheet-actions">
+        <button id="sheetCancel">取消</button>
+        <button class="danger" id="sheetOk">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="importmap">
+  { "imports": { "@wailsio/runtime": "/wails/runtime.js" } }
+  </script>
+
+  <script type="module">
+    import { Events } from "@wailsio/runtime";
+    import { GatewayService } from "/bindings/github.com/czg95/ai-gateway-v2/cmd/gateway-wails/index.js";
+
+    const $ = (id) => document.getElementById(id);
+    const dot = $("dot");
+    const portEl = $("port"), plugList = $("plugList"), plugCount = $("plugCount"), logsEl = $("logs");
+    const btnStart = $("btnStart"), btnStop = $("btnStop"), btnRemove = $("btnRemove");
+    const overlay = $("overlay"), sheetBody = $("sheetBody");
+    const scopeBox = $("scope");
+    const endpointEl = $("endpoint"), btnCopy = $("btnCopy");
+
+    let loadedPort = 0;
+    let lan = false;
+    let logCount = 0;
+    let logStick = true;
+    let rows = [];
+    let selectedId = "";
+    let confirmAction = null;
+
+    function toast(line) { if (line) appendLog(line); }
+
+    function applyStatus(st) {
+      if (!st) return;
+      dot.classList.toggle("on", !!st.running);
+      dot.title = st.running ? "运行中" : "已停止";
+      btnStart.textContent = st.running ? "重启" : "启动";
+      btnStop.disabled = !st.running;
+      // 端口只在首次载入或后端切换端口时同步，避免打断用户输入
+      if (st.port && st.port !== loadedPort) {
+        loadedPort = st.port;
+        portEl.value = String(st.port);
+      }
+      applyScope(!!st.lan);
+      endpointEl.textContent = st.baseUrl || "";
+      endpointEl.title = st.baseUrl || "";
+    }
+
+    // 访问范围：仅本机（127.0.0.1） / 局域网（0.0.0.0）
+    function applyScope(next) {
+      lan = !!next;
+      $("scopeLocal").classList.toggle("on", !lan);
+      $("scopeLan").classList.toggle("on", lan);
+    }
+
+    // 只有用户手动往上翻时才停止跟随；追加日志本身不会解除跟随
+    logsEl.addEventListener("scroll", () => {
+      logStick = logsEl.scrollHeight - logsEl.scrollTop - logsEl.clientHeight < 12;
+    });
+
+    function appendLog(line) {
+      const stick = logStick;
+      const div = document.createElement("div");
+      div.textContent = line;
+      logsEl.appendChild(div);
+      logCount++;
+      if (logCount > 500) { logsEl.removeChild(logsEl.firstChild); logCount--; }
+      if (stick) requestAnimationFrame(() => { logsEl.scrollTop = logsEl.scrollHeight; });
+    }
+
+    function renderPlugins(list) {
+      rows = Array.isArray(list) ? list : [];
+      if (!rows.some((p) => p.id === selectedId)) selectedId = "";
+      btnRemove.disabled = !selectedId;
+
+      plugList.innerHTML = "";
+      if (rows.length === 0) {
+        plugCount.textContent = "0 个";
+        const empty = document.createElement("div");
+        empty.className = "empty";
+        empty.textContent = "还没有插件";
+        plugList.appendChild(empty);
+        schedulePluginPoll();
+        return;
+      }
+      plugCount.textContent = rows.length + " 个";
+      for (const p of rows) {
+        const item = document.createElement("div");
+        item.className = "item" + (p.id === selectedId ? " sel" : "");
+        item.addEventListener("click", () => {
+          selectedId = p.id;
+          renderPlugins(rows);
+        });
+
+        const d = document.createElement("span");
+        d.className = "dot";
+        if (p.status === "运行中") d.classList.add("on");
+
+        const box = document.createElement("div");
+        box.className = "grow";
+        const name = document.createElement("div");
+        name.className = "name";
+        name.textContent = p.name || "(未命名)";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        const bits = [];
+        if (p.version) bits.push("v" + p.version);
+        if (p.status) bits.push(p.status);
+        if (p.port) bits.push("端口 " + p.port);
+        if (p.dir) bits.push(p.dir);
+        meta.textContent = bits.join(" · ");
+        box.appendChild(name);
+        box.appendChild(meta);
+
+        item.appendChild(d);
+        item.appendChild(box);
+        plugList.appendChild(item);
+      }
+      schedulePluginPoll();
+    }
+
+    // 插件处于过渡状态（启动中/重启中/已发现）时自动轮询，直到稳定。
+    // 否则网关重启后若恰好抓到过渡态，列表会一直停在“启动中”，需手动点「重扫」才更新。
+    const TRANSIENT_STATUS = new Set(["启动中", "重启中", "停止中", "已发现"]);
+    let pluginPoll = null;
+    function schedulePluginPoll() {
+      if (pluginPoll) { clearTimeout(pluginPoll); pluginPoll = null; }
+      if (!rows.some((p) => TRANSIENT_STATUS.has(p.status))) return;
+      pluginPoll = setTimeout(async () => {
+        try { renderPlugins(await GatewayService.Plugins()); } catch (_) { /* 单次失败忽略，下次继续 */ }
+        schedulePluginPoll();
+      }, 1200);
+    }
+
+    async function refresh() {
+      try {
+        applyStatus(await GatewayService.Status());
+        renderPlugins(await GatewayService.Plugins());
+      } catch (err) {
+        appendLog("读取状态失败：" + err);
+      }
+    }
+
+    async function run(fn, btn) {
+      if (btn) btn.disabled = true;
+      try {
+        const res = await fn();
+        if (res && res.message) toast(res.message);
+      } catch (err) {
+        appendLog("操作失败：" + err);
+      } finally {
+        if (btn) btn.disabled = false;
+        await refresh();
+      }
+    }
+
+    // ---- 网关 ----
+    btnStart.addEventListener("click", () => {
+      const port = parseInt(portEl.value.trim(), 10);
+      if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+        appendLog("端口不合法，请填 1-65535 之间的数字");
+        portEl.focus();
+        return;
+      }
+      run(() => GatewayService.Start(port, lan), btnStart);
+    });
+    btnStop.addEventListener("click", () => run(() => GatewayService.Stop(), btnStop));
+    $("btnPanel").addEventListener("click", () => GatewayService.OpenPanel());
+
+    // 切换访问范围：运行中会重启网关以立即生效
+    scopeBox.addEventListener("click", (e) => {
+      const btn = e.target.closest("button[data-lan]");
+      if (!btn) return;
+      const next = btn.dataset.lan === "1";
+      if (next === lan) return;
+      run(() => GatewayService.SetLan(next), null);
+    });
+
+    // 复制 API 基础地址
+    btnCopy.addEventListener("click", async () => {
+      const text = (endpointEl.textContent || "").trim();
+      if (!text) return;
+
+      let ok = false;
+      try {
+        if (window.isSecureContext && navigator.clipboard) {
+          await navigator.clipboard.writeText(text);
+          ok = true;
+        }
+      } catch (_) { ok = false; }
+
+      if (!ok) {
+        // 回退：临时 textarea + execCommand
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.cssText = "position:fixed;top:-1000px;opacity:0";
+        document.body.appendChild(ta);
+        ta.select();
+        try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+        document.body.removeChild(ta);
+      }
+
+      btnCopy.classList.toggle("copied", ok);
+      if (ok) setTimeout(() => btnCopy.classList.remove("copied"), 1200);
+    });
+
+    // ---- 插件 ----
+    $("btnAdd").addEventListener("click", () => run(() => GatewayService.AddPlugin(), $("btnAdd")));
+    $("btnRescan").addEventListener("click", () => run(() => GatewayService.Rescan(), $("btnRescan")));
+    $("btnDir").addEventListener("click", () => GatewayService.OpenPluginsDir());
+
+    btnRemove.addEventListener("click", () => {
+      const p = rows.find((r) => r.id === selectedId);
+      if (!p) return;
+      sheetBody.textContent = "确定删除插件「" + (p.name || p.id) + "」吗？会连同目录与它注册的渠道一起删除。\n" + (p.dir || "");
+      openSheet(() => run(() => GatewayService.RemovePlugin(p.id), null));
+    });
+
+    // ---- 确认弹层 ----
+    function openSheet(action) { confirmAction = action; overlay.classList.add("show"); }
+    function closeSheet() { overlay.classList.remove("show"); confirmAction = null; }
+    $("sheetCancel").addEventListener("click", closeSheet);
+    $("sheetOk").addEventListener("click", () => {
+      const action = confirmAction;
+      closeSheet();
+      if (action) action();
+    });
+
+    // ---- 窗口按钮 ----
+    $("btnMin").addEventListener("click", () => GatewayService.Minimise());
+    $("btnClose").addEventListener("click", () => GatewayService.CloseWindow());
+
+    // ---- 事件与初始化 ----
+    Events.On("gw:log", (event) => appendLog(String(event.data)));
+    Events.On("gw:status", (event) => applyStatus(event.data));
+
+    (async () => {
+      try {
+        for (const line of await GatewayService.Logs()) appendLog(line);
+      } catch (_) { /* 忽略 */ }
+      await refresh();
+    })();
+  </script>
+</body>
+</html>

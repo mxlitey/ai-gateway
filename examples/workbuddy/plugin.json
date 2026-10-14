@@ -1,0 +1,21 @@
+{
+  "id": "workbuddy",
+  "name": "WorkBuddy (CodeBuddy)",
+  "version": "0.2.0",
+  "description": "把本机 WorkBuddy 桌面端账号接进网关：读本机登录态导入、OAuth 授权登录、多账号、签到、额度查询与对话转发",
+  "entry": "workbuddy.exe",
+  "args": ["serve", "--port", "{{port}}", "--data", "{{data}}"],
+  "port": 0,
+  "health_path": "/health",
+  "health_timeout_ms": 3000,
+  "startup_timeout_ms": 30000,
+  "base_url": "http://127.0.0.1:{{port}}/v1",
+  "models_path": "/v1/models",
+  "console": {
+    "title": "WorkBuddy 账号",
+    "base_path": "/console"
+  },
+  "channels": [
+    { "name": "WorkBuddy", "public_models": [] }
+  ]
+}

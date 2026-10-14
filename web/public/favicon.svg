@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="AI Gateway">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3A3A42"/>
+      <stop offset="1" stop-color="#18181B"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="64" height="64" rx="14.08" fill="url(#bg)"/>
+  <g fill="#ECECF0">
+    <rect x="14" y="16" width="12" height="32" rx="4"/>
+    <rect x="38" y="16" width="12" height="32" rx="4"/>
+    <rect x="14" y="26" width="36" height="12" rx="5"/>
+  </g>
+</svg>

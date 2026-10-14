@@ -25,11 +25,10 @@ func writePlugin(t *testing.T, root, id, manifest, entry string) string {
 }
 
 const validManifest = `{
-  "id": "hello",
   "name": "Hello",
   "version": "1.0.0",
   "entry": "main.js",
-  "base_url": "http://127.0.0.1:{{port}}/v1",
+  "port": 20800,
   "api_key_env": "DEMO_KEY",
   "channels": [{ "name": "Hello", "public_models": ["hello-model"] }]
 }`
@@ -44,8 +43,14 @@ func TestLoadAndValidateValidPlugin(t *testing.T) {
 	if err := Validate(dir, manifest); err != nil {
 		t.Fatalf("应校验通过，实际: %v", err)
 	}
+	if manifest.ID != "hello" {
+		t.Fatalf("id 应由目录名推导为 hello，实际 %q", manifest.ID)
+	}
 	if manifest.HealthURLPath() != defaultHealthPath {
 		t.Fatalf("未声明 health_path 时应回落到 %s，实际 %q", defaultHealthPath, manifest.HealthURLPath())
+	}
+	if manifest.BaseURL != defaultBaseURL {
+		t.Fatalf("未声明 base_url 时应回落到 %s，实际 %q", defaultBaseURL, manifest.BaseURL)
 	}
 	if manifest.HealthTimeoutMS != defaultHealthTimeout {
 		t.Fatalf("默认探活超时应为 %d，实际 %d", defaultHealthTimeout, manifest.HealthTimeoutMS)
@@ -59,26 +64,14 @@ func TestLoadAndValidateValidPlugin(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsIDMismatch(t *testing.T) {
-	dir := writePlugin(t, t.TempDir(), "hello", validManifest, "main.js")
-	manifest, err := LoadManifest(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manifest.ID = "other"
-	if err := Validate(dir, manifest); err == nil {
-		t.Fatal("id 与目录名不一致时应报错")
-	}
-}
-
 func TestValidateRejectsBadID(t *testing.T) {
-	dir := writePlugin(t, t.TempDir(), "Hello", `{"id":"Hello","name":"H","entry":"main.js","base_url":"http://x"}`, "main.js")
+	dir := writePlugin(t, t.TempDir(), "Hello", `{"name":"H","entry":"main.js","port":20800}`, "main.js")
 	manifest, err := LoadManifest(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := Validate(dir, manifest); err == nil {
-		t.Fatal("id 含大写字母时应报错")
+		t.Fatal("目录名含大写字母时应报错")
 	}
 }
 
@@ -120,26 +113,29 @@ func TestValidateRejectsMissingEntry(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsEmptyBaseURL(t *testing.T) {
-	dir := writePlugin(t, t.TempDir(), "hello", `{"id":"hello","name":"H","entry":"main.js"}`, "main.js")
+func TestValidateRejectsBadPort(t *testing.T) {
+	dir := writePlugin(t, t.TempDir(), "hello", `{"name":"H","entry":"main.js"}`, "main.js")
 	manifest, err := LoadManifest(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := Validate(dir, manifest); err == nil {
-		t.Fatal("base_url 为空时应报错")
+		t.Fatal("未声明 port 时应报错")
 	}
 }
 
-func TestHealthPathExplicitEmptyDisablesHTTPProbe(t *testing.T) {
+func TestDefaultsForHealthPathAndBaseURL(t *testing.T) {
 	dir := writePlugin(t, t.TempDir(), "hello",
-		`{"id":"hello","name":"H","entry":"main.js","base_url":"http://x","health_path":""}`, "main.js")
+		`{"name":"H","entry":"main.js","port":20800,"health_path":""}`, "main.js")
 	manifest, err := LoadManifest(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.HealthURLPath() != "" {
-		t.Fatalf("显式空 health_path 应禁用 HTTP 探活，实际 %q", manifest.HealthURLPath())
+	if manifest.HealthURLPath() != defaultHealthPath {
+		t.Fatalf("health_path 为空时应回落到 %s，实际 %q", defaultHealthPath, manifest.HealthURLPath())
+	}
+	if manifest.BaseURL != defaultBaseURL {
+		t.Fatalf("base_url 为空时应回落到 %s，实际 %q", defaultBaseURL, manifest.BaseURL)
 	}
 }
 
@@ -175,27 +171,5 @@ func TestValidateDirSkipsManifestMissing(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := ValidateDir(dir); err == nil {
 		t.Fatal("缺少 plugin.json 时应报错")
-	}
-}
-
-func TestStablePortForIsDeterministic(t *testing.T) {
-	first := stablePortFor("hello")
-	second := stablePortFor("hello")
-	if first != second {
-		t.Fatalf("同一 id 应推导出同一端口，实际 %d / %d", first, second)
-	}
-	if first < portRangeStart || first > portRangeEnd {
-		t.Fatalf("端口 %d 超出 %d-%d 范围", first, portRangeStart, portRangeEnd)
-	}
-	t.Logf("hello -> %d, workbuddy -> %d", first, stablePortFor("workbuddy"))
-}
-
-func TestAllocatePortInRange(t *testing.T) {
-	port, err := allocatePort()
-	if err != nil {
-		t.Fatalf("分配端口失败: %v", err)
-	}
-	if port < portRangeStart || port > portRangeEnd {
-		t.Fatalf("端口 %d 超出 %d-%d 范围", port, portRangeStart, portRangeEnd)
 	}
 }

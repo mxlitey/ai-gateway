@@ -93,12 +93,6 @@ func (s *Store) SavePluginFlags(id string, enabled, autostart bool) error {
 	return err
 }
 
-// SavePluginPort 保存解析后的端口。
-func (s *Store) SavePluginPort(id string, port int) error {
-	_, err := s.db.Exec(`UPDATE plugins SET port = ? WHERE id = ?`, port, id)
-	return err
-}
-
 // DeletePlugin 删除插件记录。
 func (s *Store) DeletePlugin(id string) error {
 	_, err := s.db.Exec(`DELETE FROM plugins WHERE id = ?`, id)

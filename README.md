@@ -23,7 +23,7 @@ AI Gateway 是一个运行在你自己电脑上的 API 网关。它把散落在�
 - **模型路由** — 对外暴露干净的公开模型名，内部映射到任意上游模型
 - **API 密钥** — 面板一键签发 `sk-` 客户端密钥，可随时停用；密钥校验失败返回标准 OpenAI 错误格式
 - **用量与费用** — 按密钥/模型/渠道记录 token 用量，内置价格表（默认同步 OpenRouter 价目）自动核算费用
-- **插件体系** — 任何语言写的本地 HTTP 服务放进 `plugins/` 目录即自动拉起、探活、注册为渠道；端口按插件 id 稳定推导，永不变动
+- **插件体系** — 任何语言写的本地 HTTP 服务放进 `plugins/` 目录即自动拉起、探活、注册为渠道；端口由插件自己在清单里指定
 - **管理面板** — React 19 + Vite 构建，内嵌进单一 exe；管理员密码 PBKDF2 哈希存储，会话 Token 24h 有效
 - **桌面 GUI** — Wails v3 + WebView2 原生窗口，系统托盘常驻，单实例锁，关窗不退出、托盘退出即停服
 - **绿色版分发** — `CGO_ENABLED=0` 纯 Go 静态编译，解压即用，无需安装运行库
@@ -111,7 +111,7 @@ Claude 协议同理：把 `baseURL` 指向 `http://127.0.0.1:8787`，密钥放�
 
 - **代理层**（`internal/proxy`）：校验 `Authorization` / `x-api-key`，解析请求，选择路由与渠道，流式回传并记账
 - **协议转换**（`internal/claudeapi`）：Claude ⇄ OpenAI 请求/响应/流式事件双向转换
-- **插件宿主**（`internal/plugin`）：扫描 `plugins/`，校验 `plugin.json`，分配稳定端口并注入环境变量，探活失败自动退避重启，退出时回收整个进程树
+- **插件宿主**（`internal/plugin`）：扫描 `plugins/`，校验 `plugin.json`，读取插件自选端口并注入环境变量，探活失败自动退避重启，退出时回收整个进程树
 - **管理端**（`internal/admin`）：密码 PBKDF2-HMAC-SHA256 哈希、常量时间比较、Bearer 会话 Token；客户端 API Key 无法登录面板
 
 ## ⚙️ 配置
@@ -129,7 +129,7 @@ Claude 协议同理：把 `baseURL` 指向 `http://127.0.0.1:8787`，密钥放�
 | `-dev` | — | `false` | 开发模式 |
 | `-no-browser` | — | `false` | 启动后不自动打开浏览器 |
 
-插件端口由插件 id 稳定推导（如 `hello → 20723`、`workbuddy → 20800`），装一次之后永远不变；仅当被其他程序占用时才临时另选。
+插件端口由插件自己写在 `plugin.json` 的 `port` 里；网关启动前会确认它没被其他程序占用，被占用时在面板上明确提示。
 
 ## 🔌 插件系统
 
@@ -138,7 +138,7 @@ Claude 协议同理：把 `baseURL` 指向 `http://127.0.0.1:8787`，密钥放�
 ```
 plugins/
 └── hello/
-    ├── plugin.json      # 清单：id / entry / 探活路径 / base_url 模板
+    ├── plugin.json      # 清单：name / entry / port / 渠道
     └── main.js          # 你的程序（实现 OpenAI 兼容上游即可）
 ```
 

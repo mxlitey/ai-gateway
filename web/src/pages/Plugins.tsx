@@ -105,15 +105,15 @@ export default function Plugins() {
             <p className="font-medium text-zinc-700 dark:text-zinc-300">如何安装插件</p>
             <p>
               1. 在程序目录下新建 <code className="text-xs">plugins/&lt;插件id&gt;/</code>
-              （目录名必须与插件清单里的 id 一致）
+              （目录名就是插件 id，用小写字母、数字、- 或 _）
             </p>
             <p>
               2. 放入 <code className="text-xs">plugin.json</code> 与入口文件
             </p>
             <p>3. 点上方「重新扫描」，插件会被拉起并自动注册为渠道</p>
             <p className="pt-1 text-xs text-zinc-500">
-              仓库内置了一个可直接试用的示例：把 <code>examples/hello</code> 复制到{' '}
-              <code>plugins/hello</code> 即可
+              仓库内置了一个可直接试用的示例：把 <code>examples/workbuddy</code> 复制到{' '}
+              <code>plugins/workbuddy</code> 即可
             </p>
           </div>
         </Card>

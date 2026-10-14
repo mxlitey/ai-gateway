@@ -29,34 +29,34 @@ type ConsoleSpec struct {
 
 // Manifest 插件清单（plugin.json）。
 type Manifest struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Version     string `json:"version"`
-	Description string `json:"description"`
-	Entry       string `json:"entry"`
+	Name        string            `json:"name"`
+	Version     string            `json:"version"`
+	Description string            `json:"description"`
+	Entry       string            `json:"entry"`
 	Args        []string          `json:"args"`
 	Env         map[string]string `json:"env"`
-	Port        int               `json:"port"`
-	// HealthPath 为 nil 表示使用默认 /health；显式给空串表示不做 HTTP 探活（退回 TCP 连通性）
-	HealthPath       *string       `json:"health_path"`
-	HealthTimeoutMS  int           `json:"health_timeout_ms"`
-	StartupTimeoutMS int           `json:"startup_timeout_ms"`
-	BaseURL          string        `json:"base_url"`
-	UIPath           string        `json:"ui_path"`
-	APIKeyEnv        string        `json:"api_key_env"`
-	// ModelsPath 为插件自述的模型清单端点（如 /v1/models）。
-	// 宿主不自动拉取：渠道模型由用户在「渠道管理」里手动获取并勾选，此处仅作声明。
-	ModelsPath       string        `json:"models_path"`
-	Channels         []ChannelSpec `json:"channels"`
+	// Port 由插件作者自己指定，宿主不再代为分配
+	Port int `json:"port"`
+	// HealthPath 探活路径，缺省 /health
+	HealthPath       string `json:"health_path"`
+	HealthTimeoutMS  int    `json:"health_timeout_ms"`
+	StartupTimeoutMS int    `json:"startup_timeout_ms"`
+	// BaseURL 上游根地址，缺省 http://127.0.0.1:{{port}}/v1
+	BaseURL   string        `json:"base_url"`
+	APIKeyEnv string        `json:"api_key_env"`
+	Channels  []ChannelSpec `json:"channels"`
 	// Console 为 nil 表示该插件不提供控制台
 	Console *ConsoleSpec `json:"console"`
 
+	// ID 由插件目录名推导（加载时填充），无需在 plugin.json 里声明
+	ID string `json:"-"`
 	// Dir 为插件目录绝对路径（加载时填充）
 	Dir string `json:"-"`
 }
 
 const (
 	defaultHealthPath     = "/health"
+	defaultBaseURL        = "http://127.0.0.1:{{port}}/v1"
 	defaultHealthTimeout  = 2000
 	defaultStartupTimeout = 20000
 	defaultConsolePath    = "/console"
@@ -77,28 +77,29 @@ func LoadManifest(dir string) (*Manifest, error) {
 		return nil, fmt.Errorf("解析 %s 失败: %w", manifestFileName, err)
 	}
 	m.Dir = dir
+	m.ID = filepath.Base(filepath.Clean(dir))
 	m.applyDefaults()
 	return &m, nil
 }
 
 func (m *Manifest) applyDefaults() {
+	if strings.TrimSpace(m.HealthPath) == "" {
+		m.HealthPath = defaultHealthPath
+	}
+	if strings.TrimSpace(m.BaseURL) == "" {
+		m.BaseURL = defaultBaseURL
+	}
 	if m.HealthTimeoutMS <= 0 {
 		m.HealthTimeoutMS = defaultHealthTimeout
 	}
 	if m.StartupTimeoutMS <= 0 {
 		m.StartupTimeoutMS = defaultStartupTimeout
 	}
-	if m.Port < 0 || m.Port > 65535 {
-		m.Port = 0
-	}
 }
 
-// HealthURLPath 返回探活路径；返回空串表示不做 HTTP 探活。
+// HealthURLPath 返回探活路径。
 func (m *Manifest) HealthURLPath() string {
-	if m.HealthPath == nil {
-		return defaultHealthPath
-	}
-	return strings.TrimSpace(*m.HealthPath)
+	return strings.TrimSpace(m.HealthPath)
 }
 
 // EntryPath 返回 entry 的绝对路径。
@@ -139,17 +140,17 @@ func (m *Manifest) ConsoleTitleStr() string {
 // Validate 校验清单与可执行文件；dir 为插件目录。
 func Validate(dir string, m *Manifest) error {
 	id := strings.TrimSpace(m.ID)
-	if !idRe.MatchString(id) {
-		return fmt.Errorf("id 非法（需 2-32 位小写字母、数字、- 或 _）: %q", m.ID)
+	if id == "" {
+		id = filepath.Base(filepath.Clean(dir))
 	}
-	if filepath.Base(filepath.Clean(dir)) != id {
-		return fmt.Errorf("id(%s) 必须与目录名一致", id)
+	if !idRe.MatchString(id) {
+		return fmt.Errorf("插件目录名非法（需 2-32 位小写字母、数字、- 或 _）: %q", id)
 	}
 	if strings.TrimSpace(m.Name) == "" {
 		return fmt.Errorf("name 不能为空")
 	}
-	if strings.TrimSpace(m.BaseURL) == "" {
-		return fmt.Errorf("base_url 不能为空")
+	if m.Port <= 0 || m.Port > 65535 {
+		return fmt.Errorf("port 非法（需 1-65535，由插件自己指定）: %d", m.Port)
 	}
 	for i, c := range m.Channels {
 		if strings.TrimSpace(c.Name) == "" {

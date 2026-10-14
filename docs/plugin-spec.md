@@ -15,7 +15,7 @@
                    │                                                                │
                    │ 按渠道把请求转发到                                              │
                    ▼                                                                │
-            插件渠道  http://127.0.0.1:<宿主分配端口>/v1/...  ───────▶ 插件进程（你写的）│
+            插件渠道  http://127.0.0.1:<你自选的端口>/v1/...  ───────▶ 插件进程（你写的）│
                    ▲                                                                │
 面板 ──/admin──▶ 插件宿主（发现 / 启动 / 探活 / 重启 / 回收 / 渠道注册 / 控制台代理）   │
               └────────────────────────────────────────────────────────────────────┘
@@ -24,7 +24,7 @@
 宿主负责：
 
 - 扫描 `plugins/` 目录、校验 `plugin.json`
-- 给插件分配端口（同一插件 id 端口稳定）、注入环境变量、拉起进程
+- 读取你在清单里自选的端口、注入环境变量、拉起进程
 - 轮询探活，不健康时自动重启（带退避），退出时回收整个进程树
 - 把插件声明的渠道注册进渠道列表（`source = plugin:<id>`），插件停用则渠道自动停用
 - 转发面板对插件控制台的调用（见 §6）
@@ -36,7 +36,7 @@
 
 ## 2. 最小可用插件
 
-目录结构（目录名 **必须** 等于 `plugin.json` 里的 `id`）：
+目录结构（**目录名就是插件 id**，用小写字母/数字/`-`/`_` 命名即可）：
 
 ```
 plugins/
@@ -50,25 +50,23 @@ plugins/
 
 ```json
 {
-  "id": "hello",
   "name": "Hello 示例插件",
   "version": "1.0.0",
   "description": "一个最小的 OpenAI 兼容上游",
   "entry": "start.cmd",
-  "port": 0,
-  "health_path": "/health",
-  "base_url": "http://127.0.0.1:{{port}}/v1",
-  "api_key_env": "PLUGIN_HELLO_KEY",
-  "models_path": "/v1/models",
+  "port": 20723,
   "channels": [{ "name": "Hello 示例", "public_models": ["hello-model"] }]
 }
 ```
+
+规则只有几条：`name` / `entry` / `port` 必填；目录名即插件 id；
+探活默认请求 `/health`；`base_url` 默认 `http://127.0.0.1:{{port}}/v1`。
 
 程序至少要提供两个接口：
 
 | 接口 | 作用 |
 |---|---|
-| `GET health_path` | 探活。返回状态码 < 500 即视为健康（3xx/4xx 也算存活） |
+| `GET /health`（可用 `health_path` 改） | 探活。返回状态码 < 500 即视为健康（3xx/4xx 也算存活） |
 | `POST <base_url>/chat/completions` | 实际转发目标。返回 OpenAI 兼容响应 |
 
 上面是最小形态的示意（`hello` 只是示例名，语言不限），**不宜直接照抄上线**。
@@ -81,21 +79,18 @@ plugins/
 
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 |---|---|---|---|---|
-| `id` | string | ✅ | — | 2–32 位小写字母/数字/`-`/`_`，**首字符必须是字母或数字**，且**必须与目录名一致** |
 | `name` | string | ✅ | — | 展示名 |
 | `version` | string | | `""` | 仅用于展示 |
 | `description` | string | | `""` | 仅用于展示 |
 | `entry` | string | ✅ | — | 入口文件，**相对插件目录**，不允许绝对路径或 `..` 逃逸 |
+| `port` | int | ✅ | — | **插件自己监听的端口**（1–65535），由你选定；被别的程序占用时会在面板上报错 |
 | `args` | string[] | | `[]` | 传给 entry 的参数，支持占位符 |
 | `env` | object | | `{}` | 追加的环境变量，值支持占位符 |
-| `port` | int | | `0` | 期望端口。`0` 表示由宿主分配（推荐） |
-| `health_path` | string | | `/health` | 探活路径。**显式写 `""`** 表示不做 HTTP 探活，退化成 TCP 连通性检查 |
+| `base_url` | string | | `http://127.0.0.1:{{port}}/v1` | 插件对外提供的上游根地址 |
+| `health_path` | string | | `/health` | 探活路径 |
 | `health_timeout_ms` | int | | `2000` | 单次探活超时 |
 | `startup_timeout_ms` | int | | `20000` | 启动后等待探活通过的最长时间 |
-| `base_url` | string | ✅ | — | 插件对外提供的上游根地址，一般写 `http://127.0.0.1:{{port}}/v1` |
-| `ui_path` | string | | `""` | 预留字段：插件自带管理页路径，当前面板未使用（统一走 `console`） |
 | `api_key_env` | string | | `""` | 见 §5 |
-| `models_path` | string | | `""` | 插件自述的模型清单端点（如 `/v1/models`）。宿主**不**自动拉取：渠道模型由用户在「渠道管理」里手动获取并勾选，此处仅作声明 |
 | `channels` | object[] | | `[]` | 要注册的渠道，缺省按 `name` 生成一个 |
 | `console` | object | | 无 | 插件控制台声明，见 §6 |
 
@@ -107,9 +102,9 @@ plugins/
 | `public_models` | 该渠道对客户端暴露的模型名列表，只作为渠道**首次创建**时的初始值（通常留空，由用户在渠道管理里手动获取并勾选） |
 | `model_map` | `{"公开名": "上游名"}` 映射 |
 
-**端口规则**：`port: 0` 时宿主先按插件 id 做一次稳定推导（同一 id 每次都得到同一个端口），
-保证「装一次、端口永远不变」；如果该端口被别的程序占用，才临时另分配一个。
-端口范围 `20000–20999`。
+**端口规则**：`port` 由你自己选定并写死在清单里（1–65535）。网关只做两件事：把它注入到
+`AI_GATEWAY_PLUGIN_PORT` 和 `{{port}}`，以及启动前确认它没被别的程序占用——被占用时插件会以
+`failed` 停在面板上并给出提示，换一个端口即可。不存在「自动分配」，也就不会出现「这次装和上次端口不一样」的问题。
 
 ---
 
@@ -119,7 +114,7 @@ plugins/
 
 | 占位符 | 含义 |
 |---|---|
-| `{{port}}` | 宿主分配的实际端口 |
+| `{{port}}` | 你在 `plugin.json` 里选的端口 |
 | `{{data}}` | 插件私有数据目录的绝对路径（`<data-dir>/plugins/<id>`），适合放凭据、缓存 |
 | `{{api_key}}` | 宿主生成的访问密钥（见 §5） |
 | `{{plugin_dir}}` | 插件目录的绝对路径 |
@@ -129,10 +124,10 @@ plugins/
 | 变量 | 含义 |
 |---|---|
 | `AI_GATEWAY_PLUGIN_ID` | 插件 id |
-| `AI_GATEWAY_PLUGIN_PORT` | 宿主分配的端口，**直接监听这个端口** |
+| `AI_GATEWAY_PLUGIN_PORT` | 你在清单里选的端口，**直接监听这个端口** |
 | `AI_GATEWAY_PLUGIN_DATA` | 私有数据目录（与 `{{data}}` 相同） |
 
-> 建议：端口一律读 `AI_GATEWAY_PLUGIN_PORT`，不要写死；数据一律落 `AI_GATEWAY_PLUGIN_DATA`。
+> 建议：端口读 `AI_GATEWAY_PLUGIN_PORT`（值就是你清单里写的那个），数据一律落 `AI_GATEWAY_PLUGIN_DATA`。
 
 ---
 
@@ -378,11 +373,12 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| 面板里看不到插件 | 目录名 ≠ `id`；或缺 `plugin.json`；或校验失败（看日志） |
-| 状态一直 `starting` | 探活没过：`health_path` 写错、端口没监听 `AI_GATEWAY_PLUGIN_PORT`、启动太慢（调大 `startup_timeout_ms`） |
+| 面板里看不到插件 | 目录名不合规（需小写字母/数字/`-`/`_`）；或缺 `plugin.json`；或校验失败（看日志） |
+| 状态一直 `starting` | 探活没过：没监听 `AI_GATEWAY_PLUGIN_PORT`、`health_path` 写错、启动太慢（调大 `startup_timeout_ms`） |
+| 状态 `failed` 且 `last_error` 提示端口被占用 | `port` 与别的程序冲突，改 `plugin.json` 里的 `port` 后点「启动」 |
 | 状态 `failed` | 连续 5 次失败已放弃；看面板 `last_error` 与日志，修好后点「启动」 |
 | 渠道里没有模型 | 模型不自动填充。在「渠道管理」里编辑该渠道，点「获取上游模型」后勾选要加入的；插件需实现 `GET <base_url>/models`（如 `http://127.0.0.1:{{port}}/v1/models`）并返回 OpenAI 形状 `{"data":[{"id":"..."}]}` |
-| 转发报 502 | 插件进程没起来或 `base_url` 端口与实际监听不一致（不要写死端口） |
+| 转发报 502 | 插件进程没起来，或 `base_url` 与实际监听的 `port` 不一致 |
 | 控制台报 409 | 插件未运行或未声明 `console` |
 | 控制台请求 404 | `base_path` 与实际路由不一致；或面板路径与约定接口不匹配（见 §6.3） |
 | Windows 上 `.cmd` 起不来 | entry 用 `.cmd/.bat` 时宿主会经 `cmd.exe /c` 转发；脚本里避免交互式命令 |
@@ -393,7 +389,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
 
 一个插件就是 `plugins/<id>/` 整个目录，打包成 zip 即可分发。注意：
 
-1. 目录名必须等于 `id`
+1. 目录名就是插件 id（小写字母/数字/`-`/`_`）
 2. 入口文件与清单都在目录内，不要依赖目录外的路径
 3. 如果插件需要额外运行时（Node/Python），在 `README` 里写清依赖与安装方式；
    或者直接编译成单文件可执行程序（**推荐**：用户解压即用）

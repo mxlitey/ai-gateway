@@ -5,10 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"log/slog"
-	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -42,9 +40,7 @@ const (
 	unhealthyThreshold = 3               // 连续失败多少次判定不健康
 	maxFailures        = 5               // 连续失败多少次后放弃自动重启
 	stopGracePeriod    = 5 * time.Second // 优雅停止等待时长
-	portRangeStart     = 20000
-	portRangeEnd       = 20999
-	defaultChannelKey  = "gw-local" // 插件不校验密钥时使用的占位值
+	defaultChannelKey  = "gw-local"      // 插件不校验密钥时使用的占位值
 )
 
 type instance struct {
@@ -227,39 +223,10 @@ func (h *Host) register(manifest *Manifest) {
 		h.mu.Unlock()
 		return
 	}
-	prevPort := 0
-	if existing, ok := h.items[manifest.ID]; ok {
-		prevPort = existing.port
-	}
 	h.mu.Unlock()
 
+	// 端口由插件作者在 plugin.json 里指定，宿主不再代为分配
 	port := manifest.Port
-	if port == 0 {
-		port = prevPort
-	}
-	// 动态端口：优先复用上次分配的端口
-	if port == 0 {
-		if row, err := h.store.GetPlugin(manifest.ID); err == nil && row != nil && row.Port > 0 {
-			port = row.Port
-		}
-	}
-	// 仍无端口：按插件 id 稳定推导，保证「装一次、端口永远不变」
-	if port == 0 {
-		port = stablePortFor(manifest.ID)
-	}
-	if port != 0 && !portAvailable(port) {
-		h.log.Warn("插件端口被占用，将重新分配", "plugin", manifest.ID, "port", port)
-		port = 0
-	}
-	if port == 0 {
-		p, err := allocatePort()
-		if err != nil {
-			h.log.Error("分配插件端口失败", "plugin", manifest.ID, "err", err)
-			h.registerInvalid(manifest.Dir, manifest, err)
-			return
-		}
-		port = p
-	}
 
 	// 只有声明了 api_key_env 的插件才需要复用渠道里的宿主密钥；
 	// 未声明的插件渠道密钥可能是「账号 id」（见 pluginAccountKeys），不能拿来当宿主密钥。
@@ -304,7 +271,6 @@ func (h *Host) register(manifest *Manifest) {
 	}); err != nil {
 		h.log.Error("写入插件记录失败", "plugin", manifest.ID, "err", err)
 	}
-	_ = h.store.SavePluginPort(manifest.ID, port)
 	h.setStatus(inst, StatusDiscovered, "")
 
 	if !shuttingDown && inst.enabled && inst.autostart {
@@ -723,6 +689,10 @@ func (h *Host) sleepOrStop(inst *instance, d time.Duration) bool {
 // ---------- 内部：进程 ----------
 
 func (h *Host) spawn(inst *instance) error {
+	// 端口由插件自己在 plugin.json 里指定，占用即视为配置错误，直接给出可操作的提示
+	if !portAvailable(inst.port) {
+		return fmt.Errorf("端口 %d 已被占用，请在 plugin.json 里换一个端口", inst.port)
+	}
 	vars := h.vars(inst)
 	if err := os.MkdirAll(vars.Data, 0o755); err != nil {
 		return fmt.Errorf("创建插件数据目录失败: %w", err)
@@ -871,38 +841,28 @@ func (h *Host) watch(inst *instance) string {
 	}
 }
 
-// probe 探活：配置了 health_path 则发 HTTP 请求（状态码 <500 视为存活），
-// 否则退回 TCP 端口连通性检查。
+// probe 探活：对 health_path 发 HTTP 请求，状态码 <500 视为存活。
 func (h *Host) probe(inst *instance) bool {
 	timeout := time.Duration(inst.manifest.HealthTimeoutMS) * time.Millisecond
 	addr := "127.0.0.1:" + strconv.Itoa(inst.port)
 
-	if path := inst.manifest.HealthURLPath(); path == "" {
-		conn, err := net.DialTimeout("tcp", addr, timeout)
-		if err != nil {
-			return false
-		}
-		_ = conn.Close()
-		return true
-	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+path, nil)
-		if err != nil {
-			return false
-		}
-		if inst.manifest.APIKeyEnv != "" {
-			req.Header.Set("Authorization", "Bearer "+inst.apiKey)
-		}
-		resp, err := h.client.Do(req)
-		if err != nil {
-			return false
-		}
-		defer func() { _ = resp.Body.Close() }()
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return resp.StatusCode < 500
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+inst.manifest.HealthURLPath(), nil)
+	if err != nil {
+		return false
 	}
+	if inst.manifest.APIKeyEnv != "" {
+		req.Header.Set("Authorization", "Bearer "+inst.apiKey)
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	return resp.StatusCode < 500
 }
 
 // stopProcess 先尝试优雅停止，超时后强杀。
@@ -1088,24 +1048,6 @@ func (h *Host) pluginAccountKeys(inst *instance, existing []model.ChannelKey) (k
 		})
 	}
 	return out, true
-}
-
-func allocatePort() (int, error) {
-	for attempt := 0; attempt < 20; attempt++ {
-		port := portRangeStart + rand.Intn(portRangeEnd-portRangeStart+1)
-		if portAvailable(port) {
-			return port, nil
-		}
-	}
-	return 0, fmt.Errorf("在 %d-%d 范围内找不到空闲端口", portRangeStart, portRangeEnd)
-}
-
-// stablePortFor 由插件 id 稳定推导端口：同一插件在任何机器、任何次安装都得到同一端口。
-func stablePortFor(pluginID string) int {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(pluginID))
-	span := uint32(portRangeEnd - portRangeStart + 1)
-	return portRangeStart + int(h.Sum32()%span)
 }
 
 // portAvailable 判断端口是否可绑定。

@@ -1,18 +1,25 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api, type ErrorGroup, type ErrorLog } from '../lib/api'
+import { api, type ErrorLog } from '../lib/api'
 import { toast } from '../lib/toast'
 import { Button, Card, Empty, ErrorText, Loading } from '../components/ui'
 import DatePicker, { fmtDate } from '../components/DatePicker'
 
+// 明细行的列宽：展开箭头 / 时间 / 渠道 / 模型 / 状态 / 错误信息 / 复制
+const rowGrid =
+  'grid grid-cols-[1rem_8.5rem_7rem_minmax(0,1.2fr)_4.5rem_minmax(0,1.8fr)_1.75rem] gap-3'
+
 export default function Errors() {
   // 默认看今天（北京时区），与仪表盘的「今日错误分布」口径一致
   const [date, setDate] = useState(fmtDate(new Date()))
+  const [openId, setOpenId] = useState<number | null>(null)
 
   const errors = useQuery({ queryKey: ['errors', date], queryFn: () => api.errors(date) })
 
+  // 不再按渠道分表：把各渠道的错误拉平成一个列表，按时间倒序（接口按渠道分组返回，组内已倒序）
   const groups = errors.data?.channels ?? []
-  const total = groups.reduce((sum, g) => sum + g.errors.length, 0)
+  const items = groups.flatMap((g) => g.errors).sort((a, b) => b.created_at - a.created_at)
+  const channelCount = new Set(items.map((e) => e.channel_id)).size
 
   return (
     <div className="space-y-4">
@@ -28,57 +35,40 @@ export default function Errors() {
         <Loading />
       ) : errors.isError ? (
         <ErrorText text={(errors.error as Error).message} />
-      ) : groups.length === 0 ? (
+      ) : items.length === 0 ? (
         <Card title={`${date} 的错误日志`}>
           <Empty text={`${date} 没有错误记录`} />
         </Card>
       ) : (
         <>
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            {date} 共 {total} 条错误，来自 {groups.length} 个渠道
+            {date} 共 {items.length} 条错误，来自 {channelCount} 个渠道
           </p>
-          {groups.map((g) => (
-            <ChannelErrors key={g.channel_id} group={g} />
-          ))}
+          <Card>
+            {/* 表格行 + 点击展开详情 + 复制整条记录 */}
+            <div
+              className={`${rowGrid} items-center border-b border-zinc-200 pb-2 text-xs font-medium text-zinc-500 dark:border-zinc-800 dark:text-zinc-400`}
+            >
+              <span />
+              <span>时间</span>
+              <span>渠道</span>
+              <span>模型</span>
+              <span>状态</span>
+              <span>错误信息</span>
+              <span />
+            </div>
+            {items.map((e) => (
+              <ErrorRow
+                key={e.id}
+                e={e}
+                open={openId === e.id}
+                onToggle={() => setOpenId(openId === e.id ? null : e.id)}
+              />
+            ))}
+          </Card>
         </>
       )}
     </div>
-  )
-}
-
-// ChannelErrors 一个渠道的错误列表：表格行 + 点击展开详情 + 复制整条记录
-function ChannelErrors({ group }: { group: ErrorGroup }) {
-  const [openId, setOpenId] = useState<number | null>(null)
-
-  return (
-    <Card
-      title={
-        <span className="flex items-center gap-2">
-          <span className="size-2 flex-none rounded-full bg-red-500" />
-          {group.channel_name}
-          <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">
-            {group.errors.length} 条
-          </span>
-        </span>
-      }
-    >
-      <div className="grid grid-cols-[1rem_8.5rem_minmax(0,1.2fr)_4.5rem_minmax(0,1.8fr)_1.75rem] items-center gap-3 border-b border-zinc-200 pb-2 text-xs font-medium text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-        <span />
-        <span>时间</span>
-        <span>模型</span>
-        <span>状态</span>
-        <span>错误信息</span>
-        <span />
-      </div>
-      {group.errors.map((e) => (
-        <ErrorRow
-          key={e.id}
-          e={e}
-          open={openId === e.id}
-          onToggle={() => setOpenId(openId === e.id ? null : e.id)}
-        />
-      ))}
-    </Card>
   )
 }
 
@@ -90,7 +80,7 @@ function ErrorRow({ e, open, onToggle }: { e: ErrorLog; open: boolean; onToggle:
       <div
         onClick={onToggle}
         title="点击查看完整详情"
-        className="grid cursor-pointer grid-cols-[1rem_8.5rem_minmax(0,1.2fr)_4.5rem_minmax(0,1.8fr)_1.75rem] items-start gap-3 rounded-lg py-2.5 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800/40"
+        className={`${rowGrid} cursor-pointer items-start rounded-lg py-2.5 text-sm hover:bg-zinc-50 dark:hover:bg-zinc-800/40`}
       >
         <span
           className={`mt-0.5 text-[10px] text-zinc-400 transition-transform ${open ? 'rotate-90' : ''}`}
@@ -98,6 +88,12 @@ function ErrorRow({ e, open, onToggle }: { e: ErrorLog; open: boolean; onToggle:
           ▶
         </span>
         <span className="text-xs text-zinc-500 dark:text-zinc-400">{fmtTime(e.created_at)}</span>
+        <span
+          className="min-w-0 truncate text-xs text-zinc-600 dark:text-zinc-400"
+          title={e.channel_name}
+        >
+          {e.channel_name || '-'}
+        </span>
         <span className="min-w-0">
           <span className="block truncate font-mono text-xs text-zinc-700 dark:text-zinc-300">
             {e.model || '-'}
@@ -146,7 +142,7 @@ function ErrorRow({ e, open, onToggle }: { e: ErrorLog; open: boolean; onToggle:
             ['上游地址', e.base_url || '-'],
             ['模型', e.model || '-'],
             ['上游模型', e.upstream_model || '-'],
-            ['密钥提示', e.key_hint || '-'],
+            ['上游密钥', e.key_hint || '-'],
             ['状态码', statusText],
             ['错误信息', e.message || '-'],
           ].map(([label, value]) => (
@@ -180,7 +176,7 @@ function StatusBadge({ status, text }: { status: number; text: string }) {
   )
 }
 
-// copyRecord 复制整条错误记录（时间 / 渠道 / 上游地址 / 模型 / 上游模型 / 密钥 / 状态码 / 错误信息）
+// copyRecord 复制整条错误记录（时间 / 渠道 / 上游地址 / 模型 / 上游模型 / 上游密钥 / 状态码 / 错误信息）
 async function copyRecord(e: ErrorLog) {
   const text = [
     `时间: ${fmtTime(e.created_at)}`,
@@ -188,7 +184,7 @@ async function copyRecord(e: ErrorLog) {
     `上游地址: ${e.base_url || '-'}`,
     `模型: ${e.model || '-'}`,
     `上游模型: ${e.upstream_model || '-'}`,
-    `密钥提示: ${e.key_hint || '-'}`,
+    `上游密钥: ${e.key_hint || '-'}`,
     `状态码: ${e.status > 0 ? e.status : 'ERR'}`,
     `错误信息: ${e.message || '-'}`,
   ].join('\n')

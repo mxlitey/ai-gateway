@@ -184,6 +184,8 @@ export type UsageSummary = {
   by_model: UsageBucket[]
   by_channel: UsageBucket[]
   by_api_key: UsageBucket[]
+  /** 按上游密钥（脱敏值）分组；空值表示未记录密钥的历史记录 */
+  by_key: UsageBucket[]
   by_day: UsageBucket[]
 }
 
@@ -421,6 +423,7 @@ export const api = {
     to?: number
     channel_name?: string
     model?: string
+    key_hint?: string
   }) => {
     const q = new URLSearchParams()
     if (params.from != null && params.to != null) {
@@ -432,6 +435,7 @@ export const api = {
     if (params.days != null) q.set('days', String(params.days))
     if (params.channel_name) q.set('channel_name', params.channel_name)
     if (params.model) q.set('model', params.model)
+    if (params.key_hint) q.set('key_hint', params.key_hint)
     return request<UsageSummaryResponse>(`/admin/api/usage/summary?${q.toString()}`)
   },
   usageLogs: (params: {
@@ -442,6 +446,7 @@ export const api = {
     channel_name?: string
     channel_id?: string
     api_key_id?: string
+    key_hint?: string
     limit?: number
     offset?: number
   }) => {
@@ -453,11 +458,12 @@ export const api = {
     if (params.channel_name) q.set('channel_name', params.channel_name)
     if (params.channel_id) q.set('channel_id', params.channel_id)
     if (params.api_key_id) q.set('api_key_id', params.api_key_id)
+    if (params.key_hint) q.set('key_hint', params.key_hint)
     if (params.limit) q.set('limit', String(params.limit))
     if (params.offset) q.set('offset', String(params.offset))
     return request<UsageLogsResponse>(`/admin/api/usage/logs?${q.toString()}`)
   },
-  // 用量趋势：按小时 / 天聚合，可按渠道名与公开模型名筛选；from/to（毫秒）优先，否则按最近 days 天
+  // 用量趋势：按小时 / 天聚合，可按渠道名 / 公开模型名 / 上游密钥筛选；from/to（毫秒）优先，否则按最近 days 天
   usageSeries: (params: {
     days?: number
     from?: number
@@ -465,6 +471,7 @@ export const api = {
     bucket: 'day' | 'hour'
     channel_name?: string
     model?: string
+    key_hint?: string
   }) => {
     const q = new URLSearchParams()
     if (params.from != null && params.to != null) {
@@ -476,6 +483,7 @@ export const api = {
     q.set('bucket', params.bucket)
     if (params.channel_name) q.set('channel_name', params.channel_name)
     if (params.model) q.set('model', params.model)
+    if (params.key_hint) q.set('key_hint', params.key_hint)
     return request<UsageSeriesResponse>(`/admin/api/usage/series?${q.toString()}`)
   },
   // 清理用量明细：days 表示保留最近多少天，0 表示连当天一起清理（错误日志按同一时间点一起清）

@@ -17,34 +17,37 @@ export default function Usage() {
   const [granularity, setGranularity] = useState<'day' | 'hour'>('day')
   const [range, setRange] = useState<RangeValue>(() => dayRange(Date.now()))
   const [offset, setOffset] = useState(0)
-  // 渠道名 / 公开模型名筛选（取自当前范围内的分组结果）
+  // 渠道名 / 公开模型名 / 上游密钥筛选（取自当前范围内的分组结果）
   const [channelFilter, setChannelFilter] = useState('')
   const [modelFilter, setModelFilter] = useState('')
+  const [keyFilter, setKeyFilter] = useState('')
 
   const summary = useQuery({
-    queryKey: ['usage-summary', range.from, range.to, channelFilter, modelFilter],
+    queryKey: ['usage-summary', range.from, range.to, channelFilter, modelFilter, keyFilter],
     queryFn: () =>
       api.usageSummary({
         from: range.from,
         to: range.to,
         channel_name: channelFilter || undefined,
         model: modelFilter || undefined,
+        key_hint: keyFilter || undefined,
       }),
   })
   const logs = useQuery({
-    queryKey: ['usage-logs', range.from, range.to, channelFilter, modelFilter, offset],
+    queryKey: ['usage-logs', range.from, range.to, channelFilter, modelFilter, keyFilter, offset],
     queryFn: () =>
       api.usageLogs({
         from: range.from,
         to: range.to,
         channel_name: channelFilter || undefined,
         model: modelFilter || undefined,
+        key_hint: keyFilter || undefined,
         limit: PAGE_SIZE,
         offset,
       }),
   })
   const series = useQuery({
-    queryKey: ['usage-series', granularity, range.from, range.to, channelFilter, modelFilter],
+    queryKey: ['usage-series', granularity, range.from, range.to, channelFilter, modelFilter, keyFilter],
     queryFn: () =>
       api.usageSeries({
         from: range.from,
@@ -52,6 +55,7 @@ export default function Usage() {
         bucket: granularity,
         channel_name: channelFilter || undefined,
         model: modelFilter || undefined,
+        key_hint: keyFilter || undefined,
       }),
   })
 
@@ -88,8 +92,9 @@ export default function Usage() {
             value={channelFilter}
             onChange={(e) => {
               setChannelFilter(e.target.value)
-              // 模型下拉按渠道过滤，换渠道后原先选中的模型可能已不在列表中，一并清空
+              // 模型 / 密钥下拉都按渠道过滤，换渠道后原先选中的值可能已不在列表中，一并清空
               setModelFilter('')
+              setKeyFilter('')
               setOffset(0)
             }}
             className={`${selectClass} w-40`}
@@ -105,6 +110,8 @@ export default function Usage() {
             value={modelFilter}
             onChange={(e) => {
               setModelFilter(e.target.value)
+              // 密钥下拉按渠道 + 模型过滤，同理清空
+              setKeyFilter('')
               setOffset(0)
             }}
             className={`${selectClass} w-48`}
@@ -115,6 +122,24 @@ export default function Usage() {
                 {b.key}
               </option>
             ))}
+          </select>
+          <select
+            value={keyFilter}
+            onChange={(e) => {
+              setKeyFilter(e.target.value)
+              setOffset(0)
+            }}
+            className={`${selectClass} w-44`}
+          >
+            <option value="">全部上游密钥</option>
+            {s.by_key
+              // 空 key 是「未记录密钥」的历史记录，选中后按空串精确匹配查不到东西，直接跳过
+              .filter((b) => b.key)
+              .map((b) => (
+                <option key={b.key} value={b.key}>
+                  {b.key}
+                </option>
+              ))}
           </select>
           <Segmented
             value={granularity}
@@ -209,6 +234,11 @@ export default function Usage() {
                       </td>
                       <td className="py-2 pr-3 text-xs text-zinc-600 dark:text-zinc-400">
                         {r.channel_name || '—'}
+                        {r.upstream_key_hint ? (
+                          <span className="mt-0.5 block font-mono text-[11px] text-zinc-400 dark:text-zinc-500">
+                            {r.upstream_key_hint}
+                          </span>
+                        ) : null}
                       </td>
                       <td className="py-2 pr-3 text-xs text-zinc-500">
                         {r.endpoint}

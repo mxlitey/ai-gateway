@@ -71,9 +71,11 @@ type RequestLogFilter struct {
 	ChannelID   string
 	ChannelName string
 	APIKeyID    string
-	OnlyFail    bool
-	Limit       int
-	Offset      int
+	// KeyHint 上游密钥提示（脱敏值，精确匹配）
+	KeyHint  string
+	OnlyFail bool
+	Limit    int
+	Offset   int
 }
 
 func (f RequestLogFilter) where() (string, []any) {
@@ -94,6 +96,10 @@ func (f RequestLogFilter) where() (string, []any) {
 	if f.APIKeyID != "" {
 		conds = append(conds, "api_key_id = ?")
 		args = append(args, f.APIKeyID)
+	}
+	if f.KeyHint != "" {
+		conds = append(conds, "upstream_key_hint = ?")
+		args = append(args, f.KeyHint)
 	}
 	if f.OnlyFail {
 		conds = append(conds, "success = 0")
@@ -137,9 +143,9 @@ func (s *Store) CountRequestLogs(f RequestLogFilter) (int64, error) {
 	return n, err
 }
 
-// usageConds 构造用量区间条件：时间区间 + 可选的渠道名 / 公开模型名筛选。
-// 与趋势图、明细的筛选口径一致（都是按渠道名与公开模型名精确匹配）。
-func usageConds(fromMs, toMs int64, channelName, modelName string) (string, []any) {
+// usageConds 构造用量区间条件：时间区间 + 可选的渠道名 / 公开模型名 / 上游密钥筛选。
+// 与趋势图、明细的筛选口径一致（都是精确匹配）。
+func usageConds(fromMs, toMs int64, channelName, modelName, keyHint string) (string, []any) {
 	conds := []string{"created_at >= ?", "created_at < ?"}
 	args := []any{fromMs, toMs}
 	if channelName != "" {
@@ -150,13 +156,17 @@ func usageConds(fromMs, toMs int64, channelName, modelName string) (string, []an
 		conds = append(conds, "model = ?")
 		args = append(args, modelName)
 	}
+	if keyHint != "" {
+		conds = append(conds, "upstream_key_hint = ?")
+		args = append(args, keyHint)
+	}
 	return strings.Join(conds, " AND "), args
 }
 
-// UsageSummary 汇总时间区间内的用量与费用；channelName / modelName 为空表示不筛选。
-func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName string) (*model.UsageSummary, error) {
+// UsageSummary 汇总时间区间内的用量与费用；各筛选为空表示不筛选。
+func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName, keyHint string) (*model.UsageSummary, error) {
 	sum := &model.UsageSummary{From: fromMs, To: toMs}
-	where, args := usageConds(fromMs, toMs, channelName, modelName)
+	where, args := usageConds(fromMs, toMs, channelName, modelName, keyHint)
 
 	err := s.db.QueryRow(
 		`SELECT COUNT(1),
@@ -180,9 +190,11 @@ func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName string) 
 
 	// 分组结果不受「自身」筛选影响：界面用它填充筛选下拉框，若跟着自身筛选走，
 	// 选中某个值后其余选项就会从下拉框里消失。例外：按模型的列表要跟随渠道筛选，
-	// 这样选定渠道后模型下拉只展示该渠道用过的模型（但不跟随模型筛选，保证当前选中项仍在列表里）。
-	whereAll, argsAll := usageConds(fromMs, toMs, "", "")
-	whereModel, argsModel := usageConds(fromMs, toMs, channelName, "")
+	// 按上游密钥的列表要跟随渠道 + 模型筛选（保证选定渠道/模型后，密钥下拉只展示用过的密钥，
+	// 但当前选中项仍在列表里）。
+	whereAll, argsAll := usageConds(fromMs, toMs, "", "", "")
+	whereModel, argsModel := usageConds(fromMs, toMs, channelName, "", "")
+	whereKey, argsKey := usageConds(fromMs, toMs, channelName, modelName, "")
 	group := func(expr, label, where string, args []any) ([]model.UsageBucket, error) {
 		rows, err := s.db.Query(
 			`SELECT `+expr+` AS k, COUNT(1),
@@ -221,6 +233,11 @@ func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName string) 
 	if sum.ByAPIKey, err = group("api_key_name", "(未知密钥)", whereAll, argsAll); err != nil {
 		return nil, err
 	}
+	// ByKey 不套占位标签：空值（未记录密钥的历史记录）保持空串，前端会在下拉框里跳过它，
+	// 否则选中该占位项去精确匹配会查不到任何记录。
+	if sum.ByKey, err = group("upstream_key_hint", "", whereKey, argsKey); err != nil {
+		return nil, err
+	}
 	// 按北京时区自然日聚合，并按日期升序（便于画趋势）
 	sum.ByDay, err = group(`strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', '+8 hours')`, "", whereAll, argsAll)
 	if err != nil {
@@ -239,9 +256,9 @@ const (
 )
 
 // UsageSeries 聚合「最近 count 个」小时 / 天时间桶的用量（趋势图用）；
-// channelName / modelName 为空表示不筛选。返回的桶按时间升序，并包含区间内没有请求的空桶，
+// 各筛选为空表示不筛选。返回的桶按时间升序，并包含区间内没有请求的空桶，
 // 同时给出整体区间 [fromMs, toMs)。
-func (s *Store) UsageSeries(toMs int64, count int, bucket, channelName, modelName string) ([]model.UsageBucket, int64, int64, error) {
+func (s *Store) UsageSeries(toMs int64, count int, bucket, channelName, modelName, keyHint string) ([]model.UsageBucket, int64, int64, error) {
 	if count <= 0 {
 		count = 1
 	}
@@ -249,7 +266,7 @@ func (s *Store) UsageSeries(toMs int64, count int, bucket, channelName, modelNam
 		count = 1000
 	}
 	starts, fromMs, endMs := bucketStarts(toMs, count, bucket)
-	out, err := s.usageSeriesBuckets(starts, fromMs, endMs, bucket, channelName, modelName)
+	out, err := s.usageSeriesBuckets(starts, fromMs, endMs, bucket, channelName, modelName, keyHint)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -258,9 +275,9 @@ func (s *Store) UsageSeries(toMs int64, count int, bucket, channelName, modelNam
 
 // UsageSeriesRange 聚合调用方给定的 [fromMs, toMs) 区间内的小时 / 天时间桶
 // （日历选择器选出的日期 / 小时范围）。语义与 UsageSeries 一致，只是区间由外部指定。
-func (s *Store) UsageSeriesRange(fromMs, toMs int64, bucket, channelName, modelName string) ([]model.UsageBucket, int64, int64, error) {
+func (s *Store) UsageSeriesRange(fromMs, toMs int64, bucket, channelName, modelName, keyHint string) ([]model.UsageBucket, int64, int64, error) {
 	starts, endMs := rangeBucketStarts(fromMs, toMs, bucket)
-	out, err := s.usageSeriesBuckets(starts, fromMs, endMs, bucket, channelName, modelName)
+	out, err := s.usageSeriesBuckets(starts, fromMs, endMs, bucket, channelName, modelName, keyHint)
 	if err != nil {
 		return nil, 0, 0, err
 	}
@@ -297,14 +314,14 @@ func rangeBucketStarts(fromMs, toMs int64, bucket string) ([]time.Time, int64) {
 }
 
 // usageSeriesBuckets 按给定桶起点查询聚合结果，补齐没有请求的空桶。
-func (s *Store) usageSeriesBuckets(starts []time.Time, fromMs, endMs int64, bucket, channelName, modelName string) ([]model.UsageBucket, error) {
+func (s *Store) usageSeriesBuckets(starts []time.Time, fromMs, endMs int64, bucket, channelName, modelName, keyHint string) ([]model.UsageBucket, error) {
 	expr := `strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', '+8 hours')`
 	layout := "2006-01-02"
 	if bucket == UsageBucketHour {
 		expr = `strftime('%Y-%m-%d %H:00', created_at / 1000, 'unixepoch', '+8 hours')`
 		layout = "2006-01-02 15:00"
 	}
-	where, args := usageConds(fromMs, endMs, channelName, modelName)
+	where, args := usageConds(fromMs, endMs, channelName, modelName, keyHint)
 
 	rows, err := s.db.Query(
 		`SELECT `+expr+` AS k, COUNT(1),

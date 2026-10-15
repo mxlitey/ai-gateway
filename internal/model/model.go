@@ -189,7 +189,9 @@ type UsageSummary struct {
 	ByModel          []UsageBucket `json:"by_model"`
 	ByChannel        []UsageBucket `json:"by_channel"`
 	ByAPIKey         []UsageBucket `json:"by_api_key"`
-	ByDay            []UsageBucket `json:"by_day"`
+	// ByKey 按上游密钥提示（脱敏值）分组，用于填充「上游密钥」筛选下拉框
+	ByKey []UsageBucket `json:"by_key"`
+	ByDay []UsageBucket `json:"by_day"`
 }
 
 // Plugin 插件实例。

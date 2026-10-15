@@ -1231,9 +1231,9 @@ func (a *API) usageSummary(w http.ResponseWriter, r *http.Request) {
 		from, to = start, end
 	}
 
-	// 合计数字跟随渠道名 / 模型筛选；分组结果（by_*）只按时间区间统计，用于填充筛选下拉框
+	// 合计数字跟随渠道名 / 模型 / 上游密钥筛选；分组结果（by_*）只按时间区间统计，用于填充筛选下拉框
 	sum, err := a.store.UsageSummary(from, to,
-		strings.TrimSpace(q.Get("channel_name")), strings.TrimSpace(q.Get("model")))
+		strings.TrimSpace(q.Get("channel_name")), strings.TrimSpace(q.Get("model")), strings.TrimSpace(q.Get("key_hint")))
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -1276,6 +1276,7 @@ func (a *API) usageLogs(w http.ResponseWriter, r *http.Request) {
 		ChannelID:   strings.TrimSpace(q.Get("channel_id")),
 		ChannelName: strings.TrimSpace(q.Get("channel_name")),
 		APIKeyID:    strings.TrimSpace(q.Get("api_key_id")),
+		KeyHint:     strings.TrimSpace(q.Get("key_hint")),
 		OnlyFail:    q.Get("only_fail") == "1" || q.Get("only_fail") == "true",
 		Limit:       atoiOr(q.Get("limit"), 50),
 		Offset:      atoiOr(q.Get("offset"), 0),
@@ -1314,6 +1315,7 @@ func (a *API) usageSeries(w http.ResponseWriter, r *http.Request) {
 
 	channelName := strings.TrimSpace(q.Get("channel_name"))
 	modelName := strings.TrimSpace(q.Get("model"))
+	keyHint := strings.TrimSpace(q.Get("key_hint"))
 
 	if from, to, ok := rangeParams(q.Get("from"), q.Get("to")); ok {
 		step := int64(24 * 60 * 60 * 1000)
@@ -1328,7 +1330,7 @@ func (a *API) usageSeries(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		points, from, to, err := a.store.UsageSeriesRange(from, to, bucket, channelName, modelName)
+		points, from, to, err := a.store.UsageSeriesRange(from, to, bucket, channelName, modelName, keyHint)
 		if err != nil {
 			jsonErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1343,7 +1345,7 @@ func (a *API) usageSeries(w http.ResponseWriter, r *http.Request) {
 		count = 24
 	}
 
-	points, from, to, err := a.store.UsageSeries(time.Now().UnixMilli(), count, bucket, channelName, modelName)
+	points, from, to, err := a.store.UsageSeries(time.Now().UnixMilli(), count, bucket, channelName, modelName, keyHint)
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return

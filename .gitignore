@@ -8,3 +8,6 @@ web/dist/*
 *.db
 *.db-wal
 *.db-shm
+
+# 本地发布说明，不入库
+/releas_notes/

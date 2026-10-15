@@ -255,6 +255,16 @@ export type ChannelInput = {
 
 const TOKEN_KEY = 'aigw.token'
 
+// 会话被服务端拒绝（401）时的回调，由 AuthProvider 注册：用于清空本地登录态并回到登录页
+let onUnauthorized: (() => void) | null = null
+
+export function setUnauthorizedHandler(fn: (() => void) | null): void {
+  onUnauthorized = fn
+}
+
+// 这几个接口的 401 属于「密码不正确」等业务错误，不代表会话过期，不触发自动登出
+const CREDENTIAL_PATHS = ['/admin/api/login', '/admin/api/setup', '/admin/api/password']
+
 export function getToken(): string {
   return localStorage.getItem(TOKEN_KEY) ?? ''
 }
@@ -296,6 +306,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
+    // 会话失效（Token 过期、换了数据目录导致签名对不上）时自动登出，
+    // 否则面板会停在「每个页面都报 Unauthorized」的状态里出不来
+    if (res.status === 401 && !CREDENTIAL_PATHS.includes(path)) {
+      clearToken()
+      onUnauthorized?.()
+    }
     throw new ApiError(res.status, extractError(data, res.status))
   }
   return data as T

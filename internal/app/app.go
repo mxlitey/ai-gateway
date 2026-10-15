@@ -164,6 +164,9 @@ func (a *App) Start() error {
 		}()
 	}
 
+	// 自动签到：宿主定期对运行中、声明 checkin 能力的插件补签（插件不再自行定时签到）
+	host.StartAutoCheckin(ctx)
+
 	// 价格快照：启动后立刻尝试一次，之后每小时复查（同一小时内只拉一次，失败沿用现有价格表）
 	go func() {
 		client := &http.Client{Timeout: 45 * time.Second}

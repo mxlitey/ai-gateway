@@ -11,20 +11,27 @@ import (
 // Endpoints 是 TRAE 上游的全部主机与接口路径模板，均可在 exe 同级 config.json 里覆盖：
 // 上游一改，只改配置、不动代码（写法与 workbuddy 的 Endpoints 一致）。
 //
-// 取值来源：trae2api/internal/upstream/constants.go（已实测）。
+// 取值来源：AgentHub electron/backend/proxy/rules.cjs 的 headers.json.trae（复刻官方客户端指纹）。
 type Endpoints struct {
 	AgentHost   string `json:"agent_host"`   // 对话 / 模型表
 	UgHost      string `json:"ug_host"`      // 签到 / 积分
 	OAuthHost   string `json:"oauth_host"`   // ExchangeToken / GetUserInfo
 	ConsoleHost string `json:"console_host"` // 网页登录授权页
 
-	ClientID       string `json:"client_id"`
-	AppID          string `json:"app_id"`
+	ClientID string `json:"client_id"`
+	AppID    string `json:"app_id"`
+	// UserAgent 是对话/模型请求的官方客户端指纹；旧值 "Trae/<IdeVersion>" 会被风控识别为非官方客户端。
+	UserAgent string `json:"user_agent"`
+	// AuthAppVersion 是登录授权页（x_app_version）与 GetUserInfo 用的版本号。
+	// ⚠️ 与 IdeVersion 不是一套，别混用（AgentHub 明确警告）。
+	AuthAppVersion string `json:"auth_app_version"`
 	IdeVersion     string `json:"ide_version"`
 	IdeVersionCode string `json:"ide_version_code"`
 	DeviceBrand    string `json:"device_brand"`
 	OSVersion      string `json:"os_version"`
 	Function       string `json:"function"`
+	// ChatMirror 是可选的对话镜像域**完整 URL**；留空则只用主域（官方对内外只有一个 agent 域）。
+	ChatMirror string `json:"chat_mirror"`
 
 	EpChat          string `json:"ep_chat"`
 	EpModels        string `json:"ep_models"`
@@ -32,6 +39,7 @@ type Endpoints struct {
 	EpUserInfo      string `json:"ep_user_info"`
 	EpCheckinStatus string `json:"ep_checkin_status"`
 	EpCheckinClaim  string `json:"ep_checkin_claim"`
+	EpEntUsage      string `json:"ep_ent_usage"` // 额度明细（面板「积分」列的数据源）
 }
 
 func defaultEndpoints() Endpoints {
@@ -43,10 +51,12 @@ func defaultEndpoints() Endpoints {
 
 		ClientID:       "en1oxy7wnw8j9n",
 		AppID:          "6eefa01c-1036-4c7e-9ca5-d891f63bfcd8",
-		IdeVersion:     "0.1.52",
+		UserAgent:      "TraeClient/TTNet",
+		AuthAppVersion: "3.5.66",
+		IdeVersion:     "0.1.50",
 		IdeVersionCode: "20260811",
-		DeviceBrand:    "Apple",
-		OSVersion:      "macOS 15.7.4",
+		DeviceBrand:    "CREFG-XX",
+		OSVersion:      "Windows 11 Home China",
 		Function:       "solo_work_lite",
 
 		EpChat:          "/api/agent/v3/llm_utils_chat",
@@ -55,6 +65,7 @@ func defaultEndpoints() Endpoints {
 		EpUserInfo:      "/cloudide/api/v3/trae/GetUserInfo",
 		EpCheckinStatus: "/trae/api/v2/ug/checkin_credits/status",
 		EpCheckinClaim:  "/trae/api/v2/ug/checkin_credits/claim",
+		EpEntUsage:      "/trae/api/v2/pay/ide_user_ent_usage",
 	}
 }
 

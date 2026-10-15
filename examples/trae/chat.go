@@ -47,6 +47,38 @@ func (p *Plugin) pickAccount() (*Account, error) {
 	return nil, &upstreamError{Status: http.StatusServiceUnavailable, Msg: "没有可用账号：请先在插件控制台登录或导入 TRAE 账号"}
 }
 
+// injectSoloFields 注入 llm_utils_chat 的官方客户端必填字段。
+//
+// 依据 AgentHub proxy/adapters.cjs 的 rewriteBody()：官方客户端除 stream / function /
+// config_name / model 外还会带一组 uuid 会话标识与设备/版本指纹，缺这些字段会被上游
+// 识别为非官方调用。默认值取其一（max_tokens 4096、prompt_max_tokens 168000、
+// workspace_id "e04cdd"）。
+func (p *Plugin) injectSoloFields(body map[string]any, a *Account) {
+	// 客户端已给的正数优先，否则用官方默认值（AgentHub 同判据）。
+	if n := firstPositive(body["max_tokens"], body["max_completion_tokens"]); n > 0 {
+		body["max_tokens"] = n
+	} else {
+		body["max_tokens"] = 4096
+	}
+	if n := firstPositive(body["prompt_max_tokens"], body["context_length"]); n > 0 {
+		body["prompt_max_tokens"] = n
+	} else {
+		body["prompt_max_tokens"] = 168000
+	}
+	body["conversation_id"] = randomUUID()
+	body["session_id"] = randomUUID()
+	body["project_id"] = randomUUID()
+	body["user_id"] = a.UID
+	body["device_id"] = a.DeviceID
+	body["machine_id"] = a.MachineID
+	body["workspace_id"] = "e04cdd"
+	body["mode"] = "FunctionCall"
+	body["ide_version"] = p.eps.IdeVersion
+	body["ide_version_code"] = p.eps.IdeVersionCode
+	body["app_id"] = p.eps.AppID
+	body["package_type"] = "stable_cn"
+}
+
 // forwardChat 把网关转来的 OpenAI 请求落到 TRAE SOLO 上游。
 func (p *Plugin) forwardChat(w http.ResponseWriter, r *http.Request) {
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
@@ -77,29 +109,49 @@ func (p *Plugin) forwardChat(w http.ResponseWriter, r *http.Request) {
 	normalizeToolChoice(body)
 	normalizeTools(body)
 
+	acc, err := p.accountForRequest(r)
+	if err != nil {
+		writeUpstreamErr(w, err)
+		return
+	}
+	// 账号级必填字段（device_id / machine_id / user_id）必须在 marshal 之前注入。
+	p.injectSoloFields(body, acc)
+
 	prepared, err := json.Marshal(body)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "构造上游请求失败")
 		return
 	}
 
-	acc, err := p.accountForRequest(r)
-	if err != nil {
-		writeUpstreamErr(w, err)
-		return
+	// 官方域优先，连接层失败或 404 时回退镜像域（AgentHub：官方域随时可能停 agent 服务）。
+	// ChatMirror 默认为空 → 只有一个候选，行为与单域完全一致。
+	candidates := []string{p.eps.AgentHost + p.eps.EpChat}
+	if m := strings.TrimSpace(p.eps.ChatMirror); m != "" {
+		candidates = append(candidates, m)
 	}
-
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, p.eps.AgentHost+p.eps.EpChat, bytes.NewReader(prepared))
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "构造上游请求失败")
-		return
-	}
-	p.soloHeaders(req, acc, true)
-
-	resp, err := p.stream.Do(req)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, "请求上游失败："+truncateRunes(err.Error(), 80))
-		return
+	var resp *http.Response
+	for i, target := range candidates {
+		req, rerr := http.NewRequestWithContext(r.Context(), http.MethodPost, target, bytes.NewReader(prepared))
+		if rerr != nil {
+			writeErr(w, http.StatusInternalServerError, "构造上游请求失败")
+			return
+		}
+		p.soloHeaders(req, acc, true)
+		req.Header.Set("Referer", target) // 与请求 URL 同源（AgentHub 实证：伪装同源请求）
+		r2, derr := p.stream.Do(req)
+		if derr != nil {
+			if i == len(candidates)-1 {
+				writeErr(w, http.StatusBadGateway, "请求上游失败："+truncateRunes(derr.Error(), 80))
+				return
+			}
+			continue
+		}
+		if r2.StatusCode == http.StatusNotFound && i < len(candidates)-1 {
+			_ = r2.Body.Close()
+			continue
+		}
+		resp = r2
+		break
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -114,10 +166,9 @@ func (p *Plugin) forwardChat(w http.ResponseWriter, r *http.Request) {
 	if wantStream {
 		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache")
-		wroteAny, credits, serr, ioErr := streamSOLO(w, resp.Body, model)
-		if credits != nil {
-			p.noteCredits(acc.UID, *credits)
-		}
+		// notify_usage 里的 ide_credits 是 SOLO 专属口径，但只是「对话那一刻」的瞬时值，
+		// 不作为面板积分来源（积分只在签到/额度刷新时查询，见 console.go）。
+		wroteAny, _, serr, ioErr := streamSOLO(w, resp.Body, model)
 		if serr != nil && !wroteAny {
 			// 尚未写出任何 chunk：仍可用非 2xx + {'error':...} 回复（响应头还没发出去）。
 			p.noteUpstreamError(acc, serr)
@@ -132,10 +183,7 @@ func (p *Plugin) forwardChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 非流式：读完整个 SSE 再聚合（成功响应必须带非空 choices）。
-	out, credits, serr, aggErr := aggregateSOLO(resp.Body, model)
-	if credits != nil {
-		p.noteCredits(acc.UID, *credits)
-	}
+	out, _, serr, aggErr := aggregateSOLO(resp.Body, model)
 	if serr != nil {
 		p.noteUpstreamError(acc, serr)
 		writeErr(w, serr.Status, serr.Msg)
@@ -345,12 +393,4 @@ func (p *Plugin) noteUpstreamError(acc *Account, ue *upstreamError) {
 // noteSuccess 清掉上次的错误提示。
 func (p *Plugin) noteSuccess(uid string) {
 	p.store.updateState(uid, func(st *accountState) { st.LastError = "" })
-}
-
-// noteCredits 用上游额度快照更新缓存（非定时轮询，只在上游主动下发时更新）。
-func (p *Plugin) noteCredits(uid string, credits float64) {
-	p.store.updateState(uid, func(st *accountState) {
-		st.Credits = credits
-		st.CreditsAt = nowMillis()
-	})
 }

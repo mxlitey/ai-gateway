@@ -143,7 +143,8 @@ func runServe(args []string) error {
 		}
 	}()
 
-	// 后台任务：每日定时签到 + token 到期前 24 小时预刷新（不做额度定时轮询）。
+	// 后台任务：token 到期前 24 小时预刷新（不做额度定时轮询）。
+	// 自动签到由网关宿主调度，插件只提供 POST /console/accounts/{id}/checkin。
 	p.startBackground(ctx)
 
 	select {

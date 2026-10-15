@@ -10,16 +10,27 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// 上游端点的请求头全集合照抄自 trae2api/internal/upstream/headers.go（实测必须）。
-// clientUA 固定为 "Trae/<IdeVersion>"。
-func (p *Plugin) clientUA() string { return "Trae/" + p.eps.IdeVersion }
+// clientUA 返回上游请求的 User-Agent。
+//
+// 取值依据 AgentHub rules.cjs headers.json.trae.userAgent = "TraeClient/TTNet"：
+// 旧实现 "Trae/<IdeVersion>" 是 IDE 客户端形态，会被风控识别为非官方客户端。
+func (p *Plugin) clientUA() string {
+	if ua := strings.TrimSpace(p.eps.UserAgent); ua != "" {
+		return ua
+	}
+	return "Trae/" + p.eps.IdeVersion
+}
 
 // soloHeaders 设置 llm_utils_chat / get_detail_param 所需的 SOLO 专属头。
+//
+// 指纹逐字段对齐 AgentHub proxy/adapters.cjs 的 headers()：「缺任何一项都可能被上游
+// 风控识别为非官方客户端」。referer 需由调用方按**实际请求 URL** 设置（同源伪装）。
 func (p *Plugin) soloHeaders(req *http.Request, a *Account, stream bool) {
 	req.Header.Set("Content-Type", "application/json")
 	if stream {
@@ -27,6 +38,7 @@ func (p *Plugin) soloHeaders(req *http.Request, a *Account, stream bool) {
 	} else {
 		req.Header.Set("Accept", "application/json")
 	}
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
 	req.Header.Set("User-Agent", p.clientUA())
 	at := a.AccessToken
 	req.Header.Set("Authorization", "Cloud-IDE-JWT "+at)
@@ -37,29 +49,60 @@ func (p *Plugin) soloHeaders(req *http.Request, a *Account, stream bool) {
 	}
 	req.Header.Set("X-App-Id", p.eps.AppID)
 	req.Header.Set("X-App-Version", "default")
+	req.Header.Set("App-Version", p.eps.IdeVersion)
 	req.Header.Set("X-Ide-Version", p.eps.IdeVersion)
 	req.Header.Set("X-Ide-Version-Code", p.eps.IdeVersionCode)
 	req.Header.Set("X-App-Version-Code", p.eps.IdeVersionCode)
 	req.Header.Set("X-Ide-Version-Type", "stable")
-	req.Header.Set("X-Device-Type", "macos")
+	req.Header.Set("X-Device-Type", "windows")
+	req.Header.Set("X-Device-Cpu", "Intel")
 	req.Header.Set("X-OS-Version", p.eps.OSVersion)
 	req.Header.Set("X-Device-Brand", p.eps.DeviceBrand)
 	req.Header.Set("Request-Traffic-Type", "prod")
+	req.Header.Set("Package-Type", "stable_cn")
+	req.Header.Set("X-Lgw-Req-Sdk-Type", "3")
+	req.Header.Set("X-Lscbd-Aid", "787976")
+	req.Header.Set("X-Lscbd-Platform", "windows")
+	req.Header.Set("X-Ss-Dp", "787976")
 	if a.MachineID != "" {
 		req.Header.Set("X-Machine-Id", a.MachineID)
 	}
 	if a.DeviceID != "" {
 		req.Header.Set("X-Device-Id", a.DeviceID)
 	}
+	p.setTraceHeaders(req)
+}
+
+// setTraceHeaders 生成 AgentHub 同款的四个链路追踪头。
+//
+// 格式取自其 headers()：x-tt-trace-id = "00-<32hex>-<32hex>-01"，
+// x-flow-traceparent = "04-<前32hex>-<16hex>-01"，x-custom-trace-id 取前 16 位。
+func (p *Plugin) setTraceHeaders(req *http.Request) {
+	tid := "00-" + randomHex(16) + "-" + randomHex(16) + "-01"
+	req.Header.Set("X-Tt-Trace-Id", tid)
+	req.Header.Set("X-Flow-Traceparent", "04-"+tid[3:35]+"-"+randomHex(16)+"-01")
+	req.Header.Set("X-Custom-Trace-Id", tid[3:19])
+	req.Header.Set("X-Request-Id", "req_"+randomHex(16))
 }
 
 // ugHeaders 设置签到 / 积分（api.trae.cn）所需的头。
-func (p *Plugin) ugHeaders(req *http.Request, a *Account) {
+//
+// 依据 AgentHub proxy/adapters.cjs：ug 域请求除凭证外还必须带 origin / referer /
+// x-app-type（缺了会被风控识别成非官方客户端），且两种凭证形态并存 ——
+// **查签到状态用 Bearer，签到领取与积分查询用 Cloud-IDE-JWT**。
+func (p *Plugin) ugHeaders(req *http.Request, a *Account, bearer bool) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", p.clientUA())
-	req.Header.Set("Authorization", "Cloud-IDE-JWT "+a.AccessToken)
+	if bearer {
+		req.Header.Set("Authorization", "Bearer "+a.AccessToken)
+	} else {
+		req.Header.Set("Authorization", "Cloud-IDE-JWT "+a.AccessToken)
+	}
 	req.Header.Set("X-User-Region", "CN")
+	req.Header.Set("X-App-Type", "trae")
+	req.Header.Set("Origin", p.eps.ConsoleHost)
+	req.Header.Set("Referer", p.eps.ConsoleHost+"/")
 	if a.DeviceID != "" {
 		req.Header.Set("X-Device-Id", a.DeviceID)
 	}
@@ -79,6 +122,7 @@ type upstreamError struct {
 	Status  int    // 回给网关的 HTTP 状态码
 	Msg     string // 中文文案（≤300 字节）
 	Disable bool   // 是否把该账号硬禁用（登录态失效）
+	Code    int64  // 上游业务码（0 = 无）；用于区分「可重试的容量类错误」
 }
 
 func (e *upstreamError) Error() string { return e.Msg }
@@ -87,18 +131,21 @@ func (e *upstreamError) Error() string { return e.Msg }
 func classifyCode(code int64) *upstreamError {
 	switch code {
 	case 1001:
-		return &upstreamError{Status: http.StatusUnauthorized, Msg: "账号登录态失效，请重新登录", Disable: true}
+		return &upstreamError{Status: http.StatusUnauthorized, Msg: "账号登录态失效，请重新登录", Disable: true, Code: 1001}
 	case 1005:
-		return &upstreamError{Status: http.StatusForbidden, Msg: "该账号未开通此权益", Disable: false}
+		// 积分不足属账号级权益问题：用 403（规范 §5.2「无权/未开通」→ 切号），
+		// 让网关换一个还有额度的账号继续，而不是把失败直接丢给客户端。
+		return &upstreamError{Status: http.StatusForbidden, Msg: "该账号未开通此权益", Disable: false, Code: 1005}
 	case 4008:
-		return &upstreamError{Status: http.StatusTooManyRequests, Msg: "免费额度已用尽，等待重置或签到", Disable: false}
+		return &upstreamError{Status: http.StatusTooManyRequests, Msg: "免费额度已用尽，等待重置或签到", Disable: false, Code: 4008}
 	case 4011:
-		return &upstreamError{Status: http.StatusTooManyRequests, Msg: "触发上游限流，请稍后重试", Disable: false}
+		return &upstreamError{Status: http.StatusTooManyRequests, Msg: "触发上游限流，请稍后重试", Disable: false, Code: 4011}
+	case 9074:
+		// 签到高峰的容量限制：属可重试的临时错误（见 checkinClaimWithRetry）。
+		return &upstreamError{Status: http.StatusBadGateway, Msg: "上游繁忙（签到人数过多），请稍后重试", Disable: false, Code: 9074}
 	case 4001:
 		// 参数无效：模型不存在 / 版本不匹配 —— 换谁都一样，不切号（规范 §5.2）。
-		return &upstreamError{Status: http.StatusBadRequest, Msg: "模型不可用，请更换模型", Disable: false}
-	case 9074:
-		return &upstreamError{Status: http.StatusBadGateway, Msg: "上游繁忙（签到人数过多），请稍后重试", Disable: false}
+		return &upstreamError{Status: http.StatusBadRequest, Msg: "模型不可用，请更换模型", Disable: false, Code: 4001}
 	}
 	return nil
 }
@@ -271,7 +318,8 @@ func (p *Plugin) getUserInfo(a *Account) (uid, nickname, enterpriseID string, er
 	if host == "" {
 		host = p.eps.OAuthHost
 	}
-	body := map[string]any{"ReqSource": "IDE", "IDEVersion": p.eps.IdeVersion}
+	// GetUserInfo 与 ExchangeToken 同在授权域，用授权版本号（AgentHub：authAppVersion）。
+	body := map[string]any{"ReqSource": "IDE", "IDEVersion": p.eps.AuthAppVersion}
 	raw, _ := json.Marshal(body)
 	req, err := http.NewRequest(http.MethodPost, host+p.eps.EpUserInfo, bytes.NewReader(raw))
 	if err != nil {
@@ -319,6 +367,7 @@ func (p *Plugin) fetchModels(a *Account) ([]modelInfo, error) {
 		return nil, err
 	}
 	p.soloHeaders(req, a, false)
+	req.Header.Set("Referer", p.eps.AgentHost+p.eps.EpModels)
 	data, err := p.doJSON(req)
 	if err != nil {
 		return nil, err
@@ -347,67 +396,335 @@ func (p *Plugin) fetchModels(a *Account) ([]modelInfo, error) {
 	return out, nil
 }
 
-// checkinStatus 查询签到状态 + 额度快照。
-// 返回的 raw 供 extractIdeCredits 进一步提取 SOLO 真正可用的 ide_credits。
-func (p *Plugin) checkinStatus(a *Account) (checkedIn bool, enable bool, raw map[string]any, err error) {
+// checkinState 是签到状态接口的解析结果。
+//
+// 字段依据 AgentHub proxy/adapters.cjs 的 checkinStatus：上游除 checked_in / enable 外
+// 还返回 consecutive_days（连签天数）、credits_earned_today、checkin_date。
+type checkinState struct {
+	CheckedIn          bool
+	Enable             bool
+	Unavailable        bool // 「签到服务未对该账号开放」（非登录态失效）
+	StreakDays         int
+	CreditsEarnedToday float64
+}
+
+// checkinClaimResult 是签到领取的结果语义。
+type checkinClaimResult struct {
+	Already     bool // 上游反馈「今日已签到」→ 幂等成功
+	Unavailable bool // 「签到服务未对该账号开放」
+	Message     string
+}
+
+// 上游在「今天已签到」时也用成功码返回，文案形如「今日已签到」；
+// 按规范 §6.5「幂等友好」的要求，这种情况必须当成功语义，不能当硬错误。
+var checkedInRe = regexp.MustCompile(`(?i)已签到|已经签到|already`)
+
+// isCode 判断错误是否为指定上游业务码。
+func isCode(err error, code int64) bool {
+	ue, ok := err.(*upstreamError)
+	return ok && ue.Code == code
+}
+
+// checkinStatus 查询签到状态。
+//
+// 依据 AgentHub proxy/adapters.cjs 的注释「GET+did（cockpit 现行）为主，
+// POST+Cloud-IDE-JWT 兜底」：主路径是 GET + ?did=<deviceId> + Bearer，
+// 旧口径（POST 空体 + Cloud-IDE-JWT）仅作兜底。
+//
+// ⚠️ 签到语境下的 code 1001 表示「签到服务未对该账号开放（scope 限制）」，
+// **不是**登录态失效 —— 若按 classifyCode(1001) 处理会把好账号硬禁用（AgentHub 实测坑）。
+func (p *Plugin) checkinStatus(a *Account) (checkinState, error) {
+	// 主：GET + ?did=<deviceId> + Bearer（cockpit 现行口径）
+	if a.DeviceID != "" {
+		u := p.eps.UgHost + p.eps.EpCheckinStatus + "?did=" + url.QueryEscape(a.DeviceID)
+		if req, err := http.NewRequest(http.MethodGet, u, nil); err == nil {
+			p.ugHeaders(req, a, true)
+			st, perr := p.parseCheckinStatus(req)
+			// ⚠️ 只有「拿到真实状态」才直接采信。若这一形态被判成 1001，必须继续走 POST 兜底：
+			// GET+Bearer 不被上游接受时它同样回 1001，单看它一个就会把能签到的账号误判成「未开放」。
+			if perr == nil && !st.Unavailable {
+				return st, nil
+			}
+		}
+	}
+	// 兜底：POST 空体 + Cloud-IDE-JWT（旧口径，实测可用）
 	req, err := http.NewRequest(http.MethodPost, p.eps.UgHost+p.eps.EpCheckinStatus, bytes.NewReader([]byte("{}")))
 	if err != nil {
-		return false, false, nil, err
+		return checkinState{}, err
 	}
-	p.ugHeaders(req, a)
+	p.ugHeaders(req, a, false)
+	return p.parseCheckinStatus(req)
+}
+
+func (p *Plugin) parseCheckinStatus(req *http.Request) (checkinState, error) {
+	var st checkinState
 	data, err := p.doJSON(req)
 	if err != nil {
-		return false, false, nil, err
+		if isCode(err, 1001) {
+			st.Unavailable = true
+			return st, nil
+		}
+		return st, err
 	}
 	var resp struct {
-		CheckedIn bool `json:"checked_in"`
-		Enable    bool `json:"enable"`
+		Code               int64   `json:"code"`
+		CheckedIn          bool    `json:"checked_in"`
+		CheckedInCamel     bool    `json:"checkedIn"`
+		Enable             bool    `json:"enable"`
+		ConsecutiveDays    int     `json:"consecutive_days"`
+		CreditsEarnedToday float64 `json:"credits_earned_today"`
 	}
 	_ = json.Unmarshal(data, &resp)
-	var doc map[string]any
-	_ = json.Unmarshal(data, &doc)
-	return resp.CheckedIn, resp.Enable, doc, nil
+	// 上游既用 code 0 也用 code 200 表示成功（AgentHub 同判据）。
+	if resp.Code != 0 && resp.Code != 200 {
+		if resp.Code == 1001 {
+			st.Unavailable = true
+			return st, nil
+		}
+		if e := classifyCode(resp.Code); e != nil {
+			return st, e
+		}
+		return st, &upstreamError{Status: http.StatusBadGateway, Msg: "签到状态查询失败", Code: resp.Code}
+	}
+	st.CheckedIn = resp.CheckedIn || resp.CheckedInCamel
+	st.Enable = resp.Enable
+	st.StreakDays = resp.ConsecutiveDays
+	st.CreditsEarnedToday = resp.CreditsEarnedToday
+	return st, nil
 }
 
 // checkinClaim 执行签到。
-func (p *Plugin) checkinClaim(a *Account) error {
-	req, err := http.NewRequest(http.MethodPost, p.eps.UgHost+p.eps.EpCheckinClaim, bytes.NewReader([]byte(`{"req_source":2}`)))
+//
+// 请求体是空对象 `{}`（AgentHub 现行口径）—— 旧口径的 `{"req_source":2}` 已不被现行
+// 上游接受；头用 Cloud-IDE-JWT 并带 origin / referer / x-app-type。
+func (p *Plugin) checkinClaim(a *Account) (checkinClaimResult, error) {
+	var out checkinClaimResult
+	req, err := http.NewRequest(http.MethodPost, p.eps.UgHost+p.eps.EpCheckinClaim, bytes.NewReader([]byte("{}")))
 	if err != nil {
-		return err
+		return out, err
 	}
-	p.ugHeaders(req, a)
+	p.ugHeaders(req, a, false)
 	data, err := p.doJSON(req)
 	if err != nil {
-		return err
+		if isCode(err, 1001) {
+			out.Unavailable = true
+			return out, nil
+		}
+		return out, err
 	}
 	var resp struct {
-		Code    int    `json:"code"`
+		Code    int64  `json:"code"`
 		Message string `json:"message"`
+		Msg     string `json:"msg"`
 	}
 	_ = json.Unmarshal(data, &resp)
-	if resp.Code != 0 {
-		if e := classifyCode(int64(resp.Code)); e != nil {
-			return e
-		}
-		msg := strings.TrimSpace(resp.Message)
-		if msg == "" {
-			msg = "签到失败"
-		}
-		return &upstreamError{Status: http.StatusBadGateway, Msg: truncateRunes(msg, 100)}
+	out.Message = strings.TrimSpace(resp.Message)
+	if out.Message == "" {
+		out.Message = strings.TrimSpace(resp.Msg)
 	}
-	return nil
+	switch {
+	case resp.Code == 1001:
+		out.Unavailable = true
+		return out, nil
+	case resp.Code == 0 || resp.Code == 200:
+		out.Already = checkedInRe.MatchString(out.Message)
+		return out, nil
+	}
+	if e := classifyCode(resp.Code); e != nil {
+		return out, e
+	}
+	msg := out.Message
+	if msg == "" {
+		msg = "签到失败"
+	}
+	return out, &upstreamError{Status: http.StatusBadGateway, Msg: truncateRunes(msg, 100), Code: resp.Code}
 }
 
-// ---------- 额度：SOLO 真正看 notify_usage 的 ide_credits ----------
+// checkinClaimWithRetry 执行签到；遇到上游容量类错误（9074）时退避重试。
+func (p *Plugin) checkinClaimWithRetry(a *Account) (checkinClaimResult, error) {
+	const attempts = 4
+	var out checkinClaimResult
+	var last error
+	for i := 0; i < attempts; i++ {
+		if out, last = p.checkinClaim(a); last == nil {
+			return out, nil
+		}
+		if !isRetryableUpstream(last) || i == attempts-1 {
+			break
+		}
+		time.Sleep(time.Duration(1<<uint(i)) * time.Second) // 1s / 2s / 4s
+	}
+	if ue, ok := last.(*upstreamError); ok && isRetryableUpstream(last) {
+		return out, &upstreamError{
+			Status: ue.Status,
+			Msg:    "上游暂时拒绝签到（业务码 " + strconv.FormatInt(ue.Code, 10) + "），已自动重试 " + strconv.Itoa(attempts) + " 次仍未成功，请稍后再试",
+			Code:   ue.Code,
+		}
+	}
+	return out, last
+}
 
-// extractIdeCredits 从上游响应里提取 SOLO 通道可用的 ide_credits 余额。
+// isRetryableUpstream 判断是否属于「重试可能成功」的上游错误（当前只有签到容量限制 9074）。
+func isRetryableUpstream(err error) bool {
+	ue, ok := err.(*upstreamError)
+	return ok && ue.Code == 9074
+}
+
+// ---------- 额度 ----------
 //
-// 依据 trae2api docs/RESEARCH.md §3：对话流里的 event:notify_usage 返回
+// 面板「积分」列取 ide_user_ent_usage 的口径：**Σ 未过期权益包的剩余积分**（允许小数）。
+//
+// 口径依据 AgentHub proxy/adapters.cjs 的 traeCredits + pool.deriveAccountCredits。
+// 该值覆盖账号下的全部权益包（含 work 包），并不等于 SOLO 通道单独可用的 ide_credits；
+// SOLO 专属口径只出现在对话流的 event:notify_usage.cn_credits_remain_info.ide_credits 里，
+// 但那是「对话那一刻」的瞬时值，不适合当作面板余额，因此不作为积分来源。
+
+// entUsageRemain 查账号额度明细，返回未过期权益包的剩余积分之和。
+//
+// 逐包规则（AgentHub 实测口径；旧实现「Σ全部包 limit − Σ全部包 amount」是错的）：
+//   - 隐藏包（is_hide）/ 已取消（status=3）/ 兑换码包（product_type=3）跳过；
+//   - credits_limit 缺失或为 0 → 该包不属于该账号，跳过；
+//   - credits_limit < 0 是「不限量」哨兵，不参与求和 → 整体返回 -1；
+//   - 剩余 = max(credits_limit − credits_amount, 0)，剔除已过期的包后求和。
+func (p *Plugin) entUsageRemain(a *Account) (float64, error) {
+	req, err := http.NewRequest(http.MethodPost, p.eps.UgHost+p.eps.EpEntUsage, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return 0, err
+	}
+	p.ugHeaders(req, a, false)
+	data, err := p.doJSON(req)
+	if err != nil {
+		// pay/ug 域对部分账号（scope 限制）整体拒绝并返回 code 1001：
+		// 这是「积分服务不开放」，不是凭证失效，不能按登录态失效处理。
+		if isCode(err, 1001) {
+			return 0, &upstreamError{Status: http.StatusForbidden, Msg: "该账号未开放积分服务（上游 scope 限制）", Code: 1001}
+		}
+		return 0, err
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return 0, &upstreamError{Status: http.StatusBadGateway, Msg: "额度查询响应无法解析"}
+	}
+	packs, _ := digValue(doc, "user_entitlement_pack_list")
+	list, _ := packs.([]any)
+	if len(list) == 0 {
+		return 0, &upstreamError{Status: http.StatusBadGateway, Msg: "上游未返回额度信息"}
+	}
+	now := time.Now().Unix()
+	var sum float64
+	unlimited, valid := false, 0
+	for _, item := range list {
+		pk, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if digBool(pk, "is_hide") {
+			continue
+		}
+		if n, ok := digNumber(pk, "status"); ok && int(n) == 3 {
+			continue
+		}
+		if n, ok := digNumber(pk, "product_type"); ok && int(n) == 3 {
+			continue
+		}
+		limit, ok := digNumber(pk, "credits_limit")
+		if !ok || limit == 0 {
+			continue
+		}
+		// 到期时间可能以秒或毫秒给出；取不到视为长期有效。
+		expired := false
+		for _, k := range []string{"end_time", "expire_time", "expire_at", "deadline", "valid_until"} {
+			if ms, ok := digNumber(pk, k); ok && ms > 0 {
+				if ms < 1e12 { // 秒 → 毫秒
+					ms *= 1000
+				}
+				expired = ms/1000 <= float64(now)
+				break
+			}
+		}
+		if expired {
+			continue
+		}
+		valid++
+		if limit < 0 {
+			unlimited = true
+			continue
+		}
+		used, _ := digNumber(pk, "credits_amount")
+		if rem := limit - used; rem > 0 {
+			sum += rem
+		}
+	}
+	if valid == 0 {
+		return 0, &upstreamError{Status: http.StatusBadGateway, Msg: "上游未返回有效额度包"}
+	}
+	if unlimited {
+		return -1, nil
+	}
+	return sum, nil
+}
+
+// digValue 在任意深度按（不区分大小写的）键名查找值。
+//
+// 与 AgentHub util.dig 同款做法：credits_limit / credits_amount 等字段的实际位置
+// 并不固定在 quota. 下，逐层查找可兼容上游结构变动。
+func digValue(v any, key string) (any, bool) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			if strings.EqualFold(k, key) {
+				return val, true
+			}
+		}
+		for _, val := range t {
+			if got, ok := digValue(val, key); ok {
+				return got, true
+			}
+		}
+	case []any:
+		for _, val := range t {
+			if got, ok := digValue(val, key); ok {
+				return got, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// digNumber 取任意深度的数值字段（JSON 数字统一解为 float64）。
+func digNumber(v any, key string) (float64, bool) {
+	got, ok := digValue(v, key)
+	if !ok {
+		return 0, false
+	}
+	switch n := got.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	}
+	return 0, false
+}
+
+// digBool 取任意深度的布尔字段（缺失按 false）。
+func digBool(v any, key string) bool {
+	got, ok := digValue(v, key)
+	if !ok {
+		return false
+	}
+	b, _ := got.(bool)
+	return b
+}
+
+// extractIdeCredits 从对话流的 notify_usage 里提取 SOLO 通道专属的 ide_credits。
+//
+// 依据 trae2api docs/RESEARCH.md §3：notify_usage 返回
 //   "cn_credits_remain_info": {"ide_credits": N, "work_credits": M}
-// SOLO 通道真正可用的是 ide_credits；ide_user_ent_usage 的聚合值含 work 包，不能代表 SOLO 额度，
-// 因此这里优先取 ide_credits，取不到才退回 credits（此时调用方会给出说明）。
-//
-// 兼容多种形状：顶层 notify_usage / cn_credits_remain_info，任意深度内的 ide_credits，以及顶层 credits。
+// ⚠️ 刻意**不**兜底到通用 credits 字段：签到状态接口的顶层 credits 是签到相关的数字
+// （不是余额），历史上正是这个兜底让面板把积分显示成 100。
 func extractIdeCredits(doc map[string]any) (float64, string) {
 	if doc == nil {
 		return 0, ""
@@ -417,9 +734,6 @@ func extractIdeCredits(doc map[string]any) (float64, string) {
 	}
 	if v, ok := deepFindNumber(doc, "ideCredits"); ok {
 		return v, "ide_credits"
-	}
-	if v, ok := deepFindNumber(doc, "credits"); ok {
-		return v, "credits"
 	}
 	return 0, ""
 }
@@ -505,7 +819,7 @@ func BuildLoginURL(eps Endpoints, machineID, deviceID, callbackURL string) strin
 		"&x_device_brand=PC" +
 		"&x_device_type=PC" +
 		"&x_os_version=1.0" +
-		"&x_app_version=" + url.QueryEscape(eps.IdeVersion) +
+		"&x_app_version=" + url.QueryEscape(eps.AuthAppVersion) +
 		"&x_app_type=stable"
 }
 
@@ -652,6 +966,45 @@ func randomHex(n int) string {
 		return fmt.Sprintf("%032x", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
+}
+
+// randomUUID 生成标准 8-4-4-4-12 形态的 v4 UUID（SOLO 会话 / 项目标识用）。
+func randomUUID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return randomHex(32)
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	h := hex.EncodeToString(b)
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// firstPositive 返回第一个为正数的值（非正数 / 非数值忽略）。
+func firstPositive(vals ...any) float64 {
+	for _, v := range vals {
+		if n := toFloat(v); n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
+// toFloat 把 JSON 值转为 float64（非数值返回 0）。
+func toFloat(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	case json.Number:
+		f, err := n.Float64()
+		if err != nil {
+			return 0
+		}
+		return f
+	}
+	return 0
 }
 
 // randomState 生成登录会话用的随机 state（URL 安全、不承载凭据语义）。

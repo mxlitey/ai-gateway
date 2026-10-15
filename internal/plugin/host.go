@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +43,9 @@ const (
 	maxFailures        = 5               // 连续失败多少次后放弃自动重启
 	stopGracePeriod    = 5 * time.Second // 优雅停止等待时长
 	defaultChannelKey  = "gw-local"      // 插件没有账号时使用的占位渠道密钥
+
+	autoCheckinInterval = time.Hour        // 自动签到复查间隔
+	checkinTimeout      = 30 * time.Second // 单次签到请求超时
 )
 
 type instance struct {
@@ -610,6 +614,11 @@ func (h *Host) supervise(inst *instance) {
 		h.setStatus(inst, StatusRunning, "")
 		h.syncChannels(inst, true)
 
+		// 插件刚就绪：先做一次「启动补签」，之后由 StartAutoCheckin 定期复查
+		if inst.manifest.HasCapability(CapCheckin) {
+			go h.checkinPlugin(inst)
+		}
+
 		reason := h.watch(inst)
 		if h.stopRequested(inst) {
 			h.stopProcess(inst)
@@ -997,6 +1006,102 @@ func (h *Host) pluginAccountKeys(inst *instance, existing []model.ChannelKey) (k
 		})
 	}
 	return out, true
+}
+
+// ---------- 自动签到（宿主调度） ----------
+
+// StartAutoCheckin 启动宿主侧自动签到复查：每 autoCheckinInterval 对运行中、
+// 声明了 checkin 能力的插件执行一轮签到。ctx 取消即退出。
+//
+//「启动补签」由监管循环在插件进入 running 时触发（见 supervise），
+// 这里只负责运行期间的定期复查，覆盖跨天场景。
+func (h *Host) StartAutoCheckin(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(autoCheckinInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				h.runAutoCheckin()
+			}
+		}
+	}()
+}
+
+// runAutoCheckin 对所有运行中、声明 checkin 能力的插件执行一轮签到。
+func (h *Host) runAutoCheckin() {
+	h.mu.Lock()
+	insts := make([]*instance, 0, len(h.items))
+	for _, inst := range h.items {
+		if inst.status == StatusRunning && inst.manifest.HasCapability(CapCheckin) {
+			insts = append(insts, inst)
+		}
+	}
+	h.mu.Unlock()
+
+	for _, inst := range insts {
+		h.checkinPlugin(inst)
+	}
+}
+
+// checkinPlugin 对单个插件的「启用且登录有效」账号逐个签到。
+// 依赖插件端 checkin 接口的幂等语义（今日已签返回成功），重复调用是安全的。
+func (h *Host) checkinPlugin(inst *instance) {
+	accounts, ok := h.fetchAccounts(inst)
+	if !ok {
+		return
+	}
+	for _, a := range accounts {
+		if !a.Enabled || !a.alive() {
+			continue
+		}
+		msg, err := h.checkinAccount(inst, a.ID)
+		if err != nil {
+			h.log.Warn("自动签到失败", "plugin", inst.manifest.ID, "account", a.Name, "err", err)
+			continue
+		}
+		h.log.Info("自动签到完成", "plugin", inst.manifest.ID, "account", a.Name, "message", msg)
+	}
+}
+
+// checkinAccount 调用插件控制台的 POST /console/accounts/{id}/checkin，返回其 message。
+func (h *Host) checkinAccount(inst *instance, accountID string) (string, error) {
+	if !inst.manifest.HasConsole() || inst.port == 0 {
+		return "", fmt.Errorf("插件未就绪")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), checkinTimeout)
+	defer cancel()
+
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s/accounts/%s/checkin",
+		inst.port, inst.manifest.ConsoleBasePath(), url.PathEscape(accountID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode >= 300 {
+		var e struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(raw, &e)
+		if msg := strings.TrimSpace(e.Error); msg != "" {
+			return "", fmt.Errorf("%s", msg)
+		}
+		return "", fmt.Errorf("插件返回状态码 %d", resp.StatusCode)
+	}
+	var doc struct {
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(raw, &doc)
+	return strings.TrimSpace(doc.Message), nil
 }
 
 // portAvailable 判断端口是否可绑定。

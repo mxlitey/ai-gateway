@@ -48,6 +48,15 @@ func parseSOLOEvent(eventName, dataLine string) *soloEvent {
 	if err := json.Unmarshal([]byte(dataLine), &raw); err != nil {
 		return ev
 	}
+	// 事件名归一化（AgentHub 实证）：上游把思考增量发在 event:thought（与 output 同构）、
+	// 收尾发在 event:turn_completion（等价于 done）。归一之后，流式与聚合两条路径都只需认识
+	// output / done。放在解析之后，与 AgentHub 一致地忽略「有 event 无 data」的空事件。
+	switch ev.Event {
+	case "thought":
+		ev.Event = "output"
+	case "turn_completion":
+		ev.Event = "done"
+	}
 	switch ev.Event {
 	case "output":
 		if v, ok := raw["response"].(string); ok {
@@ -66,6 +75,11 @@ func parseSOLOEvent(eventName, dataLine string) *soloEvent {
 	case "done":
 		if v, ok := raw["finish_reason"].(string); ok {
 			ev.FinishReason = v
+		}
+		if ev.FinishReason == "" {
+			if v, ok := raw["finishReason"].(string); ok {
+				ev.FinishReason = v
+			}
 		}
 	case "error":
 		ev.ErrorCode = numberField(raw, "code")

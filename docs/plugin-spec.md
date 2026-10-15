@@ -293,11 +293,20 @@ func (p *Plugin) accountForRequest(r *http.Request) (*Account, error) {
 
 | 值 | 面板多出来的东西 |
 |---|---|
-| `checkin` | 「今日签到」列 + 每行的「签到」按钮 |
+| `checkin` | 「今日签到」列 + 每行的「签到」按钮；**宿主还会自动定时签到**（见下） |
 | `quota` | 「套餐」「额度」列 + 每行的「刷新额度」按钮 |
 
 两个都不声明时，控制台只有账号列表、登录按钮与「删除」。
 `capabilities` 只认得这两个值（由网关版本决定，写别的会被忽略），见 §6.3。
+
+**自动签到由宿主统一调度，插件不要自己写定时逻辑。** 声明 `checkin` 后：
+
+- 插件每次进入 `running`，宿主会立刻补签一轮（覆盖网关 / 插件重启场景）；
+- 之后宿主每小时复查一次（覆盖跨天场景）；
+- 宿主只对 `GET /accounts` 里 `enabled=true` 且登录有效的账号调用 `POST /accounts/{id}/checkin`。
+
+因此该接口必须**幂等友好**：今天已签到时返回成功语义（并附说明），而不是当成硬错误——
+宿主会重复调用，靠幂等语义保证不产生副作用。
 
 ### 6.2 宿主如何转发
 
@@ -328,10 +337,10 @@ func (p *Plugin) accountForRequest(r *http.Request) (*Account, error) {
 
 | 方法 | 路径（相对 `/console`） | 必需 | 作用 |
 |---|---|---|---|
-| GET | `/accounts` | ✅ | 账号列表。面板靠它渲染，宿主也靠它把账号同步成渠道密钥 |
+| GET | `/accounts` | ✅ | 账号列表。面板靠它渲染，宿主也靠它把账号同步成渠道密钥、并确定自动签到的账号范围 |
 | DELETE | `/accounts/{id}` | ✅ | 删除账号（面板每行都有「删除」按钮） |
 | POST | `/accounts` | | 手工新增账号：**面板不调用**，仅供脚本 / 手工 curl 使用（见 §6.5） |
-| POST | `/accounts/{id}/checkin` | | 签到（需声明 `checkin` 能力，见 §6.1） |
+| POST | `/accounts/{id}/checkin` | | 签到（需声明 `checkin` 能力，见 §6.1）；宿主自动签到也走这个端点 |
 | POST | `/accounts/{id}/quota` | | 刷新额度（需声明 `quota` 能力，见 §6.1） |
 
 `id` 由插件生成，**不要包含 `/`**（会被当成路径分隔符）；账号不存在时返回 `404`。
@@ -377,6 +386,9 @@ func (p *Plugin) accountForRequest(r *http.Request) (*Account, error) {
 
 未知字段会被忽略；字段缺失显示 `—`（注意 `credits: 0` 显示 `0`，字段缺失才显示 `—`）。
 **凭据（token 等）不要出现在响应里**。
+
+> `checked_in_today` / `streak_days` 只用于面板展示。宿主自动签到不做跨天判断，
+> 而是对 `enabled=true` 且未过期的账号直接调用签到端点，靠签到的幂等语义兜底。
 
 ### 6.5 各接口的响应约定
 

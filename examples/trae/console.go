@@ -172,33 +172,53 @@ func (p *Plugin) performCheckin(id string) (Account, string, error) {
 		return Account{}, "", err
 	}
 
-	checkedIn, enable, doc, err := p.checkinStatus(&accCopy)
+	st, err := p.checkinStatus(&accCopy)
 	if err != nil {
 		p.noteUpstreamError(&accCopy, asUpstreamError(err))
 		return Account{}, "", err
 	}
-
-	msg := "今天已经签到过了"
-	if !checkedIn {
-		if !enable {
-			return Account{}, "", &upstreamError{Status: http.StatusBadGateway, Msg: "该账号当前不可签到（上游未开放签到）"}
-		}
-		if err := p.checkinClaim(&accCopy); err != nil {
-			p.noteUpstreamError(&accCopy, asUpstreamError(err))
-			return Account{}, "", err
-		}
-		msg = "签到成功"
+	if st.Unavailable {
+		return Account{}, "", &upstreamError{Status: http.StatusForbidden, Msg: "该账号未开放签到服务（GET/POST 两种形态均返回 code 1001）", Code: 1001}
 	}
 
-	credits, src := extractIdeCredits(doc)
-	updated, _ := p.store.updateState(id, func(st *accountState) {
-		st.CheckedInToday = true
-		st.LastError = ""
-		if src != "" {
+	checkedIn := st.CheckedIn
+	msg := "今天已经签到过了"
+	if !checkedIn {
+		if !st.Enable {
+			return Account{}, "", &upstreamError{Status: http.StatusBadGateway, Msg: "该账号当前不可签到（上游未开放签到）"}
+		}
+		res, cErr := p.checkinClaimWithRetry(&accCopy)
+		if cErr != nil {
+			p.noteUpstreamError(&accCopy, asUpstreamError(cErr))
+			return Account{}, "", cErr
+		}
+		if res.Unavailable {
+			return Account{}, "", &upstreamError{Status: http.StatusForbidden, Msg: "该账号未开放签到服务（GET/POST 两种形态均返回 code 1001）", Code: 1001}
+		}
+		checkedIn = true
+		// 上游对「今天已签到」也用成功码返回 → 按幂等成功处理（规范 §6.5）。
+		switch {
+		case res.Already:
+			msg = "今日已签到"
+		case res.Message != "":
+			msg = "签到成功：" + res.Message
+		default:
+			msg = "签到成功"
+		}
+	}
+
+	updated, _ := p.store.updateState(id, func(state *accountState) {
+		state.CheckedInToday = checkedIn
+		state.StreakDays = st.StreakDays
+		state.LastError = ""
+	})
+	// 顺带刷新额度快照（credits 只在签到/额度刷新时查询，不做定时轮询）。
+	if credits, cErr := p.entUsageRemain(&accCopy); cErr == nil {
+		updated, _ = p.store.updateState(id, func(st *accountState) {
 			st.Credits = credits
 			st.CreditsAt = nowMillis()
-		}
-	})
+		})
+	}
 	return updated, msg, nil
 }
 
@@ -215,7 +235,7 @@ func (p *Plugin) handleQuota(w http.ResponseWriter, r *http.Request) {
 		writeUpstreamErr(w, err)
 		return
 	}
-	if _, _, _, err := p.checkinStatus(&accCopy); err != nil {
+	if _, err := p.checkinStatus(&accCopy); err != nil {
 		p.noteUpstreamError(&accCopy, asUpstreamError(err))
 		writeUpstreamErr(w, err)
 		return
@@ -224,40 +244,42 @@ func (p *Plugin) handleQuota(w http.ResponseWriter, r *http.Request) {
 	writeOK(w, map[string]any{"message": "额度已刷新" + note, "account": accountViewOf(updated)})
 }
 
-// refreshQuotaSnapshot 向上游查一次签到状态接口，把额度与签到信息写进快照。
+// refreshQuotaSnapshot 刷新一个账号的额度与签到状态快照。
 //
-// credits 取上游下发的 ide_credits（SOLO 真正可用的额度）。依据 trae2api docs/RESEARCH.md §3：
-// 权威来源是对话流里的 event:notify_usage 的 cn_credits_remain_info.ide_credits，
-// 该事件在转发对话时会被顺带捕获（见 chat.go noteCredits）。
-//
-// TODO(上游额度端点)：参考实现的额度查询接口是 ide_user_ent_usage（聚合值，含 work 包，
-// 不代表 SOLO 可用额度），本插件刻意不使用它；而除了对话流之外，参考项目没有其它
-// 「单取 ide_credits」的端点。因此这里对签到状态接口的响应做一次深度搜索：找到 ide_credits 就用它，
-// 否则退回通用 credits 字段。若将来上游提供专门的 ide_credits 查询端点，改 config.json + 此处即可。
+// credits 来自 ide_user_ent_usage（未过期权益包剩余积分之和）——这是用户在 TRAE
+// 客户端看到的同一口径，允许小数。签到状态另取自 checkin_credits/status。
 func (p *Plugin) refreshQuotaSnapshot(id string) (Account, string) {
 	acc, ok := p.store.get(id)
 	if !ok {
 		return Account{}, "账号不存在"
 	}
-	checkedIn, _, doc, err := p.checkinStatus(&acc)
+	st, err := p.checkinStatus(&acc)
+	unavailable := ""
 	if err != nil {
 		p.noteUpstreamError(&acc, asUpstreamError(err))
 		cur, _ := p.store.get(id)
 		return cur, ""
 	}
-	credits, src := extractIdeCredits(doc)
-	updated, _ := p.store.updateState(id, func(st *accountState) {
-		st.CheckedInToday = checkedIn
-		st.LastError = ""
-		if src != "" {
-			st.Credits = credits
-			st.CreditsAt = nowMillis()
-		}
-	})
-	if src == "" {
-		return updated, "（上游未提供额度字段）"
+	if st.Unavailable {
+		unavailable = "（签到服务未对该账号开放）"
 	}
-	return updated, ""
+	credits, cErr := p.entUsageRemain(&acc)
+	if cErr != nil {
+		// 额度查询失败：保留既有快照，只更新签到状态，并如实说明。
+		updated, _ := p.store.updateState(id, func(state *accountState) {
+			state.CheckedInToday = st.CheckedIn
+			state.StreakDays = st.StreakDays
+		})
+		return updated, unavailable + "（额度查询失败：" + asUpstreamError(cErr).Msg + "）"
+	}
+	updated, _ := p.store.updateState(id, func(state *accountState) {
+		state.CheckedInToday = st.CheckedIn
+		state.StreakDays = st.StreakDays
+		state.Credits = credits
+		state.CreditsAt = nowMillis()
+		state.LastError = ""
+	})
+	return updated, unavailable
 }
 
 // writeUpstreamErr 把 error 映射为合适的 HTTP 状态 + {"error":...}。

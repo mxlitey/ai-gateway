@@ -144,8 +144,8 @@ func runServe(args []string) error {
 		}
 	}()
 
-	// 自动签到：启动补签 + 每小时复查
-	p.startAutoCheckin(ctx)
+	// 自动签到由网关宿主调度（见 docs/plugin-spec.md §6.1），
+	// 插件只提供 POST /console/accounts/{id}/checkin，不再自行定时签到。
 
 	select {
 	case err := <-errCh:

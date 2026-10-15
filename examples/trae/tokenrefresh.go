@@ -7,8 +7,9 @@ import (
 	"time"
 )
 
-// 后台任务（设计稿 §8）：每日定时签到 + token 到期前预刷新。
-// **不做额度定时轮询** —— 额度快照只在「签到」与「额度刷新」两个接口被调用时更新。
+// 后台任务（设计稿 §8）：token 到期前预刷新。
+// 自动签到**不在这里**：已改由网关宿主统一调度（见 docs/plugin-spec.md §6.1），
+// 插件只需实现 POST /console/accounts/{id}/checkin，不再自行定时签到。
 
 const (
 	bgInterval  = 30 * time.Minute // 后台复查间隔
@@ -18,11 +19,9 @@ const (
 // startBackground 启动后台任务；ctx 取消即退出。
 func (p *Plugin) startBackground(ctx context.Context) {
 	go func() {
-		// 启动时先补一次（补当天未签到 + 预刷新临期 token）。
-		p.runDailyCheckin()
+		// 启动时先补一次临期 token 的预刷新。
 		p.runTokenPreRefresh()
 
-		lastDay := time.Now().Format("2006-01-02")
 		ticker := time.NewTicker(bgInterval)
 		defer ticker.Stop()
 		for {
@@ -30,28 +29,10 @@ func (p *Plugin) startBackground(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if today := time.Now().Format("2006-01-02"); today != lastDay {
-					lastDay = today
-					p.runDailyCheckin()
-				}
 				p.runTokenPreRefresh()
 			}
 		}
 	}()
-}
-
-// runDailyCheckin 遍历可用账号执行签到（幂等）。
-func (p *Plugin) runDailyCheckin() {
-	for _, a := range p.store.list() {
-		if !a.usable() {
-			continue
-		}
-		if _, _, err := p.performCheckin(a.UID); err != nil {
-			log.Printf("[自动签到] %s 失败：%v", a.name(), err)
-			continue
-		}
-		log.Printf("[自动签到] %s 完成", a.name())
-	}
 }
 
 // runTokenPreRefresh 对 24 小时内即将过期的账号做 token 预刷新并原子落盘。

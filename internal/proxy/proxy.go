@@ -199,6 +199,14 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 			closeBody(resp)
 			continue
 
+		// 凭据/权限被上游拒绝：按"这个账号不可用"处理，换下一个目标
+		// （与 docs/plugin-spec.md §5.2 的错误语义一致）
+		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+			lastErr = "HTTP " + strconv.Itoa(resp.StatusCode) + " (credential rejected)"
+			h.logError(t, spec.publicModel, resp.StatusCode, lastErr)
+			closeBody(resp)
+			continue
+
 		case resp.StatusCode < 500:
 			out, retry, reason := spec.handleUpstream(resp, t)
 			if retry {

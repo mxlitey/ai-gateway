@@ -16,11 +16,11 @@ import (
 //	4. GET  {chat_origin}/v2/plugin/login/account?state=xxx   → 昵称（可选）
 const oauthSessionTTL = 10 * time.Minute
 
-// loginMethod 由宿主面板渲染：kind=link 时面板会把返回的链接展示给用户点开。
+// loginMethod 由宿主面板渲染：返回体里同时有 url 与 state 即视为 link（面板展示链接并轮询），
+// 否则视为 action（点一下当场完成）。面板不看任何"类型"字段，见 docs/plugin-spec.md §6.6。
 type loginMethod struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
-	Kind  string `json:"kind"` // action：面板直接调用；link：面板展示链接并轮询
 	Hint  string `json:"hint,omitempty"`
 }
 
@@ -61,13 +61,11 @@ func (p *Plugin) oauthMethods() []loginMethod {
 		{
 			ID:    "oauth-cn",
 			Label: "OAuth 授权登录（国内站）",
-			Kind:  "link",
 			Hint:  "在本机浏览器打开授权链接登录国内站（codebuddy.cn），完成后账号自动入库",
 		},
 		{
 			ID:    "oauth-intl",
 			Label: "OAuth 授权登录（国际站）",
-			Kind:  "link",
 			Hint:  "在本机浏览器打开授权链接登录国际站（workbuddy.ai），完成后账号自动入库",
 		},
 	}

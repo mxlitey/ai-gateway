@@ -67,7 +67,6 @@ func (p *Plugin) loginMethods() []loginMethod {
 	methods := []loginMethod{{
 		ID:    "desktop",
 		Label: "从本机桌面端导入",
-		Kind:  "action",
 		Hint:  "读取本机 WorkBuddy 的登录态，需要桌面端正在运行",
 	}}
 	return append(methods, p.oauthMethods()...)

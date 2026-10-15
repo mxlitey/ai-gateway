@@ -32,7 +32,7 @@ AI Gateway 是一个运行在你自己电脑上的 API 网关。它把散落在�
 
 ### 下载运行（推荐）
 
-从 [Releases](../../releases) 下载绿色压缩包，解压后**双击 `ai-gateway-gui.exe`**：
+从 [Releases](../../releases) 下载绿色压缩包，解压后**双击 `ai-gateway.exe`**：
 
 1. 在桌面窗口里确认端口（默认 `8787`），点击「启动」
 2. 浏览器打开管理面板 <http://127.0.0.1:8787>，首次进入设置管理员密码
@@ -138,7 +138,7 @@ Claude 协议同理：把 `baseURL` 指向 `http://127.0.0.1:8787`，密钥放�
 ```
 plugins/
 └── hello/
-    ├── plugin.json      # 清单：name / entry / port / 渠道
+    ├── plugin.json      # 清单：name / entry / port（+ 可选 console）
     └── main.js          # 你的程序（实现 OpenAI 兼容上游即可）
 ```
 
@@ -154,13 +154,13 @@ plugins/
 pwsh -File build/build.ps1 -Version 0.1.0
 ```
 
-脚本会依次：构建前端（`web/`，产物内嵌进 Go 二进制）→ `go mod tidy` → 编译 `dist/ai-gateway-gui.exe` → 组装绿色版目录（含 `start.bat`、内置示例插件）。
+脚本会依次：构建前端（`web/`，产物内嵌进 Go 二进制）→ `go mod tidy` → 编译 `dist/ai-gateway.exe` → 组装绿色版目录（含内置示例插件）。
 
 开发模式单独构建后端：
 
 ```powershell
 $env:CGO_ENABLED = "0"
-go build -o dist/ai-gateway-gui.exe ./cmd/gateway-wails
+go build -o dist/ai-gateway.exe ./cmd/gateway-wails
 ```
 
 ## 📁 项目结构

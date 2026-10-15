@@ -45,21 +45,38 @@ func newOAuthManager(p *Plugin, _ string) *oauthManager {
 	return &oauthManager{p: p, sessions: map[string]*oauthSession{}}
 }
 
+// oauthRealmByMethod 把面板上的登录方式 id 映射到站点区域（空串表示按已有账号自动判断）。
+// 面板只会按 id 调用，所以「国内站 / 国际站」用两个方法 id 来表达。
+var oauthRealmByMethod = map[string]string{
+	"oauth-cn":   "cn",
+	"oauth-intl": "intl",
+}
+
 // oauthMethods 由 Plugin 暴露给控制台：声明本插件支持 OAuth 登录。
 func (p *Plugin) oauthMethods() []loginMethod {
 	if p.oauth == nil {
 		return nil
 	}
-	return []loginMethod{{
-		ID:    "oauth",
-		Label: "OAuth 授权登录",
-		Kind:  "link",
-		Hint:  "在本机浏览器打开授权链接，登录后账号自动入库",
-	}}
+	return []loginMethod{
+		{
+			ID:    "oauth-cn",
+			Label: "OAuth 授权登录（国内站）",
+			Kind:  "link",
+			Hint:  "在本机浏览器打开授权链接登录国内站（codebuddy.cn），完成后账号自动入库",
+		},
+		{
+			ID:    "oauth-intl",
+			Label: "OAuth 授权登录（国际站）",
+			Kind:  "link",
+			Hint:  "在本机浏览器打开授权链接登录国际站（workbuddy.ai），完成后账号自动入库",
+		},
+	}
 }
 
 func (o *oauthManager) registerRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /console/login/oauth", o.handleStatus)
+	for method := range oauthRealmByMethod {
+		mux.HandleFunc("GET /console/login/"+method, o.handleStatus)
+	}
 }
 
 // defaultRealm 优先跟随已有账号的区域，否则按国内站处理。

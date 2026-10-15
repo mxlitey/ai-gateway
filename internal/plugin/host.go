@@ -37,17 +37,17 @@ const (
 
 const (
 	probeInterval      = 2 * time.Second // 探活间隔
+	probeTimeout       = 2 * time.Second // 单次探活超时
 	unhealthyThreshold = 3               // 连续失败多少次判定不健康
 	maxFailures        = 5               // 连续失败多少次后放弃自动重启
 	stopGracePeriod    = 5 * time.Second // 优雅停止等待时长
-	defaultChannelKey  = "gw-local"      // 插件不校验密钥时使用的占位值
+	defaultChannelKey  = "gw-local"      // 插件没有账号时使用的占位渠道密钥
 )
 
 type instance struct {
 	manifest *Manifest
 	dir      string
 	port     int
-	apiKey   string
 
 	status    string
 	lastErr   string
@@ -228,21 +228,10 @@ func (h *Host) register(manifest *Manifest) {
 	// 端口由插件作者在 plugin.json 里指定，宿主不再代为分配
 	port := manifest.Port
 
-	// 只有声明了 api_key_env 的插件才需要复用渠道里的宿主密钥；
-	// 未声明的插件渠道密钥可能是「账号 id」（见 pluginAccountKeys），不能拿来当宿主密钥。
-	apiKey := ""
-	if strings.TrimSpace(manifest.APIKeyEnv) != "" {
-		apiKey = h.existingPluginKey(manifest.ID)
-	}
-	if apiKey == "" {
-		apiKey = "sk-" + id.Hex(24)
-	}
-
 	inst := &instance{
 		manifest:  manifest,
 		dir:       manifest.Dir,
 		port:      port,
-		apiKey:    apiKey,
 		status:    StatusDiscovered,
 		enabled:   true,
 		autostart: true,
@@ -313,26 +302,6 @@ func (h *Host) registerInvalid(dir string, manifest *Manifest, cause error) {
 	_ = h.store.SavePluginStatus(pluginID, StatusFailed, cause.Error())
 }
 
-// existingPluginKey 复用已有插件渠道的密钥，保证重启后密钥不变。
-func (h *Host) existingPluginKey(pluginID string) string {
-	channels, err := h.store.ListChannels()
-	if err != nil {
-		return ""
-	}
-	source := "plugin:" + pluginID
-	for i := range channels {
-		if channels[i].Source != source {
-			continue
-		}
-		for _, k := range channels[i].Keys {
-			if strings.TrimSpace(k.Key) != "" {
-				return k.Key
-			}
-		}
-	}
-	return ""
-}
-
 // ---------- 对外操作 ----------
 
 // List 返回插件列表（DB 记录 + 内存运行状态）。
@@ -364,8 +333,9 @@ func (h *Host) List() []model.Plugin {
 		p.LastError = inst.lastErr
 		p.LastSeenAt = inst.lastSeen
 		p.Console = inst.manifest.HasConsole()
-		p.ConsoleTitle = inst.manifest.ConsoleTitleStr()
+		p.ConsoleTitle = inst.manifest.Name
 		p.ConsoleBasePath = inst.manifest.ConsoleBasePath()
+		p.Capabilities = inst.manifest.KnownCapabilities()
 		if p.InstalledAt == 0 {
 			p.InstalledAt = time.Now().UnixMilli()
 		}
@@ -713,12 +683,10 @@ func (h *Host) spawn(inst *instance) error {
 	for k, v := range inst.manifest.Env {
 		env = append(env, k+"="+substitute(v, vars))
 	}
-	if inst.manifest.APIKeyEnv != "" {
-		env = append(env, inst.manifest.APIKeyEnv+"="+inst.apiKey)
-	}
 	env = append(env,
 		"AI_GATEWAY_PLUGIN_ID="+inst.manifest.ID,
 		"AI_GATEWAY_PLUGIN_PORT="+strconv.Itoa(inst.port),
+		"AI_GATEWAY_PLUGIN_DIR="+inst.dir,
 		"AI_GATEWAY_PLUGIN_DATA="+vars.Data,
 	)
 	cmd.Env = env
@@ -841,20 +809,16 @@ func (h *Host) watch(inst *instance) string {
 	}
 }
 
-// probe 探活：对 health_path 发 HTTP 请求，状态码 <500 视为存活。
+// probe 探活：请求固定的 /health，状态码 <500 视为存活。
 func (h *Host) probe(inst *instance) bool {
-	timeout := time.Duration(inst.manifest.HealthTimeoutMS) * time.Millisecond
 	addr := "127.0.0.1:" + strconv.Itoa(inst.port)
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+inst.manifest.HealthURLPath(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+healthPath, nil)
 	if err != nil {
 		return false
-	}
-	if inst.manifest.APIKeyEnv != "" {
-		req.Header.Set("Authorization", "Bearer "+inst.apiKey)
 	}
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -937,18 +901,9 @@ func (h *Host) touch(inst *instance) {
 
 func (h *Host) vars(inst *instance) substVars {
 	return substVars{
-		Port:      inst.port,
-		Data:      h.cfg.PluginDataDir(inst.manifest.ID),
-		APIKey:    inst.apiKey,
-		PluginDir: inst.dir,
+		Port: inst.port,
+		Data: h.cfg.PluginDataDir(inst.manifest.ID),
 	}
-}
-
-func (h *Host) channelKey(inst *instance) string {
-	if strings.TrimSpace(inst.manifest.APIKeyEnv) == "" {
-		return defaultChannelKey
-	}
-	return inst.apiKey
 }
 
 // pluginAccount 是插件控制台 GET /accounts 返回的账号中，账号同步需要的字段。
@@ -977,9 +932,6 @@ func (h *Host) fetchAccounts(inst *instance) (accounts []pluginAccount, ok bool)
 	if err != nil {
 		return nil, false
 	}
-	if inst.manifest.APIKeyEnv != "" {
-		req.Header.Set("Authorization", "Bearer "+inst.apiKey)
-	}
 	resp, err := h.client.Do(req)
 	if err != nil {
 		return nil, false
@@ -1003,16 +955,13 @@ func (h *Host) fetchAccounts(inst *instance) (accounts []pluginAccount, ok bool)
 
 // pluginAccountKeys 把插件账号同步成渠道密钥：Key = 账号 id（网关按它选号）、Label = 账号名。
 //
-// 这样「轮询 / 故障转移」「启用停用」全部由网关的渠道密钥策略管理，插件只按收到的账号 id 转发。
-// ok=false 表示该插件不适用账号模式，调用方应回退成单一宿主密钥：
-//   - 插件声明了 api_key_env：该密钥要用于宿主鉴权，不能再拿 Authorization 传账号 id；
-//   - 插件没声明控制台、没在运行，或账号接口读取失败。
+// 网关转发时按 Authorization: Bearer <账号 id> 调用插件，插件按收到的账号 id 选号；
+// 「轮询 / 故障转移」「启用停用」「先后顺序」全部由网关的渠道密钥策略管理。
+// ok=false 表示该插件不适用账号模式（没声明控制台、没在运行，或账号接口读取失败），
+// 调用方应回退成占位密钥 defaultChannelKey。
 //
 // existing 里的密钥（用户已设置的启用状态与顺序）优先保留，只增删账号条目。
 func (h *Host) pluginAccountKeys(inst *instance, existing []model.ChannelKey) (keys []model.ChannelKey, ok bool) {
-	if strings.TrimSpace(inst.manifest.APIKeyEnv) != "" {
-		return nil, false
-	}
 	accounts, ok := h.fetchAccounts(inst)
 	if !ok {
 		return nil, false
@@ -1069,11 +1018,12 @@ func minInt(a, b int) int {
 
 // ---------- 内部：渠道同步 ----------
 
-// syncChannels 按插件状态注册/停用其渠道（source = plugin:<id>）。
+// syncChannels 按插件状态注册/停用其渠道（source = plugin:<id>，渠道名 = 插件名）。
 // 不加锁，避免与监管循环互锁。
 func (h *Host) syncChannels(inst *instance, running bool) {
 	source := "plugin:" + inst.manifest.ID
-	baseURL := substitute(inst.manifest.BaseURL, h.vars(inst))
+	name := inst.manifest.Name
+	baseURL := UpstreamBaseURL(inst.port)
 
 	channels, err := h.store.ListChannels()
 	if err != nil {
@@ -1081,79 +1031,69 @@ func (h *Host) syncChannels(inst *instance, running bool) {
 		return
 	}
 
-	for _, spec := range inst.manifest.ChannelSpecs() {
-		name := strings.TrimSpace(spec.Name)
+	var found *model.Channel
+	for i := range channels {
+		if channels[i].Source == source {
+			found = &channels[i]
+			break
+		}
+	}
 
-		var found *model.Channel
-		for i := range channels {
-			if channels[i].Source == source && channels[i].Name == name {
-				found = &channels[i]
-				break
+	if !running {
+		if found != nil && found.Enabled {
+			found.Enabled = false
+			if err := h.store.UpdateChannel(found); err != nil {
+				h.log.Error("停用插件渠道失败", "plugin", inst.manifest.ID, "err", err)
 			}
 		}
+		return
+	}
 
-		if !running {
-			if found != nil && found.Enabled {
-				found.Enabled = false
-				if err := h.store.UpdateChannel(found); err != nil {
-					h.log.Error("停用插件渠道失败", "plugin", inst.manifest.ID, "err", err)
-				}
-			}
-			continue
-		}
+	// 渠道模型不由清单声明：新建时留空，之后由用户在「渠道管理」里手动获取并勾选维护。
+	key := model.ChannelKey{Key: defaultChannelKey, Enabled: true}
 
-		// 模型不自动填充：宿主只在首次建渠道时用清单声明（通常为空），
-		// 之后的模型列表由用户在「渠道管理」里手动获取并勾选维护。
-		models := append([]string{}, spec.PublicModels...)
+	if found == nil {
+		order, err := h.store.NextChannelSortOrder()
+		if err != nil {
+			h.log.Error("读取渠道排序失败", "plugin", inst.manifest.ID, "err", err)
+			order = 0
+		}
+		keys := []model.ChannelKey{key}
+		if ak, ok := h.pluginAccountKeys(inst, nil); ok {
+			keys = ak
+		}
+		created := &model.Channel{
+			ID:            id.UUID(),
+			Name:          name,
+			BaseURL:       baseURL,
+			Keys:          keys,
+			Models:        []string{},
+			ModelMap:      map[string]string{},
+			ModelPriority: map[string]int{},
+			Headers:       []model.Header{},
+			Enabled:       true,
+			Source:        source,
+			SortOrder:     order,
+			CreatedAt:     time.Now().UnixMilli(),
+		}
+		if err := h.store.CreateChannel(created); err != nil {
+			h.log.Error("创建插件渠道失败", "plugin", inst.manifest.ID, "err", err)
+		} else {
+			h.log.Info("已注册插件渠道", "plugin", inst.manifest.ID, "channel", name)
+		}
+		return
+	}
 
-		modelMap := spec.ModelMap
-		if modelMap == nil {
-			modelMap = map[string]string{}
-		}
-		key := model.ChannelKey{Key: h.channelKey(inst), Enabled: true}
-
-		if found == nil {
-			order, err := h.store.NextChannelSortOrder()
-			if err != nil {
-				h.log.Error("读取渠道排序失败", "plugin", inst.manifest.ID, "err", err)
-				order = 0
-			}
-			keys := []model.ChannelKey{key}
-			if ak, ok := h.pluginAccountKeys(inst, nil); ok {
-				keys = ak
-			}
-			created := &model.Channel{
-				ID:            id.UUID(),
-				Name:          name,
-				BaseURL:       baseURL,
-				Keys:          keys,
-				Models:        models,
-				ModelMap:      modelMap,
-				ModelPriority: map[string]int{},
-				Headers:       []model.Header{},
-				Enabled:       true,
-				Source:        source,
-				SortOrder:     order,
-				CreatedAt:     time.Now().UnixMilli(),
-			}
-			if err := h.store.CreateChannel(created); err != nil {
-				h.log.Error("创建插件渠道失败", "plugin", inst.manifest.ID, "err", err)
-			} else {
-				h.log.Info("已注册插件渠道", "plugin", inst.manifest.ID, "channel", name)
-			}
-			continue
-		}
-
-		nextKeys := []model.ChannelKey{key}
-		if ak, ok := h.pluginAccountKeys(inst, found.Keys); ok {
-			nextKeys = ak
-		}
-		found.BaseURL = baseURL
-		found.Keys = nextKeys
-		found.Enabled = true
-		if err := h.store.UpdateChannel(found); err != nil {
-			h.log.Error("更新插件渠道失败", "plugin", inst.manifest.ID, "err", err)
-		}
+	nextKeys := []model.ChannelKey{key}
+	if ak, ok := h.pluginAccountKeys(inst, found.Keys); ok {
+		nextKeys = ak
+	}
+	found.Name = name
+	found.BaseURL = baseURL
+	found.Keys = nextKeys
+	found.Enabled = true
+	if err := h.store.UpdateChannel(found); err != nil {
+		h.log.Error("更新插件渠道失败", "plugin", inst.manifest.ID, "err", err)
 	}
 }
 
@@ -1176,7 +1116,7 @@ func (h *Host) SyncChannels(pluginID string) error {
 // refreshAccountKeys 周期性把插件账号同步进渠道密钥（只更新 keys，不改动启用状态等其他字段）。
 // 账号集合没变化时直接跳过，避免无谓写库；插件运行期间由 watch 循环定时调用。
 func (h *Host) refreshAccountKeys(inst *instance) {
-	if strings.TrimSpace(inst.manifest.APIKeyEnv) != "" || !inst.manifest.HasConsole() {
+	if !inst.manifest.HasConsole() {
 		return
 	}
 	channels, err := h.store.ListChannels()
@@ -1185,25 +1125,22 @@ func (h *Host) refreshAccountKeys(inst *instance) {
 	}
 	source := "plugin:" + inst.manifest.ID
 
-	for _, spec := range inst.manifest.ChannelSpecs() {
-		name := strings.TrimSpace(spec.Name)
-		for i := range channels {
-			ch := channels[i]
-			if ch.Source != source || ch.Name != name {
-				continue
-			}
-			keys, ok := h.pluginAccountKeys(inst, ch.Keys)
-			if !ok || sameChannelKeys(ch.Keys, keys) {
-				break
-			}
-			ch.Keys = keys
-			if err := h.store.UpdateChannel(&ch); err != nil {
-				h.log.Error("同步插件账号到渠道密钥失败", "plugin", inst.manifest.ID, "err", err)
-			} else {
-				h.log.Info("插件账号已同步到渠道密钥", "plugin", inst.manifest.ID, "channel", ch.Name, "keys", len(keys))
-			}
-			break
+	for i := range channels {
+		ch := channels[i]
+		if ch.Source != source {
+			continue
 		}
+		keys, ok := h.pluginAccountKeys(inst, ch.Keys)
+		if !ok || sameChannelKeys(ch.Keys, keys) {
+			return
+		}
+		ch.Keys = keys
+		if err := h.store.UpdateChannel(&ch); err != nil {
+			h.log.Error("同步插件账号到渠道密钥失败", "plugin", inst.manifest.ID, "err", err)
+		} else {
+			h.log.Info("插件账号已同步到渠道密钥", "plugin", inst.manifest.ID, "channel", ch.Name, "keys", len(keys))
+		}
+		return
 	}
 }
 

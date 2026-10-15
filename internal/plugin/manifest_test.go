@@ -29,8 +29,8 @@ const validManifest = `{
   "version": "1.0.0",
   "entry": "main.js",
   "port": 20800,
-  "api_key_env": "DEMO_KEY",
-  "channels": [{ "name": "Hello", "public_models": ["hello-model"] }]
+  "console": true,
+  "capabilities": ["quota", "unknown-cap", "checkin"]
 }`
 
 func TestLoadAndValidateValidPlugin(t *testing.T) {
@@ -46,21 +46,24 @@ func TestLoadAndValidateValidPlugin(t *testing.T) {
 	if manifest.ID != "hello" {
 		t.Fatalf("id 应由目录名推导为 hello，实际 %q", manifest.ID)
 	}
-	if manifest.HealthURLPath() != defaultHealthPath {
-		t.Fatalf("未声明 health_path 时应回落到 %s，实际 %q", defaultHealthPath, manifest.HealthURLPath())
-	}
-	if manifest.BaseURL != defaultBaseURL {
-		t.Fatalf("未声明 base_url 时应回落到 %s，实际 %q", defaultBaseURL, manifest.BaseURL)
-	}
-	if manifest.HealthTimeoutMS != defaultHealthTimeout {
-		t.Fatalf("默认探活超时应为 %d，实际 %d", defaultHealthTimeout, manifest.HealthTimeoutMS)
-	}
 	if manifest.StartupTimeoutMS != defaultStartupTimeout {
 		t.Fatalf("默认启动超时应为 %d，实际 %d", defaultStartupTimeout, manifest.StartupTimeoutMS)
 	}
-	specs := manifest.ChannelSpecs()
-	if len(specs) != 1 || specs[0].Name != "Hello" {
-		t.Fatalf("渠道声明解析错误: %+v", specs)
+	if !manifest.HasConsole() {
+		t.Fatal("声明 console=true 后应判定为提供控制台")
+	}
+	if manifest.ConsoleBasePath() != consolePath {
+		t.Fatalf("控制台前缀应固定为 %s，实际 %q", consolePath, manifest.ConsoleBasePath())
+	}
+	got := manifest.KnownCapabilities()
+	if len(got) != 2 || got[0] != CapCheckin || got[1] != CapQuota {
+		t.Fatalf("能力解析错误（未知值应忽略）：%v", got)
+	}
+}
+
+func TestUpstreamBaseURL(t *testing.T) {
+	if got := UpstreamBaseURL(20800); got != "http://127.0.0.1:20800/v1" {
+		t.Fatalf("上游根地址错误：%s", got)
 	}
 }
 
@@ -124,27 +127,12 @@ func TestValidateRejectsBadPort(t *testing.T) {
 	}
 }
 
-func TestDefaultsForHealthPathAndBaseURL(t *testing.T) {
-	dir := writePlugin(t, t.TempDir(), "hello",
-		`{"name":"H","entry":"main.js","port":20800,"health_path":""}`, "main.js")
-	manifest, err := LoadManifest(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if manifest.HealthURLPath() != defaultHealthPath {
-		t.Fatalf("health_path 为空时应回落到 %s，实际 %q", defaultHealthPath, manifest.HealthURLPath())
-	}
-	if manifest.BaseURL != defaultBaseURL {
-		t.Fatalf("base_url 为空时应回落到 %s，实际 %q", defaultBaseURL, manifest.BaseURL)
-	}
-}
-
 func TestSubstitute(t *testing.T) {
-	vars := substVars{Port: 20001, Data: `C:\data\p`, APIKey: "sk-abc", PluginDir: `C:\plugins\p`}
-	got := substitute("serve --port {{port}} --auth-dir {{data}} --key {{api_key}}", vars)
-	want := `serve --port 20001 --auth-dir C:\data\p --key sk-abc`
+	vars := substVars{Port: 20001, Data: `C:\data\p`}
+	got := substitute("serve --port {{port}} --data {{data}}", vars)
+	want := `serve --port 20001 --data {{data}}`
 	if got != want {
-		t.Fatalf("替换结果不符\n实际: %s\n期望: %s", got, want)
+		t.Fatalf("只应替换 {{port}}\n实际: %s\n期望: %s", got, want)
 	}
 	if substitute("{{unknown}}", vars) != "{{unknown}}" {
 		t.Fatal("未知占位符应原样保留")

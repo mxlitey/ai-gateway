@@ -253,6 +253,7 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
   }
 
   // link 类登录（OAuth）：发起后拿到授权链接，随后每 2 秒问一次结果
+  // action 类（例如从本机桌面端导入）：插件直接返回 ok，无需轮询
   const startLogin = useMutation({
     mutationFn: (method: string) => api.pluginLoginStart(plugin.id, method),
     onSuccess: (res, method) => {
@@ -269,16 +270,6 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
         message: res.message ?? '请在浏览器中完成授权',
       })
       window.open(res.url, '_blank', 'noopener')
-    },
-    onError: (err: Error) => toast('err', err.message),
-  })
-
-  // action 类登录（例如从本机桌面端导入）：面板直接调用即可
-  const runAction = useMutation({
-    mutationFn: (method: string) => api.pluginImport(plugin.id, method),
-    onSuccess: async (res) => {
-      toast('ok', res.message ?? '完成')
-      await reload()
     },
     onError: (err: Error) => toast('err', err.message),
   })
@@ -333,12 +324,14 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
 
   const busy =
     startLogin.isPending ||
-    runAction.isPending ||
     checkin.isPending ||
     quota.isPending ||
     remove.isPending
   const items = accounts.data?.accounts ?? []
   const methods = accounts.data?.login_methods ?? []
+  const caps = plugin.capabilities ?? []
+  const hasCheckin = caps.includes('checkin')
+  const hasQuota = caps.includes('quota')
 
   return (
     <Modal
@@ -357,7 +350,7 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
 
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            账号、签到与额度由插件负责，界面由面板统一渲染 · 共 {items.length} 个账号
+            账号与凭据由插件负责，界面由面板统一渲染 · 共 {items.length} 个账号
           </p>
           <div className="flex flex-wrap gap-2">
             <Button className="py-1 text-xs" onClick={() => accounts.refetch()}>
@@ -370,9 +363,7 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
                 className="py-1 text-xs"
                 disabled={busy}
                 title={m.hint}
-                onClick={() =>
-                  m.kind === 'link' ? startLogin.mutate(m.id) : runAction.mutate(m.id)
-                }
+                onClick={() => startLogin.mutate(m.id)}
               >
                 {m.label}
               </Button>
@@ -414,9 +405,9 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
                 <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800">
                   <th className="py-2 pr-3 font-medium">账号</th>
                   <th className="py-2 pr-3 font-medium">站点</th>
-                  <th className="py-2 pr-3 font-medium">套餐</th>
-                  <th className="py-2 pr-3 text-right font-medium">额度</th>
-                  <th className="py-2 pr-3 font-medium">今日签到</th>
+                  {hasQuota ? <th className="py-2 pr-3 font-medium">套餐</th> : null}
+                  {hasQuota ? <th className="py-2 pr-3 text-right font-medium">额度</th> : null}
+                  {hasCheckin ? <th className="py-2 pr-3 font-medium">今日签到</th> : null}
                   <th className="py-2 pr-3 font-medium">过期</th>
                   <th className="py-2 font-medium" />
                 </tr>
@@ -427,6 +418,8 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
                     key={acc.id}
                     account={acc}
                     busy={busy}
+                    hasCheckin={hasCheckin}
+                    hasQuota={hasQuota}
                     onCheckin={() => checkin.mutate(acc.id)}
                     onQuota={() => quota.mutate(acc.id)}
                     onDelete={() => {
@@ -446,12 +439,16 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
 function AccountRow({
   account,
   busy,
+  hasCheckin,
+  hasQuota,
   onCheckin,
   onQuota,
   onDelete,
 }: {
   account: PluginAccount
   busy: boolean
+  hasCheckin: boolean
+  hasQuota: boolean
   onCheckin: () => void
   onQuota: () => void
   onDelete: () => void
@@ -468,15 +465,21 @@ function AccountRow({
         ) : null}
       </td>
       <td className="py-2 pr-3 text-xs text-zinc-500">{siteText(account.site)}</td>
-      <td className="py-2 pr-3 text-xs text-zinc-600 dark:text-zinc-400">{account.plan || '—'}</td>
-      <td className="py-2 pr-3 text-right font-mono text-xs text-zinc-700 dark:text-zinc-300">
-        {typeof account.credits === 'number' ? account.credits.toLocaleString('en-US') : '—'}
-      </td>
-      <td className="py-2 pr-3">
-        <Badge tone={account.checked_in_today ? 'ok' : 'warn'}>
-          {account.checked_in_today ? `已签 · 连签 ${account.streak_days ?? 0}` : '未签'}
-        </Badge>
-      </td>
+      {hasQuota ? (
+        <td className="py-2 pr-3 text-xs text-zinc-600 dark:text-zinc-400">{account.plan || '—'}</td>
+      ) : null}
+      {hasQuota ? (
+        <td className="py-2 pr-3 text-right font-mono text-xs text-zinc-700 dark:text-zinc-300">
+          {typeof account.credits === 'number' ? account.credits.toLocaleString('en-US') : '—'}
+        </td>
+      ) : null}
+      {hasCheckin ? (
+        <td className="py-2 pr-3">
+          <Badge tone={account.checked_in_today ? 'ok' : 'warn'}>
+            {account.checked_in_today ? `已签 · 连签 ${account.streak_days ?? 0}` : '未签'}
+          </Badge>
+        </td>
+      ) : null}
       <td className="py-2 pr-3 text-xs whitespace-nowrap">
         {account.expires_at ? (
           expired ? (
@@ -489,20 +492,24 @@ function AccountRow({
         )}
       </td>
       <td className="py-2 text-right whitespace-nowrap">
-        <button
-          className="mr-2 text-xs text-emerald-600 hover:underline disabled:opacity-50 dark:text-emerald-400"
-          disabled={busy || account.checked_in_today}
-          onClick={onCheckin}
-        >
-          签到
-        </button>
-        <button
-          className="mr-2 text-xs text-zinc-600 hover:underline disabled:opacity-50 dark:text-zinc-300"
-          disabled={busy}
-          onClick={onQuota}
-        >
-          刷新额度
-        </button>
+        {hasCheckin ? (
+          <button
+            className="mr-2 text-xs text-emerald-600 hover:underline disabled:opacity-50 dark:text-emerald-400"
+            disabled={busy || account.checked_in_today}
+            onClick={onCheckin}
+          >
+            签到
+          </button>
+        ) : null}
+        {hasQuota ? (
+          <button
+            className="mr-2 text-xs text-zinc-600 hover:underline disabled:opacity-50 dark:text-zinc-300"
+            disabled={busy}
+            onClick={onQuota}
+          >
+            刷新额度
+          </button>
+        ) : null}
         <button
           className="text-xs text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
           disabled={busy}

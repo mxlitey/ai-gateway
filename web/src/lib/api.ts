@@ -86,6 +86,8 @@ export type Plugin = {
   console: boolean
   console_title: string
   console_base_path: string
+  /** 控制台能力：'checkin' / 'quota'，面板据此决定显示哪些列与按钮 */
+  capabilities: string[]
 }
 
 /** 插件控制台「账号」对象（约定字段，见 docs/plugin-spec.md §6）。 */
@@ -386,13 +388,7 @@ export const api = {
   // 插件控制台（约定接口，由插件进程实现，宿主只做反向代理）
   pluginAccounts: (id: string) =>
     request<PluginAccountsResponse>(`/admin/api/plugins/${id}/console/accounts`),
-  // action 类登录：面板直接调用（例如从本机桌面端导入）
-  pluginImport: (id: string, method: string) =>
-    request<PluginActionResponse>(`/admin/api/plugins/${id}/console/accounts`, {
-      method: 'POST',
-      ...json({ source: method }),
-    }),
-  // link 类登录：拿到授权链接展示给用户，再轮询结果
+  // link / action 类登录统一入口：拿到授权链接就展示并轮询，否则按已完成处理
   pluginLoginStart: (id: string, method: string) =>
     request<PluginLoginResponse>(`/admin/api/plugins/${id}/console/login/${method}`, {
       method: 'POST',

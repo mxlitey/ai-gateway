@@ -692,7 +692,7 @@ func (a *API) fetchUpstreamModels(ch *model.Channel) ([]string, error) {
 		}
 		headers := http.Header{}
 		headers.Set("Content-Type", "application/json")
-		headers.Set("Authorization", "Bearer "+key)
+		channel.ApplyUpstreamKey(headers, ch, key)
 		channel.ApplyChannelHeaders(headers, ch, nil)
 		req.Header = headers
 
@@ -869,7 +869,7 @@ func (a *API) probeUpstream(ch *model.Channel, key, upstreamModel, publicModel s
 	}
 	headers := http.Header{}
 	headers.Set("Content-Type", "application/json")
-	headers.Set("Authorization", "Bearer "+key)
+	channel.ApplyUpstreamKey(headers, ch, key)
 	channel.ApplyChannelHeaders(headers, ch, nil)
 	req.Header = headers
 

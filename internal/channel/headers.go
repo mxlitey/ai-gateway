@@ -30,6 +30,7 @@ var passthroughBlocked = map[string]bool{
 	"accept-encoding":   true,
 	"authorization":     true,
 	"x-api-key":         true,
+	"x-plugin-account":  true,
 	"cookie":            true,
 }
 
@@ -99,6 +100,16 @@ func resolveCandidate(key string, r *http.Request) string {
 		return itoa(nowMillis())
 	}
 	return ""
+}
+
+// ApplyUpstreamKey 把渠道密钥写入上游请求头。
+// 插件渠道的「密钥」是账号 id，用专用头 X-Plugin-Account 传递选号；其余渠道用 Authorization。
+func ApplyUpstreamKey(h http.Header, ch *model.Channel, key string) {
+	if ch != nil && ch.IsPluginChannel() {
+		h.Set("X-Plugin-Account", key)
+		return
+	}
+	h.Set("Authorization", "Bearer "+key)
 }
 
 // ApplyChannelHeaders 把渠道自定义请求头写入 headers（同名覆盖内置头）。

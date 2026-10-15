@@ -171,7 +171,7 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 		headers := http.Header{}
 		channel.ApplyPassthroughHeaders(headers, clientReq)
 		headers.Set("Content-Type", "application/json")
-		headers.Set("Authorization", "Bearer "+t.Key)
+		channel.ApplyUpstreamKey(headers, t.Channel, t.Key)
 		if spec.isStream && spec.acceptStreamHeader {
 			headers.Set("Accept", "text/event-stream")
 		}

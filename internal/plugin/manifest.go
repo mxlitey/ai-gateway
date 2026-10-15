@@ -11,23 +11,15 @@ import (
 	"strings"
 )
 
-// ChannelSpec 插件声明的渠道。
-type ChannelSpec struct {
-	Name         string            `json:"name"`
-	PublicModels []string          `json:"public_models"`
-	ModelMap     map[string]string `json:"model_map"`
-}
-
-// ConsoleSpec 插件控制台：声明后宿主会在插件页里嵌一套统一风格的管理界面。
-// 插件只需实现宿主约定的 REST 接口（见 docs/plugin-spec.md §6），无需自带前端。
-type ConsoleSpec struct {
-	// Title 控制台标题，缺省用插件名
-	Title string `json:"title"`
-	// BasePath 插件进程内的控制台接口前缀，默认 /console
-	BasePath string `json:"base_path"`
-}
+// 控制台能力：插件在清单里声明后，面板才显示对应的列与按钮（见 docs/plugin-spec.md §6.4）。
+const (
+	CapCheckin = "checkin" // 账号列表显示「今日签到」列与签到按钮
+	CapQuota   = "quota"   // 账号列表显示「套餐 / 额度」列与刷新额度按钮
+)
 
 // Manifest 插件清单（plugin.json）。
+//
+// 一个插件固定对应一个渠道（渠道名 = 插件 name），并可选提供一个统一风格的控制台。
 type Manifest struct {
 	Name        string            `json:"name"`
 	Version     string            `json:"version"`
@@ -37,16 +29,12 @@ type Manifest struct {
 	Env         map[string]string `json:"env"`
 	// Port 由插件作者自己指定，宿主不再代为分配
 	Port int `json:"port"`
-	// HealthPath 探活路径，缺省 /health
-	HealthPath       string `json:"health_path"`
-	HealthTimeoutMS  int    `json:"health_timeout_ms"`
-	StartupTimeoutMS int    `json:"startup_timeout_ms"`
-	// BaseURL 上游根地址，缺省 http://127.0.0.1:{{port}}/v1
-	BaseURL   string        `json:"base_url"`
-	APIKeyEnv string        `json:"api_key_env"`
-	Channels  []ChannelSpec `json:"channels"`
-	// Console 为 nil 表示该插件不提供控制台
-	Console *ConsoleSpec `json:"console"`
+	// Console 是否提供控制台（实现 /console/* 约定接口）
+	Console bool `json:"console"`
+	// Capabilities 控制台能力，取值见 CapCheckin / CapQuota
+	Capabilities []string `json:"capabilities"`
+	// StartupTimeoutMS 启动后等待探活通过的最长时间
+	StartupTimeoutMS int `json:"startup_timeout_ms"`
 
 	// ID 由插件目录名推导（加载时填充），无需在 plugin.json 里声明
 	ID string `json:"-"`
@@ -55,11 +43,11 @@ type Manifest struct {
 }
 
 const (
-	defaultHealthPath     = "/health"
-	defaultBaseURL        = "http://127.0.0.1:{{port}}/v1"
-	defaultHealthTimeout  = 2000
+	// 插件只监听回环地址，上游根路径、探活路径、控制台前缀都是固定约定。
+	pluginAPIPrefix       = "/v1"
+	healthPath            = "/health"
+	consolePath           = "/console"
 	defaultStartupTimeout = 20000
-	defaultConsolePath    = "/console"
 	manifestFileName      = "plugin.json"
 )
 
@@ -83,23 +71,9 @@ func LoadManifest(dir string) (*Manifest, error) {
 }
 
 func (m *Manifest) applyDefaults() {
-	if strings.TrimSpace(m.HealthPath) == "" {
-		m.HealthPath = defaultHealthPath
-	}
-	if strings.TrimSpace(m.BaseURL) == "" {
-		m.BaseURL = defaultBaseURL
-	}
-	if m.HealthTimeoutMS <= 0 {
-		m.HealthTimeoutMS = defaultHealthTimeout
-	}
 	if m.StartupTimeoutMS <= 0 {
 		m.StartupTimeoutMS = defaultStartupTimeout
 	}
-}
-
-// HealthURLPath 返回探活路径。
-func (m *Manifest) HealthURLPath() string {
-	return strings.TrimSpace(m.HealthPath)
 }
 
 // EntryPath 返回 entry 的绝对路径。
@@ -107,34 +81,41 @@ func (m *Manifest) EntryPath() string {
 	return filepath.Join(m.Dir, filepath.FromSlash(strings.TrimSpace(m.Entry)))
 }
 
-// HasConsole 是否声明了控制台。
-func (m *Manifest) HasConsole() bool { return m.Console != nil }
-
-// ConsoleBasePath 返回插件进程内的控制台接口前缀（规范化：带前导斜杠、无尾斜杠）。
-// 未声明控制台时返回空串。
-func (m *Manifest) ConsoleBasePath() string {
-	if m.Console == nil {
-		return ""
-	}
-	p := strings.TrimSpace(m.Console.BasePath)
-	if p == "" {
-		return defaultConsolePath
-	}
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	return strings.TrimRight(p, "/")
+// UpstreamBaseURL 返回插件渠道的上游根地址，固定 http://127.0.0.1:<port>/v1。
+func UpstreamBaseURL(port int) string {
+	return "http://127.0.0.1:" + strconv.Itoa(port) + pluginAPIPrefix
 }
 
-// ConsoleTitleStr 返回控制台标题，缺省用插件名。
-func (m *Manifest) ConsoleTitleStr() string {
-	if m.Console == nil {
+// HasConsole 是否提供控制台。
+func (m *Manifest) HasConsole() bool { return m.Console }
+
+// ConsoleBasePath 控制台接口前缀，固定 /console；未声明控制台时返回空串。
+func (m *Manifest) ConsoleBasePath() string {
+	if !m.Console {
 		return ""
 	}
-	if t := strings.TrimSpace(m.Console.Title); t != "" {
-		return t
+	return consolePath
+}
+
+// HasCapability 判断是否声明了某个控制台能力（大小写不敏感）。
+func (m *Manifest) HasCapability(name string) bool {
+	for _, c := range m.Capabilities {
+		if strings.EqualFold(strings.TrimSpace(c), name) {
+			return true
+		}
 	}
-	return m.Name
+	return false
+}
+
+// KnownCapabilities 返回去重后、宿主认识的能力列表（未知值忽略，便于向前兼容）。
+func (m *Manifest) KnownCapabilities() []string {
+	out := make([]string, 0, 2)
+	for _, name := range []string{CapCheckin, CapQuota} {
+		if m.HasCapability(name) {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // Validate 校验清单与可执行文件；dir 为插件目录。
@@ -151,11 +132,6 @@ func Validate(dir string, m *Manifest) error {
 	}
 	if m.Port <= 0 || m.Port > 65535 {
 		return fmt.Errorf("port 非法（需 1-65535，由插件自己指定）: %d", m.Port)
-	}
-	for i, c := range m.Channels {
-		if strings.TrimSpace(c.Name) == "" {
-			return fmt.Errorf("channels[%d].name 不能为空", i)
-		}
 	}
 
 	entry := strings.TrimSpace(m.Entry)
@@ -198,28 +174,13 @@ func IsInside(dir, target string) bool {
 
 // substVars 占位符取值。
 type substVars struct {
-	Port      int
-	Data      string
-	APIKey    string
-	PluginDir string
+	Port int
+	Data string
 }
 
-// substitute 替换 args / env / base_url 中的占位符。
+// substitute 替换 args / env 中的占位符。
 //
-//	{{port}} {{data}} {{api_key}} {{plugin_dir}}
+//	{{port}}
 func substitute(s string, v substVars) string {
-	return strings.NewReplacer(
-		"{{port}}", strconv.Itoa(v.Port),
-		"{{data}}", v.Data,
-		"{{api_key}}", v.APIKey,
-		"{{plugin_dir}}", v.PluginDir,
-	).Replace(s)
-}
-
-// ChannelSpecs 返回实际要注册的渠道列表（未声明时按插件名生成一个）。
-func (m *Manifest) ChannelSpecs() []ChannelSpec {
-	if len(m.Channels) == 0 {
-		return []ChannelSpec{{Name: m.Name}}
-	}
-	return m.Channels
+	return strings.NewReplacer("{{port}}", strconv.Itoa(v.Port)).Replace(s)
 }

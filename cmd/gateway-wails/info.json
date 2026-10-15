@@ -8,8 +8,8 @@
 			"FileDescription": "AI Gateway",
 			"ProductName": "AI Gateway",
 			"CompanyName": "AI Gateway",
-			"InternalName": "ai-gateway-gui",
-			"OriginalFilename": "ai-gateway-gui.exe",
+			"InternalName": "ai-gateway",
+			"OriginalFilename": "ai-gateway.exe",
 			"FileVersion": "1.0.0",
 			"ProductVersion": "1.0.0"
 		}

@@ -1,4 +1,4 @@
-# AI Gateway 绿色版一键构建
+﻿# AI Gateway 绿色版一键构建
 # 用法：pwsh -File build/build.ps1 -Version 0.1.0
 param(
     [string]$Version = "dev"
@@ -61,7 +61,7 @@ $ldflags = "-s -w " +
     "-X $module/internal/version.Commit=$commit " +
     "-X $module/internal/version.BuildTime=$buildTime"
 
-# 只产出桌面窗口版（ai-gateway-gui.exe）
+# 只产出桌面窗口版（ai-gateway.exe）
 Write-Host "  生成桌面端 bindings ..." -ForegroundColor Cyan
 $wails3 = Join-Path (go env GOPATH) "bin\wails3.exe"
 if (Test-Path $wails3) {
@@ -79,12 +79,11 @@ if (Test-Path $wails3) {
 } else {
     Write-Host "  未找到 wails3，跳过 bindings/syso 生成（沿用已提交的产物）" -ForegroundColor Yellow
 }
-go build -trimpath -ldflags "$ldflags -H=windowsgui" -o dist/ai-gateway-gui.exe ./cmd/gateway-wails
-Remove-Item "dist/ai-gateway-gui.exe~" -Force -ErrorAction SilentlyContinue
+go build -trimpath -ldflags "$ldflags -H=windowsgui" -o dist/ai-gateway.exe ./cmd/gateway-wails
+Remove-Item "dist/ai-gateway.exe~" -Force -ErrorAction SilentlyContinue
 
 # ---- 4. 组装绿色版 ----
 Write-Host "[4/4] 组装绿色版 ..." -ForegroundColor Cyan
-Copy-Item "build/start.bat" "dist/start.bat" -Force
 Copy-Item "build/README.txt" "dist/README.txt" -Force
 New-Item -ItemType Directory -Force -Path "dist/plugins", "dist/data" | Out-Null
 if (Test-Path "build/plugins") {
@@ -105,5 +104,5 @@ if (Test-Path "examples/workbuddy/plugin.json") {
 }
 
 Write-Host ""
-Write-Host "构建完成: dist/ai-gateway-gui.exe ($Version)" -ForegroundColor Green
-Write-Host "双击 dist/start.bat（或 ai-gateway-gui.exe）即可启动并打开管理面板" -ForegroundColor Green
+Write-Host "构建完成: dist/ai-gateway.exe ($Version)" -ForegroundColor Green
+Write-Host "双击 dist/ai-gateway.exe 即可启动并打开管理面板" -ForegroundColor Green

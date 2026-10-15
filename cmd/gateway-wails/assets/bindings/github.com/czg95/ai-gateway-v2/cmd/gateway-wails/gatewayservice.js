@@ -18,6 +18,7 @@ import * as $models from "./models.js";
 
 /**
  * AddPlugin 弹出原生目录选择，把选中的插件目录复制进插件目录并重新扫描。
+ * 网关未运行时只落盘（不触碰插件宿主，避免拉起插件进程），启动后自动注册。
  * @returns {$CancellablePromise<$models.actionResult>}
  */
 export function AddPlugin() {
@@ -69,7 +70,8 @@ export function OpenPluginsDir() {
 }
 
 /**
- * Plugins 返回当前插件列表。
+ * Plugins 返回当前插件列表：网关在运行时用宿主内存态（含实时状态）；
+ * 未运行时直接扫描插件目录，保证停止状态下窗口里也能看到磁盘上已有的插件。
  * @returns {$CancellablePromise<$models.pluginRow[]>}
  */
 export function Plugins() {
@@ -80,6 +82,7 @@ export function Plugins() {
 
 /**
  * RemovePlugin 删除插件，连同其目录与它注册的渠道。
+ * 网关未运行时直接删除磁盘目录；注册记录与渠道会在下次启动网关时清理。
  * @param {string} id
  * @returns {$CancellablePromise<$models.actionResult>}
  */
@@ -90,7 +93,7 @@ export function RemovePlugin(id) {
 }
 
 /**
- * Rescan 重新扫描插件目录。
+ * Rescan 重新扫描插件目录。网关未运行时退化为按磁盘重新读取，保证停止状态下也能刷新列表。
  * @returns {$CancellablePromise<$models.actionResult>}
  */
 export function Rescan() {

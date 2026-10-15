@@ -66,23 +66,13 @@ func (p *Plugin) pickAccount() (*Account, error) {
 	return nil, fmt.Errorf("没有可用账号：请先在插件控制台里导入或授权登录")
 }
 
-// bearerToken 取 Authorization: Bearer <token> 中的 token。
-func bearerToken(header string) string {
-	const prefix = "Bearer "
-	v := strings.TrimSpace(header)
-	if len(v) > len(prefix) && strings.EqualFold(v[:len(prefix)], prefix) {
-		return strings.TrimSpace(v[len(prefix):])
-	}
-	return ""
-}
-
 // accountForRequest 决定这次请求用哪个账号。
 //
-// 网关把渠道密钥放进 Authorization（账号模式下密钥就是账号 id），命中账号时直接用它——
+// 网关把「账号 id」放在 X-Plugin-Account 头里（渠道密钥 = 账号 id），命中账号时直接用它——
 // 「轮询 / 故障转移 / 启用停用」因此全部由网关的渠道密钥策略决定；没命中则回退到自动挑号，
 // 兼容尚未同步账号的直连场景。
 func (p *Plugin) accountForRequest(r *http.Request) (*Account, error) {
-	if id := bearerToken(r.Header.Get("Authorization")); id != "" {
+	if id := strings.TrimSpace(r.Header.Get("X-Plugin-Account")); id != "" {
 		if acc, ok := p.store.get(id); ok {
 			if !acc.Enabled {
 				return nil, fmt.Errorf("账号 %s 已在插件侧停用", firstNonEmpty(acc.Name, id))

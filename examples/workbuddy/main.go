@@ -33,7 +33,7 @@ import (
 //	workbuddy.exe version
 //
 // 上游接口路径都可在 <数据目录>/../config.json 里覆盖（见 Endpoints）。
-const pluginVersion = "0.2.0"
+const pluginVersion = "0.4.0"
 
 type Plugin struct {
 	eps   Endpoints

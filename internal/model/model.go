@@ -206,10 +206,11 @@ type Plugin struct {
 	LastSeenAt  int64  `json:"last_seen_at"`
 	InstalledAt int64  `json:"installed_at"`
 
-	// 控制台（plugin.json 的 console 段）
-	Console         bool   `json:"console"`
-	ConsoleTitle    string `json:"console_title"`
-	ConsoleBasePath string `json:"console_base_path"`
+	// 控制台（plugin.json 的 console / capabilities 段）
+	Console         bool     `json:"console"`
+	ConsoleTitle    string   `json:"console_title"`
+	ConsoleBasePath string   `json:"console_base_path"`
+	Capabilities    []string `json:"capabilities"`
 }
 
 // KeyHint 对密钥做脱敏，形如 abcd123...wxyz。

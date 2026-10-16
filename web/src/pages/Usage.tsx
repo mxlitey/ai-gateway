@@ -1,12 +1,45 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type UsageBucket } from '../lib/api'
-import { Badge, Button, Card, Empty, ErrorText, Loading, Segmented } from '../components/ui'
+import { Badge, Button, Card, Empty, ErrorText, IconButton, Loading, RefreshIcon, Segmented } from '../components/ui'
 import RangePicker, { type RangeValue } from '../components/RangePicker'
 
 const PAGE_SIZE = 50
 const HOUR = 60 * 60 * 1000
 const DAY = 24 * HOUR
+
+// 筛选与时间范围在刷新浏览器后保留（sessionStorage：仅当前标签页有效）
+const STORAGE_KEY = 'aigw.usage.filters'
+
+type StoredFilters = {
+  granularity: 'day' | 'hour'
+  from: number
+  to: number
+  channelFilter: string
+  modelFilter: string
+  keyFilter: string
+}
+
+function loadFilters(): StoredFilters | null {
+  try {
+    const raw = sessionStorage.getItem(STORAGE_KEY)
+    if (!raw) return null
+    const v = JSON.parse(raw) as StoredFilters
+    if (typeof v.from !== 'number' || typeof v.to !== 'number' || v.to <= v.from) return null
+    if (v.granularity !== 'day' && v.granularity !== 'hour') return null
+    return v
+  } catch {
+    return null
+  }
+}
+
+function saveFilters(v: StoredFilters): void {
+  try {
+    sessionStorage.setItem(STORAGE_KEY, JSON.stringify(v))
+  } catch {
+    // 存储不可用时忽略，不影响使用
+  }
+}
 
 // 趋势图筛选用的下拉框样式（与 Input 视觉一致）
 const selectClass =
@@ -14,13 +47,28 @@ const selectClass =
 
 export default function Usage() {
   // 粒度与时间范围（日历选择器）：按天选日期范围，按小时可精确到小时
-  const [granularity, setGranularity] = useState<'day' | 'hour'>('day')
-  const [range, setRange] = useState<RangeValue>(() => dayRange(Date.now()))
+  const stored = useMemo(loadFilters, [])
+  const [granularity, setGranularity] = useState<'day' | 'hour'>(stored?.granularity ?? 'day')
+  const [range, setRange] = useState<RangeValue>(
+    () => (stored ? { from: stored.from, to: stored.to } : dayRange(Date.now())),
+  )
   const [offset, setOffset] = useState(0)
   // 渠道名 / 公开模型名 / 上游密钥筛选（取自当前范围内的分组结果）
-  const [channelFilter, setChannelFilter] = useState('')
-  const [modelFilter, setModelFilter] = useState('')
-  const [keyFilter, setKeyFilter] = useState('')
+  const [channelFilter, setChannelFilter] = useState(stored?.channelFilter ?? '')
+  const [modelFilter, setModelFilter] = useState(stored?.modelFilter ?? '')
+  const [keyFilter, setKeyFilter] = useState(stored?.keyFilter ?? '')
+
+  // 任一筛选项变化即写入 sessionStorage，刷新页面后据此恢复
+  const persist = (patch: Partial<StoredFilters>) =>
+    saveFilters({
+      granularity,
+      from: range.from,
+      to: range.to,
+      channelFilter,
+      modelFilter,
+      keyFilter,
+      ...patch,
+    })
 
   const summary = useQuery({
     queryKey: ['usage-summary', range.from, range.to, channelFilter, modelFilter, keyFilter],
@@ -61,14 +109,17 @@ export default function Usage() {
 
   const switchGranularity = (g: 'day' | 'hour') => {
     if (g === granularity) return
+    const next = g === 'hour' ? lastHoursRange(Date.now()) : dayRange(Date.now())
     setGranularity(g)
-    setRange(g === 'hour' ? lastHoursRange(Date.now()) : dayRange(Date.now()))
+    setRange(next)
     setOffset(0)
+    persist({ granularity: g, from: next.from, to: next.to })
   }
 
   const onRangeChange = (v: RangeValue) => {
     setRange(v)
     setOffset(0)
+    persist({ from: v.from, to: v.to })
   }
 
   if (summary.isLoading || logs.isLoading) return <Loading />
@@ -96,6 +147,7 @@ export default function Usage() {
               setModelFilter('')
               setKeyFilter('')
               setOffset(0)
+              persist({ channelFilter: e.target.value, modelFilter: '', keyFilter: '' })
             }}
             className={`${selectClass} w-40`}
           >
@@ -113,6 +165,7 @@ export default function Usage() {
               // 密钥下拉按渠道 + 模型过滤，同理清空
               setKeyFilter('')
               setOffset(0)
+              persist({ modelFilter: e.target.value, keyFilter: '' })
             }}
             className={`${selectClass} w-48`}
           >
@@ -128,6 +181,7 @@ export default function Usage() {
             onChange={(e) => {
               setKeyFilter(e.target.value)
               setOffset(0)
+              persist({ keyFilter: e.target.value })
             }}
             className={`${selectClass} w-44`}
           >
@@ -150,15 +204,16 @@ export default function Usage() {
             ]}
           />
           <RangePicker value={range} onChange={onRangeChange} granularity={granularity} />
-          <Button
+          <IconButton
+            title="刷新"
             onClick={() => {
               summary.refetch()
               logs.refetch()
               series.refetch()
             }}
           >
-            刷新
-          </Button>
+            <RefreshIcon />
+          </IconButton>
         </div>
       </Card>
 
@@ -170,13 +225,7 @@ export default function Usage() {
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <Stat label="请求数" value={fmtInt(s.requests)} />
-        <Stat
-          label="总 token"
-          value={fmtCompact(s.total_tokens)}
-          hint={`未缓存输入 ${fmtCompact(Math.max(0, s.prompt_tokens - s.cached_tokens))} / 缓存输入 ${fmtCompact(
-            s.cached_tokens,
-          )} / 输出 ${fmtCompact(s.completion_tokens)}`}
-        />
+        <Stat label="总 token" value={fmtCompact(s.total_tokens)} />
         <Stat label="市场价" value={fmtUSD(s.cost_usd)} />
         <Stat label="未匹配价格" value={fmtInt(s.unpriced_requests)} />
       </div>
@@ -482,12 +531,11 @@ function shortBucketKey(key: string): string {
   return key.length > 10 ? key.slice(11) : key.slice(5)
 }
 
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
       <p className="text-xs text-zinc-500 dark:text-zinc-400">{label}</p>
       <p className="mt-1 font-mono text-xl font-semibold text-zinc-800 dark:text-zinc-100">{value}</p>
-      {hint ? <p className="mt-0.5 text-xs text-zinc-400 dark:text-zinc-500">{hint}</p> : null}
     </div>
   )
 }

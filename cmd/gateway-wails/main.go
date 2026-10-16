@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"sync/atomic"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -18,6 +19,10 @@ import (
 
 //go:embed all:assets
 var assets embed.FS
+
+// quitting 标记应用正在退出：退出时窗口关闭钩子需要放行，
+// 让 Wails 的默认关闭流程真正销毁窗口（否则窗口只被隐藏，需要再点一次才能退出）。
+var quitting atomic.Bool
 
 func main() {
 	svc := newGatewayService()
@@ -58,11 +63,18 @@ func main() {
 	menu.Add("打开管理面板").OnClick(func(*application.Context) { svc.OpenPanel() })
 	menu.AddSeparator()
 	menu.Add("退出").OnClick(func(*application.Context) {
-		// 先同步停掉网关与插件子进程，再结束进程
-		svc.Shutdown()
+		// 先置退出标记并结束进程（Quit 会触发 Wails 的 shutdown 钩子，
+		// 由 svc.OnShutdown 负责停网关与插件子进程）；
+		// 这里不能在主线程同步等待 Stop，否则托盘回调会卡住、表现为「点一次没反应」。
+		quitting.Store(true)
 		app.Quit()
 	})
 	tray.SetMenu(menu)
+
+	// 应用退出时同步回收网关与插件子进程（在 Wails 的 shutdown 阶段执行）。
+	app.OnShutdown(func() {
+		svc.Shutdown()
+	})
 
 	if err := app.Run(); err != nil {
 		slog.Error("桌面窗口异常退出", "err", err)
@@ -89,8 +101,12 @@ func newMainWindow(app *application.App, svc *GatewayService) *application.Webvi
 		},
 	})
 
-	// app.Quit() 直接结束进程、不经过本钩子，所以这里始终拦截关窗
+	// app.Quit() 会先走 Wails 的关闭流程（OnShutdown 里停网关与插件），
+	// 再销毁窗口并触发本钩子；此时放行、不拦截，否则窗口只会被隐藏、退不掉。
 	win.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		if quitting.Load() {
+			return
+		}
 		win.Hide()
 		e.Cancel()
 	})

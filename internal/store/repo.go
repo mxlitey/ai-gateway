@@ -27,7 +27,7 @@ func decodeJSON(s string, dst any) error {
 
 // ---------- 渠道 ----------
 
-const channelCols = `id, name, base_url, path, keys, models, model_map, model_priority, headers, key_strategy, enabled, source, sort_order, created_at`
+const channelCols = `id, name, base_url, path, keys, models, model_map, model_priority, disabled_models, headers, key_strategy, enabled, source, sort_order, created_at`
 
 type scanner interface {
 	Scan(dest ...any) error
@@ -35,17 +35,18 @@ type scanner interface {
 
 func scanChannel(sc scanner) (*model.Channel, error) {
 	c := &model.Channel{
-		Keys:          []model.ChannelKey{},
-		Models:        []string{},
-		ModelMap:      map[string]string{},
-		ModelPriority: map[string]int{},
-		Headers:       []model.Header{},
+		Keys:           []model.ChannelKey{},
+		Models:         []string{},
+		ModelMap:       map[string]string{},
+		ModelPriority:  map[string]int{},
+		DisabledModels: []string{},
+		Headers:        []model.Header{},
 	}
-	var keysS, modelsS, mapS, priS, headersS string
+	var keysS, modelsS, mapS, priS, disabledS, headersS string
 	var enabled int
 	if err := sc.Scan(
 		&c.ID, &c.Name, &c.BaseURL, &c.Path,
-		&keysS, &modelsS, &mapS, &priS, &headersS,
+		&keysS, &modelsS, &mapS, &priS, &disabledS, &headersS,
 		&c.KeyStrategy, &enabled, &c.Source, &c.SortOrder, &c.CreatedAt,
 	); err != nil {
 		return nil, err
@@ -64,6 +65,9 @@ func scanChannel(sc scanner) (*model.Channel, error) {
 	if err := decodeJSON(priS, &c.ModelPriority); err != nil {
 		return nil, err
 	}
+	if err := decodeJSON(disabledS, &c.DisabledModels); err != nil {
+		return nil, err
+	}
 	if err := decodeJSON(headersS, &c.Headers); err != nil {
 		return nil, err
 	}
@@ -79,6 +83,9 @@ func scanChannel(sc scanner) (*model.Channel, error) {
 	}
 	if c.ModelPriority == nil {
 		c.ModelPriority = map[string]int{}
+	}
+	if c.DisabledModels == nil {
+		c.DisabledModels = []string{}
 	}
 	if c.Headers == nil {
 		c.Headers = []model.Header{}
@@ -148,6 +155,10 @@ func (s *Store) CreateChannel(c *model.Channel) error {
 	if err != nil {
 		return err
 	}
+	dm, err := marshalJSON(c.DisabledModels)
+	if err != nil {
+		return err
+	}
 	hd, err := marshalJSON(c.Headers)
 	if err != nil {
 		return err
@@ -155,9 +166,9 @@ func (s *Store) CreateChannel(c *model.Channel) error {
 	c.KeyStrategy = model.NormalizeKeyStrategy(c.KeyStrategy)
 	_, err = s.db.Exec(
 		`INSERT INTO channels
-		 (id, name, base_url, path, keys, models, model_map, model_priority, headers, key_strategy, enabled, source, sort_order, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		c.ID, c.Name, c.BaseURL, c.Path, keys, models, mm, mp, hd,
+		 (id, name, base_url, path, keys, models, model_map, model_priority, disabled_models, headers, key_strategy, enabled, source, sort_order, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		c.ID, c.Name, c.BaseURL, c.Path, keys, models, mm, mp, dm, hd,
 		c.KeyStrategy, boolToInt(c.Enabled), c.Source, c.SortOrder, c.CreatedAt,
 	)
 	return err
@@ -181,6 +192,10 @@ func (s *Store) UpdateChannel(c *model.Channel) error {
 	if err != nil {
 		return err
 	}
+	dm, err := marshalJSON(c.DisabledModels)
+	if err != nil {
+		return err
+	}
 	hd, err := marshalJSON(c.Headers)
 	if err != nil {
 		return err
@@ -189,9 +204,9 @@ func (s *Store) UpdateChannel(c *model.Channel) error {
 	_, err = s.db.Exec(
 		`UPDATE channels SET
 		   name = ?, base_url = ?, path = ?, keys = ?, models = ?,
-		   model_map = ?, model_priority = ?, headers = ?, key_strategy = ?, enabled = ?
+		   model_map = ?, model_priority = ?, disabled_models = ?, headers = ?, key_strategy = ?, enabled = ?
 		 WHERE id = ?`,
-		c.Name, c.BaseURL, c.Path, keys, models, mm, mp, hd, c.KeyStrategy, boolToInt(c.Enabled), c.ID,
+		c.Name, c.BaseURL, c.Path, keys, models, mm, mp, dm, hd, c.KeyStrategy, boolToInt(c.Enabled), c.ID,
 	)
 	return err
 }

@@ -150,6 +150,102 @@ export function Badge({ tone = 'info', children }: { tone?: BadgeTone; children:
   )
 }
 
+/* ---------- Switch（iOS 风格开关，用于卡片上快速启停） ---------- */
+
+export function Switch({
+  checked,
+  onChange,
+  disabled = false,
+  title,
+  className = '',
+}: {
+  checked: boolean
+  onChange: (next: boolean) => void
+  disabled?: boolean
+  title?: string
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation()
+        onChange(!checked)
+      }}
+      onKeyDown={(e) => e.stopPropagation()}
+      className={`relative inline-flex h-5 w-9 flex-none items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+        checked ? 'bg-[#34c759]' : 'bg-zinc-300 dark:bg-zinc-600'
+      } ${className}`}
+    >
+      <span
+        className={`inline-block size-4 rounded-full bg-white shadow-sm transition-transform ${
+          checked ? 'translate-x-[18px]' : 'translate-x-0.5'
+        }`}
+      />
+    </button>
+  )
+}
+
+/* ---------- 图标按钮与常用图标 ---------- */
+
+export function IconButton({
+  title,
+  className = '',
+  children,
+  ...rest
+}: ButtonHTMLAttributes<HTMLButtonElement> & { title: string }) {
+  return (
+    <button
+      {...rest}
+      type="button"
+      title={title}
+      aria-label={title}
+      className={`inline-flex flex-none items-center justify-center rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700 disabled:cursor-not-allowed disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 ${className}`}
+    >
+      {children}
+    </button>
+  )
+}
+
+// Icon 统一 15×15 线性图标，描边随文字色。
+function Icon({ children }: { children: ReactNode }) {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {children}
+    </svg>
+  )
+}
+
+export function RefreshIcon() {
+  return (
+    <Icon>
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.7-3.95" />
+      <path d="M13.5 2.5V5H11" />
+    </Icon>
+  )
+}
+
+export function CrossIcon() {
+  return (
+    <Icon>
+      <path d="M4 4l8 8M12 4l-8 8" />
+    </Icon>
+  )
+}
+
 /* ---------- Modal ---------- */
 
 export function Modal({

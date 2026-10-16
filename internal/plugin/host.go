@@ -849,8 +849,11 @@ func (h *Host) stopProcess(inst *instance) {
 	default:
 	}
 
+	// 优雅停止不可用（例如桌面 GUI 没有控制台）时直接强杀，不必白等一个宽限期
 	if err := gracefulStop(inst.cmd); err != nil {
-		h.log.Debug("优雅停止不可用，将直接结束进程", "plugin", inst.manifest.ID, "err", err)
+		h.log.Debug("优雅停止不可用，直接结束进程", "plugin", inst.manifest.ID, "err", err)
+		h.forceKill(inst)
+		return
 	}
 
 	timer := time.NewTimer(stopGracePeriod)
@@ -1168,18 +1171,19 @@ func (h *Host) syncChannels(inst *instance, running bool) {
 			keys = ak
 		}
 		created := &model.Channel{
-			ID:            id.UUID(),
-			Name:          name,
-			BaseURL:       baseURL,
-			Keys:          keys,
-			Models:        []string{},
-			ModelMap:      map[string]string{},
-			ModelPriority: map[string]int{},
-			Headers:       []model.Header{},
-			Enabled:       true,
-			Source:        source,
-			SortOrder:     order,
-			CreatedAt:     time.Now().UnixMilli(),
+			ID:             id.UUID(),
+			Name:           name,
+			BaseURL:        baseURL,
+			Keys:           keys,
+			Models:         []string{},
+			ModelMap:       map[string]string{},
+			ModelPriority:  map[string]int{},
+			DisabledModels: []string{},
+			Headers:        []model.Header{},
+			Enabled:        true,
+			Source:         source,
+			SortOrder:      order,
+			CreatedAt:      time.Now().UnixMilli(),
 		}
 		if err := h.store.CreateChannel(created); err != nil {
 			h.log.Error("创建插件渠道失败", "plugin", inst.manifest.ID, "err", err)

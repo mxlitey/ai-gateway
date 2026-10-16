@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type ErrorLog } from '../lib/api'
 import { toast } from '../lib/toast'
-import { Button, Card, Empty, ErrorText, Loading } from '../components/ui'
+import { Card, Empty, ErrorText, IconButton, Loading, RefreshIcon } from '../components/ui'
 import DatePicker, { fmtDate } from '../components/DatePicker'
 
 // 明细行的列宽：展开箭头 / 时间 / 渠道 / 模型 / 状态 / 错误信息 / 复制
@@ -27,7 +27,9 @@ export default function Errors() {
         <h1 className="text-base font-semibold text-zinc-800 dark:text-zinc-100">错误日志</h1>
         <div className="flex flex-wrap items-center gap-2">
           <DatePicker value={date} onChange={setDate} />
-          <Button onClick={() => errors.refetch()}>刷新</Button>
+          <IconButton title="刷新" onClick={() => errors.refetch()}>
+            <RefreshIcon />
+          </IconButton>
         </div>
       </div>
 

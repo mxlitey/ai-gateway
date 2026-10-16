@@ -198,9 +198,14 @@ func (a *App) Stop() error {
 
 	cancel()
 
-	ctx, done := context.WithTimeout(context.Background(), 10*time.Second)
+	// 优雅关闭只给很短的窗口：流式请求会长时间占用连接，
+	// 若等满超时会让「退出网关」明显卡顿；超时后直接强制关闭剩余连接。
+	ctx, done := context.WithTimeout(context.Background(), 2*time.Second)
 	defer done()
 	err := srv.Shutdown(ctx)
+	if err != nil {
+		_ = srv.Close()
+	}
 
 	if host != nil {
 		host.Shutdown()

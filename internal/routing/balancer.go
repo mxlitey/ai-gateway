@@ -85,6 +85,9 @@ func (b *Balancer) SelectTarget(publicModel string, allowedChannelIDs []string) 
 		if !ok {
 			continue
 		}
+		if ch.IsModelDisabled(publicModel) {
+			continue
+		}
 		rows = append(rows, candidate{
 			ch:       ch,
 			upstream: um,

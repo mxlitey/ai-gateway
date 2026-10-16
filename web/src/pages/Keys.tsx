@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type APIKey, type Channel } from '../lib/api'
 import { toast } from '../lib/toast'
-import { Button, Card, Empty, ErrorText, Field, Input, Loading, Modal } from '../components/ui'
+import { Button, Card, Empty, ErrorText, Field, Input, Loading, Modal, Switch } from '../components/ui'
 
 export default function Keys() {
   const queryClient = useQueryClient()
@@ -19,9 +19,14 @@ export default function Keys() {
   // 翻转卡片：记录当前翻到背面的密钥 id
   const [flippedId, setFlippedId] = useState<string | null>(null)
 
-  const copyKey = (text: string) => {
-    void navigator.clipboard.writeText(text)
-    toast('ok', '已复制到剪贴板')
+  // 剪贴板 API 只在安全上下文（HTTPS / localhost）可用；
+  // 通过局域网 IP 用 http 访问时 navigator.clipboard 不可用，需回退到 execCommand
+  const copyKey = async (text: string) => {
+    if (await writeClipboard(text)) {
+      toast('ok', '已复制到剪贴板')
+    } else {
+      toast('err', '复制失败，请手动选择复制')
+    }
   }
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['apikeys'] })
@@ -126,7 +131,11 @@ export default function Keys() {
                   <div className="flip-card-inner">
                     {/* 正面：概览 */}
                     <div className="flip-face flex flex-col justify-between rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                      <KeyCardHead k={key} onCopy={() => copyKey(key.key)} />
+                      <KeyCardHead
+                        k={key}
+                        onCopy={() => copyKey(key.key)}
+                        onToggle={() => toggle.mutate(key)}
+                      />
                       <p className="truncate text-xs text-zinc-500 dark:text-zinc-400" title={scope}>
                         可用渠道{' '}
                         <span className="text-zinc-700 dark:text-zinc-200">{scope}</span>
@@ -135,7 +144,11 @@ export default function Keys() {
 
                     {/* 背面：头部与正面一致，只把「可用渠道」换成操作按钮 */}
                     <div className="flip-face flip-face-back flex flex-col justify-between rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                      <KeyCardHead k={key} onCopy={() => copyKey(key.key)} />
+                      <KeyCardHead
+                        k={key}
+                        onCopy={() => copyKey(key.key)}
+                        onToggle={() => toggle.mutate(key)}
+                      />
                       <div className="flex flex-wrap items-center gap-1.5">
                         <Button
                           size="sm"
@@ -268,8 +281,16 @@ export default function Keys() {
   )
 }
 
-// KeyCardHead 翻转卡片正反两面共用的头部：名称 / 脱敏密钥（可复制）/ 状态圆点。
-function KeyCardHead({ k, onCopy }: { k: APIKey; onCopy: () => void }) {
+// KeyCardHead 翻转卡片正反两面共用的头部：名称 / 脱敏密钥（可复制）/ 启用开关。
+function KeyCardHead({
+  k,
+  onCopy,
+  onToggle,
+}: {
+  k: APIKey
+  onCopy: () => void
+  onToggle: () => void
+}) {
   return (
     <div className="flex items-start justify-between gap-2">
       <div className="min-w-0">
@@ -305,11 +326,11 @@ function KeyCardHead({ k, onCopy }: { k: APIKey; onCopy: () => void }) {
           </button>
         </div>
       </div>
-      <span
-        className={`mt-1.5 size-2 flex-none rounded-full ${
-          k.enabled ? 'bg-[#34c759]' : 'bg-[#c7c7cc] dark:bg-zinc-600'
-        }`}
-        title={k.enabled ? '启用' : '停用'}
+      <Switch
+        checked={k.enabled}
+        onChange={onToggle}
+        title={k.enabled ? '已启用，点击停用' : '已停用，点击启用'}
+        className="mt-1"
       />
     </div>
   )
@@ -352,4 +373,29 @@ function ChannelPicker({
 // maskKey 只用于展示层：超长密钥打码为 前7位...后4位。
 function maskKey(key: string): string {
   return key.length > 12 ? `${key.slice(0, 7)}...${key.slice(-4)}` : key
+}
+
+// writeClipboard 优先用剪贴板 API，失败（如局域网 IP 经 http 访问时非安全上下文）再回退 execCommand。
+async function writeClipboard(text: string): Promise<boolean> {
+  if (window.isSecureContext && navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // 继续尝试回退方案
+    }
+  }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.cssText = 'position:fixed;top:-1000px;opacity:0'
+  document.body.appendChild(ta)
+  ta.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  document.body.removeChild(ta)
+  return ok
 }

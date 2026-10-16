@@ -2,10 +2,17 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // 对话转发 + 模型表 + 选号。
@@ -65,9 +72,22 @@ func (p *Plugin) injectSoloFields(body map[string]any, a *Account) {
 	} else {
 		body["prompt_max_tokens"] = 168000
 	}
-	body["conversation_id"] = randomUUID()
-	body["session_id"] = randomUUID()
+	// 上游按 session_id 归组「一次会话」，会话标题/提问内容取自该会话首条 user 消息。
+	// 每次请求都换新 uuid 会让同一场对话在用量明细里裂成多条无标题记录（标题退化为
+	// 占位文字 "Prompt"），故按会话内容稳定派生；客户端自带标识时优先沿用。
+	if seed := sessionSeed(body); seed != "" {
+		id := stableUUID(seed)
+		body["conversation_id"] = id
+		body["session_id"] = id
+	} else {
+		body["conversation_id"] = randomUUID()
+		body["session_id"] = randomUUID()
+	}
 	body["project_id"] = randomUUID()
+	// 官方客户端同时上报 user_input（当次提问纯文本），缺失时上游取不到会话标题。
+	if ui := lastUserText(body); ui != "" {
+		body["user_input"] = ui
+	}
 	body["user_id"] = a.UID
 	body["device_id"] = a.DeviceID
 	body["machine_id"] = a.MachineID
@@ -79,6 +99,212 @@ func (p *Plugin) injectSoloFields(body map[string]any, a *Account) {
 	body["package_type"] = "stable_cn"
 }
 
+// packagingTags 是客户端用来塞「内部提示」的包装块标签（环境 / 时间 / 模式 / 待办等）。
+//
+// 提问的标签名**不做硬编码**：剥掉这些包装块后剩下的就是当次提问。这样无论客户端用
+// <user_input>、<user_query>、<session> 还是将来换的新名字，都走同一条路径；普通 OpenAI
+// 客户端直接发纯文本也天然兼容。唯一必须固定的约定是「哪个标签是包装」——因为「只含
+// 包装块」与「包装块 + 提问」在结构上无法区分。
+var packagingTags = map[string]bool{"system-reminder": true}
+
+// lowerASCII 只把 ASCII 大写字母转小写，保证字节长度不变。
+// 不用 strings.ToLower：它对个别 Unicode 字符会改变字节长度，让后续按字节切片的索引错位。
+func lowerASCII(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 32
+		}
+	}
+	return string(b)
+}
+
+// isTagEnd 判断标签名后的字符是否为合法边界（`<name>` / `<name 属性>`），
+// 避免 `<system-reminderX>` 被误认成 `<system-reminder>`。
+func isTagEnd(c byte) bool {
+	return c == '>' || c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+// stripBlocks 删除 s 中所有 <name …>…</name> 块（开标签可带属性，按最近的同名闭标签配对）。
+func stripBlocks(s, name string) string {
+	lower := lowerASCII(s)
+	open := "<" + name
+	closeTag := "</" + name + ">"
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		oi := strings.Index(lower[i:], open)
+		if oi < 0 {
+			b.WriteString(s[i:])
+			break
+		}
+		oi += i
+		after := oi + len(open)
+		if after < len(s) && !isTagEnd(lower[after]) {
+			b.WriteString(s[i:after])
+			i = after
+			continue
+		}
+		gt := strings.IndexByte(lower[after:], '>')
+		if gt < 0 {
+			b.WriteString(s[i:])
+			break
+		}
+		bodyStart := after + gt + 1
+		ci := strings.Index(lower[bodyStart:], closeTag)
+		if ci < 0 {
+			b.WriteString(s[i:]) // 没闭合：其余原样保留（后续判定会安全返回空）
+			break
+		}
+		b.WriteString(s[i:oi])
+		i = bodyStart + ci + len(closeTag)
+	}
+	return b.String()
+}
+
+// askText 提取一条 user 消息里的「当次提问」：剥掉包装块后，若剩下的是被一对同名标签
+// 包裹的内容则取其内部，否则整段即提问。结构异常（无闭合、内部又嵌了同名闭标签）一律
+// 返回空串——宁可不上报，也不猜错（猜错会把无关文字当会话标题）。
+func askText(m map[string]any) string {
+	s := messageText(m)
+	for name := range packagingTags {
+		s = stripBlocks(s, name)
+	}
+	s = strings.TrimSpace(s)
+	if s == "" || s[0] != '<' {
+		return s
+	}
+	lower := lowerASCII(s)
+	gt := strings.IndexByte(lower, '>')
+	if gt < 0 {
+		return ""
+	}
+	name := strings.TrimSpace(lower[1:gt])
+	if sp := strings.IndexAny(name, " \t\r\n"); sp >= 0 {
+		name = name[:sp]
+	}
+	if name == "" || packagingTags[name] {
+		return ""
+	}
+	closeTag := "</" + name + ">"
+	if !strings.HasSuffix(lower, closeTag) {
+		return ""
+	}
+	inner := s[gt+1 : len(s)-len(closeTag)]
+	if strings.Contains(lowerASCII(inner), closeTag) {
+		return "" // 内部还有同名闭标签：结构异常，不猜
+	}
+	return strings.TrimSpace(inner)
+}
+
+// sessionSeed 计算「一轮提问」的稳定种子：优先客户端自带的会话标识，否则取 messages 中
+// **最后一条** user 消息的提问标签文本。同一轮内客户端会因工具循环多次调用模型，但每次都
+// 重发完整历史、末尾提问恒定，故同一轮派生同一个 id（上游据此合并成一条记录、额度累加）；
+// 用户问下一句时种子变化 → 新记录。取不到时返回空串（调用方回退随机 uuid）。
+func sessionSeed(body map[string]any) string {
+	for _, k := range []string{"session_id", "conversation_id"} {
+		if s, _ := body[k].(string); strings.TrimSpace(s) != "" {
+			return "named:" + s
+		}
+	}
+	msgs, ok := body["messages"].([]any)
+	if !ok {
+		return ""
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m, ok := msgs[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		if role, _ := m["role"].(string); role != "user" {
+			continue
+		}
+		if t := askText(m); t != "" {
+			return "ask:" + t
+		}
+	}
+	return ""
+}
+
+// stableUUID 从种子确定性派生 8-4-4-4-12 形态的标识（同种子恒等）。
+func stableUUID(seed string) string {
+	sum := sha256.Sum256([]byte(seed))
+	h := hex.EncodeToString(sum[:16])
+	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
+}
+
+// messageText 取一条 message 的纯文本 content。prepareMessages 会把字符串 content
+// 改写为上游要求的 [{type:text,text}]，客户端也可能原本就发数组形态，故两种都要认。
+func messageText(m map[string]any) string {
+	switch c := m["content"].(type) {
+	case string:
+		return c
+	case []any:
+		var b strings.Builder
+		for _, part := range c {
+			pm, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			if t, ok := pm["text"].(string); ok {
+				b.WriteString(t)
+			}
+		}
+		return b.String()
+	}
+	return ""
+}
+
+// lastUserText 取「当次提问」纯文本，对应官方 user_input（上游拿它做会话标题）。
+// 从最后一条 user 消息往前找带提问标签的那条，取标签内文本；都找不到返回空串——
+// 宁可不上报 user_input，也不把 system prompt 片段或 reminder 当成提问。
+func lastUserText(body map[string]any) string {
+	msgs, ok := body["messages"].([]any)
+	if !ok {
+		return ""
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m, ok := msgs[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		if role, _ := m["role"].(string); role != "user" {
+			continue
+		}
+		if t := askText(m); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+// dumpRequest 把一次 /v1/chat/completions 的请求头与原始请求体全量写入 dumpDir（诊断用）。
+//
+// 输出 {"headers": {...}, "body": {...}}：头用于观察客户端是否发会话/轮次标识
+//（X-Conversation-ID / X-Conversation-Request-ID 等），body 保留客户端原文。
+// 文件名按「时间_纳秒」排序友好；写入失败只记日志，绝不影响转发。
+func (p *Plugin) dumpRequest(r *http.Request, raw []byte) {
+	if p.dumpDir == "" || len(raw) == 0 {
+		return
+	}
+	rec := map[string]any{
+		"headers": r.Header,
+		"body":    json.RawMessage(raw),
+	}
+	out, err := json.Marshal(rec)
+	if err != nil {
+		log.Printf("dump 请求失败（序列化）：%v", err)
+		return
+	}
+	now := time.Now()
+	name := fmt.Sprintf("%s_%06d.json", now.Format("20060102-150405"), now.Nanosecond()/1000)
+	path := filepath.Join(p.dumpDir, name)
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		log.Printf("dump 请求失败：%v", err)
+		return
+	}
+	log.Printf("已 dump 请求：%s（%d 字节）", path, len(out))
+}
+
 // forwardChat 把网关转来的 OpenAI 请求落到 TRAE SOLO 上游。
 func (p *Plugin) forwardChat(w http.ResponseWriter, r *http.Request) {
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 32<<20))
@@ -87,6 +313,9 @@ func (p *Plugin) forwardChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = r.Body.Close()
+
+	// 诊断：原始请求头 + 请求体全量落盘（在 prepareMessages 改写 content 之前，保留客户端原文）。
+	p.dumpRequest(r, raw)
 
 	var body map[string]any
 	if err := json.Unmarshal(raw, &body); err != nil {

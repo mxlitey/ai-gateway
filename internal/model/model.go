@@ -43,7 +43,9 @@ type Channel struct {
 	Models        []string          `json:"models"`
 	ModelMap      map[string]string `json:"model_map"`
 	ModelPriority map[string]int    `json:"model_priority"`
-	Headers       []Header          `json:"headers"`
+	// DisabledModels 在本渠道上被单独停用的公开模型名；命中的模型不参与路由。
+	DisabledModels []string `json:"disabled_models"`
+	Headers        []Header `json:"headers"`
 	// KeyStrategy 多密钥选用策略，见 KeyStrategy* 常量；空值按轮询处理。
 	KeyStrategy string `json:"key_strategy"`
 	Enabled     bool   `json:"enabled"`
@@ -93,6 +95,16 @@ func (c *Channel) Priority(publicModel string) int {
 		return p
 	}
 	return 0
+}
+
+// IsModelDisabled 判断某个公开模型是否在本渠道上被单独停用。
+func (c *Channel) IsModelDisabled(publicModel string) bool {
+	for _, m := range c.DisabledModels {
+		if m == publicModel {
+			return true
+		}
+	}
+	return false
 }
 
 // APIKey 客户端访问密钥。

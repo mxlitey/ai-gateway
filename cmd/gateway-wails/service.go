@@ -270,7 +270,7 @@ func (s *GatewayService) OpenPanel() {
 	_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 }
 
-// Shutdown 供托盘「退出」调用：同步停掉网关与插件子进程。
+// Shutdown 在应用退出阶段调用：同步停掉网关与插件子进程（幂等）。
 func (s *GatewayService) Shutdown() {
 	s.mu.Lock()
 	gw := s.gw

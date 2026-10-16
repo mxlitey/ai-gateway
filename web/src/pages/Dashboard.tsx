@@ -6,7 +6,7 @@ import { Badge, Card, Empty, ErrorText, Loading } from '../components/ui'
 import DatePicker, { fmtDate } from '../components/DatePicker'
 
 export default function Dashboard() {
-  // 用量分析（按模型 / 按渠道 / 按客户端密钥）共用的统计日期，默认当天
+  // 用量分析（按模型 / 按渠道）共用的统计日期，默认当天
   const [date, setDate] = useState(fmtDate(new Date()))
 
   const channels = useQuery({ queryKey: ['channels'], queryFn: api.channels })
@@ -95,14 +95,9 @@ export default function Dashboard() {
               </ul>
             </Card>
 
-            <div className="space-y-4">
-              <Card title="按渠道">
-                <BucketTable buckets={usageSummary.by_channel} />
-              </Card>
-              <Card title="按客户端密钥">
-                <BucketTable buckets={usageSummary.by_api_key} />
-              </Card>
-            </div>
+            <Card title="按渠道">
+              <BucketTable buckets={usageSummary.by_channel} />
+            </Card>
           </div>
         )}
       </div>

@@ -214,7 +214,7 @@ func (a *API) listChannels(w http.ResponseWriter) {
 	}
 	out := make([]model.Channel, 0, len(channels))
 	for i := range channels {
-		out = append(out, maskChannel(channels[i]))
+		out = append(out, prepareChannel(channels[i]))
 	}
 	jsonOK(w, out)
 }
@@ -254,7 +254,7 @@ func (a *API) createChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusCreated)
-	jsonOK(w, maskChannel(*ch))
+	jsonOK(w, prepareChannel(*ch))
 }
 
 func (a *API) channelSubroutes(w http.ResponseWriter, r *http.Request, path, method string) {
@@ -268,6 +268,11 @@ func (a *API) channelSubroutes(w http.ResponseWriter, r *http.Request, path, met
 	// /channels/:id/priority
 	if strings.HasSuffix(rest, "/priority") && method == http.MethodPatch {
 		a.setChannelPriority(w, r, strings.TrimSuffix(rest, "/priority"))
+		return
+	}
+	// /channels/:id/model-enabled
+	if strings.HasSuffix(rest, "/model-enabled") && method == http.MethodPatch {
+		a.setChannelModelEnabled(w, r, strings.TrimSuffix(rest, "/model-enabled"))
 		return
 	}
 	if strings.Contains(rest, "/") {
@@ -349,7 +354,7 @@ func (a *API) updateChannel(w http.ResponseWriter, r *http.Request, channelID st
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	jsonOK(w, maskChannel(next))
+	jsonOK(w, prepareChannel(next))
 }
 
 func (a *API) toggleChannel(w http.ResponseWriter, channelID string) {
@@ -367,7 +372,7 @@ func (a *API) toggleChannel(w http.ResponseWriter, channelID string) {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	jsonOK(w, maskChannel(*ch))
+	jsonOK(w, prepareChannel(*ch))
 }
 
 func (a *API) setChannelPriority(w http.ResponseWriter, r *http.Request, channelID string) {
@@ -412,6 +417,46 @@ func (a *API) setChannelPriority(w http.ResponseWriter, r *http.Request, channel
 		return
 	}
 	jsonOK(w, map[string]any{"success": true, "model": mdl, "priority": priority})
+}
+
+// setChannelModelEnabled 按模型维度启停：enabled=false 时把模型加入本渠道的停用集合。
+func (a *API) setChannelModelEnabled(w http.ResponseWriter, r *http.Request, channelID string) {
+	var body struct {
+		Model   string `json:"model"`
+		Enabled bool   `json:"enabled"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	mdl := strings.TrimSpace(body.Model)
+	if mdl == "" {
+		jsonErr(w, http.StatusBadRequest, "model is required")
+		return
+	}
+	ch, err := a.store.GetChannel(channelID)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if ch == nil {
+		jsonErr(w, http.StatusNotFound, "Channel not found")
+		return
+	}
+	next := make([]string, 0, len(ch.DisabledModels))
+	for _, m := range ch.DisabledModels {
+		if m != mdl {
+			next = append(next, m)
+		}
+	}
+	if !body.Enabled {
+		next = append(next, mdl)
+	}
+	ch.DisabledModels = next
+	if err := a.store.UpdateChannel(ch); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	jsonOK(w, map[string]any{"success": true, "model": mdl, "enabled": body.Enabled})
 }
 
 // ---------- 客户端密钥 ----------
@@ -966,6 +1011,8 @@ func (a *API) publicModels(w http.ResponseWriter) {
 		Enabled     bool   `json:"enabled"`
 		Priority    int    `json:"priority"`
 		Upstream    string `json:"upstream_model"`
+		// ModelDisabled 表示该公开模型在本渠道上被单独停用（不影响渠道与其他模型）。
+		ModelDisabled bool `json:"model_disabled"`
 		// Direct 表示该公开模型未做重命名映射、按同名透传到上游。
 		Direct bool `json:"direct"`
 	}
@@ -990,12 +1037,13 @@ func (a *API) publicModels(w http.ResponseWriter) {
 			}
 			_, mapped := ch.ModelMap[pub]
 			grouped[pub] = append(grouped[pub], route{
-				ChannelID:   ch.ID,
-				ChannelName: ch.Name,
-				Enabled:     ch.Enabled && len(ch.EnabledKeys()) > 0,
-				Priority:    ch.Priority(pub),
-				Upstream:    um,
-				Direct:      !mapped,
+				ChannelID:     ch.ID,
+				ChannelName:   ch.Name,
+				Enabled:       ch.Enabled && len(ch.EnabledKeys()) > 0 && !ch.IsModelDisabled(pub),
+				Priority:      ch.Priority(pub),
+				Upstream:      um,
+				ModelDisabled: ch.IsModelDisabled(pub),
+				Direct:        !mapped,
 			})
 		}
 	}
@@ -1524,13 +1572,11 @@ func jsonErr(w http.ResponseWriter, status int, message string) {
 	_ = enc.Encode(map[string]any{"error": message})
 }
 
-// maskChannel 对渠道密钥做脱敏后返回。
-func maskChannel(ch model.Channel) model.Channel {
+// prepareChannel 返回渠道数据：管理面板是本机密码保护的服务，
+// 编辑渠道时需要看到完整的上游密钥（与 API 密钥一致，脱敏只在前端展示层做）。
+func prepareChannel(ch model.Channel) model.Channel {
 	if ch.Keys == nil {
 		ch.Keys = []model.ChannelKey{}
-	}
-	for i := range ch.Keys {
-		ch.Keys[i].Key = model.MaskKey(ch.Keys[i].Key)
 	}
 	return ch
 }

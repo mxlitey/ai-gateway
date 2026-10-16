@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api, type ProbeResult } from '../lib/api'
 import { toast } from '../lib/toast'
-import { Badge, Button, Card, Empty, ErrorText, Input, Loading, Modal } from '../components/ui'
+import { Badge, Button, Card, Empty, ErrorText, Input, Loading, Modal, Switch } from '../components/ui'
 
 export default function ModelRoutes() {
   const queryClient = useQueryClient()
@@ -27,6 +27,18 @@ export default function ModelRoutes() {
   const runProbe = useMutation({
     mutationFn: (tasks: { channel_id: string; model: string }[]) => api.testUpstream({ tasks }),
     onSuccess: (res) => setProbeRows(res.results),
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  // 按模型维度启停：只影响「本渠道上的这个模型」，不动渠道与其他模型
+  const saveModel = useMutation({
+    mutationFn: (p: { channelId: string; model: string; enabled: boolean }) =>
+      api.setModelEnabled(p.channelId, p.model, p.enabled),
+    onSuccess: async () => {
+      toast('ok', '已更新模型状态')
+      await queryClient.invalidateQueries({ queryKey: ['routes'] })
+      await queryClient.invalidateQueries({ queryKey: ['channels'] })
+    },
     onError: (err: Error) => toast('err', err.message),
   })
 
@@ -137,9 +149,30 @@ export default function ModelRoutes() {
                             </div>
                           </td>
                           <td className="py-2 pr-3">
-                            <Badge tone={route.enabled ? 'ok' : 'off'}>
-                              {route.enabled ? '可用' : '不可用'}
-                            </Badge>
+                            <div className="flex items-center gap-2">
+                              <Switch
+                                checked={!route.model_disabled}
+                                disabled={saveModel.isPending}
+                                title={
+                                  route.model_disabled
+                                    ? '该模型在此渠道已停用，点击启用'
+                                    : '该模型在此渠道已启用，点击停用'
+                                }
+                                onChange={(v) =>
+                                  saveModel.mutate({
+                                    channelId: route.channel_id,
+                                    model: group.model,
+                                    enabled: v,
+                                  })
+                                }
+                              />
+                              {/* 模型本身启用、但渠道停用或无可用密钥时，模型实际不可用 */}
+                              {!route.model_disabled && !route.enabled ? (
+                                <span className="text-xs text-zinc-400 dark:text-zinc-500">
+                                  渠道不可用
+                                </span>
+                              ) : null}
+                            </div>
                           </td>
                           <td className="py-2 pr-3">
                             <Input

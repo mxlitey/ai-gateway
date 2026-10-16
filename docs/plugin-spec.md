@@ -345,8 +345,10 @@ func (p *Plugin) accountForRequest(r *http.Request) (*Account, error) {
 
 `id` 由插件生成，**不要包含 `/`**（会被当成路径分隔符）；账号不存在时返回 `404`。
 
-**面板上加账号的唯一入口是登录按钮**：面板没有「粘贴 token / 填表单」的界面，
-用户想自己加号只能靠 `GET /accounts` 返回的 `login_methods`（见 §6.6）。
+**面板上加账号的入口是登录按钮**：用户在面板里只能通过 `GET /accounts` 返回的
+`login_methods`（见 §6.6）加号——声明了 `fields` 的方法会渲染成表单（可直接粘贴 token / Cookie），
+没有 `fields` 的方法则点一下由插件自己完成。
+`POST /accounts` 是给脚本 / 手工 curl 用的旁路，**面板不会调用它**；
 一个只实现 `POST /accounts`、不声明任何登录方式的插件，**在面板上是加不了账号的**。
 
 注意：`capabilities` 不是自由扩展点——面板只认得 `checkin` / `quota`，写别的值不会渲染出任何新界面。
@@ -409,16 +411,61 @@ func (p *Plugin) accountForRequest(r *http.Request) (*Account, error) {
 
 ### 6.6 登录流程（可选）
 
-在 `GET /console/accounts` 的响应里带上 `login_methods`，面板会把这些方法渲染成按钮：
+在 `GET /console/accounts` 的响应里带上 `login_methods`，面板会把这些方法渲染成按钮
+（声明了 `fields` 的方法会先展开一个表单，见下）：
 
 | 字段 | 说明 |
 |---|---|
 | `id` | 方法 id，回调时用它区分。必须能安全放进 URL 路径：只用小写字母 / 数字 / `-` / `_`，**不要含 `/`、`?`、`#`、空格**（面板把它拼进 `POST /console/login/{id}`，不做转义）；建议 ≤ 32 字符 |
 | `label` | 按钮文字 |
 | `hint` | 可选说明，作为按钮 tooltip |
+| `fields` | 可选的输入项数组：声明后面板先收集用户输入再提交（见下）。**不声明则行为完全不变**，仍是「点一下即完成」 |
 
 > 登录方式**没有"类型"字段**：面板不看你声明什么，只看你返回的响应形状（见下）。
 > 同一个方法在不同时刻返回不同形状是不允许的。
+
+#### 让用户在面板里填东西：`fields`
+
+面板没有自由表单——**要用户粘贴 token / Cookie / 验证码的流程，靠声明 `fields` 来实现**，
+由面板渲染输入框并随 `POST /console/login/{method}` 一并提交。声明是纯增量的：
+提交后你仍按下面的响应形状返回 `action`（`{"status":"ok"}`）或 `link`（带 `url`+`state`），
+面板不需要知道这个方法是哪一类。
+
+```json
+{
+  "id": "paste-cookie",
+  "label": "粘贴 Cookie 登录",
+  "hint": "在浏览器登录后，从开发者工具复制 Cookie",
+  "fields": [
+    { "name": "cookie", "label": "Cookie", "kind": "multiline",
+      "placeholder": "MSESSION=...; ..." },
+    { "name": "name", "label": "备注名", "required": false }
+  ]
+}
+```
+
+字段属性（**类型刻意限死三种，不做任意扩展**——面板要保持统一风格，不能变成插件自绘）：
+
+| 属性 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `name` | string | ✅ | 提交时的键名 |
+| `label` | string | ✅ | 输入框上方的标签 |
+| `kind` | string | | `text`（默认）/ `secret`（按密码框渲染、不回显）/ `multiline`（多行文本域） |
+| `placeholder` | string | | 输入框占位提示 |
+| `hint` | string | | 标签下方的补充说明 |
+| `required` | bool | | 默认 `true`；显式传 `false` 允许留空 |
+
+提交时面板 POST 的正文是 `{"<name>": "<值>", ...}`（只含声明的字段），
+宿主原样透传（见 §6.2），所以你在 `/console/login/{method}` 里 `json` 读 `req.body` 即可。
+
+三点要求：
+
+1. **凭据绝不回显**：收到的值只落 `AI_GATEWAY_PLUGIN_DATA`，不要放进 `GET /accounts` 的任何字段
+   （含 `last_error` / `message`），也不要原样回在 `POST` 的响应里（见 §6.4 / §8）。
+2. **校验后如实反馈**：值无效请返回 `{"status":"error","message":"Cookie 已失效，请重新复制"}`，
+   面板会 toast 该文案；不要在插件侧静默丢弃。
+3. **不要把 `fields` 当自由 UI 扩展点**：它只解决"收集少量文本输入"这一件事。
+   需要选择器、多步向导等复杂交互，请给网关提需求（同 §6.3 末尾的口径）。
 
 两类都走同一个入口：
 
@@ -426,6 +473,9 @@ func (p *Plugin) accountForRequest(r *http.Request) (*Account, error) {
 |---|---|---|
 | POST | `/console/login/{method}` | `action`：`{"status":"ok","message":"..."}`；`link`：`{"status","message","url","state"}` |
 | GET | `/console/login/{method}?state=xxx` | 仅 `link` 需要，轮询用：`{"status","message"}` |
+
+> `POST` 的正文**可携带 `fields` 收集到的值**（`{"<name>":"<值>"}`，见上）；
+> 未声明 `fields` 时正文为空，与旧行为一致。
 
 **面板如何区分两类**（只按返回体形状判断）：`POST` 的响应里**同时有 `url` 和 `state`** 就当 `link`
 （打开 `url` 并轮询）；否则当 `action`（toast `message` 并刷新账号列表）。
@@ -450,9 +500,12 @@ func (p *Plugin) accountForRequest(r *http.Request) (*Account, error) {
 1. **轮询没有次数上限**：只要仍返回 `pending`，面板每 2 秒问一次，不会自动放弃——直到你返回终止态，
    或用户点「取消」/关闭控制台。所以请在插件侧给 `state` 设过期时间，超时返回 `expired`，
    不要让会话永远停在 `pending`。
-2. **面板没有输入表单**：`action` 只能"点一下、插件自己完成"，无法让用户填任何东西。
-   凡是要用户粘贴 token / 填验证码的流程，只能走 `link`——由你自己起一个本机回调页
-   （可以再监听一个回环端口，见 §3），让用户在浏览器里完成输入。
+2. **要用户填东西有两种做法，按复杂度选**：
+   - 少量文本输入（token / Cookie / 备注名）→ 声明 `fields`，面板直接渲染表单（见上），
+     用户不用离开面板，也不需要你多监听端口；
+   - 更复杂的输入（验证码交互、需要在目标站页面里操作才能拿到的东西）→ 走 `link`，
+     由你自己起一个本机回调页（可以再监听一个回环端口，见 §3），让用户在浏览器里完成输入。
+   两种都不需要用户开终端敲 curl。
 3. **面板同一时间只跟踪一个登录会话**：`link` 发起后若用户又点了另一个登录按钮，
    新会话会**替换**旧的——旧 `state` 立即停止轮询（其授权链接也随之失效）。
    所以不要设计"同时进行多个登录"的流程；被替换掉的会话请靠你自己的超时机制回收（见第 1 点）。
@@ -463,6 +516,7 @@ func (p *Plugin) accountForRequest(r *http.Request) (*Account, error) {
 - 打开后每 20 秒自动刷新账号列表；手动「刷新」可立即刷新
 - `notice` 非空时在顶部显示常驻提示条
 - 登录按钮由插件声明的 `login_methods` 决定，面板不写死任何登录方式
+- 声明了 `fields` 的方法：点按钮先展开输入表单，提交后把值 POST 给插件；未声明的仍是「点一下即完成」
 - `link` 类登录每 2 秒轮询，**无次数上限**，用户可点「取消」终止；同时只跟踪一个登录会话
 - 账号列表的列与按钮由 `capabilities` 决定（`checkin` / `quota`）
 - 所有操作走 toast 反馈，失败展示插件返回的 `error`

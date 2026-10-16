@@ -12,6 +12,8 @@ export type Channel = {
   models: string[]
   model_map: Record<string, string>
   model_priority: Record<string, number>
+  /** 在本渠道上被单独停用的公开模型名 */
+  disabled_models: string[]
   headers: HeaderItem[]
   key_strategy: string
   enabled: boolean
@@ -54,6 +56,8 @@ export type RouteEntry = {
   enabled: boolean
   priority: number
   upstream_model: string
+  /** 该公开模型在本渠道上被单独停用 */
+  model_disabled: boolean
   direct: boolean
 }
 
@@ -104,11 +108,24 @@ export type PluginAccount = {
   last_error?: string
 }
 
+/** 登录方式声明的输入项（可选）：声明后面板会先渲染表单，收集到的值随 POST 一并提交。
+ *  字段类型刻意限死三种，面板不做任意扩展（见 docs/plugin-spec.md §6.6）。 */
+export type PluginLoginField = {
+  name: string
+  label: string
+  kind?: 'text' | 'secret' | 'multiline'
+  placeholder?: string
+  hint?: string
+  required?: boolean
+}
+
 export type PluginLoginMethod = {
   id: string
   label: string
   kind: 'action' | 'link'
   hint?: string
+  /** 非空时面板先弹输入表单；为空则维持原有「点一下即完成」行为 */
+  fields?: PluginLoginField[]
 }
 
 export type PluginAccountsResponse = {
@@ -367,6 +384,12 @@ export const api = {
       method: 'PATCH',
       ...json({ model, priority }),
     }),
+  // 按模型维度启停：enabled=false 停用该渠道上的这个模型
+  setModelEnabled: (id: string, model: string, enabled: boolean) =>
+    request<{ success: boolean }>(`/admin/api/channels/${id}/model-enabled`, {
+      method: 'PATCH',
+      ...json({ model, enabled }),
+    }),
   fetchModels: (body: { channel_id?: string; base_url?: string; keys?: string[] }) =>
     request<{ models: string[] }>('/admin/api/fetch-models', { method: 'POST', ...json(body) }),
   testUpstream: (body: { tasks: { channel_id?: string; key?: string; model: string }[] }) =>
@@ -407,10 +430,12 @@ export const api = {
   pluginAccounts: (id: string) =>
     request<PluginAccountsResponse>(`/admin/api/plugins/${id}/console/accounts`),
   // link / action 类登录统一入口：拿到授权链接就展示并轮询，否则按已完成处理
-  pluginLoginStart: (id: string, method: string) =>
-    request<PluginLoginResponse>(`/admin/api/plugins/${id}/console/login/${method}`, {
-      method: 'POST',
-    }),
+  // values 为登录方式声明的 fields 收集到的值（无 fields 时省略，行为与原先一致）
+  pluginLoginStart: (id: string, method: string, values?: Record<string, string>) =>
+    request<PluginLoginResponse>(
+      `/admin/api/plugins/${id}/console/login/${method}`,
+      { method: 'POST', ...(values ? json(values) : {}) },
+    ),
   pluginLoginPoll: (id: string, method: string, state: string) =>
     request<PluginLoginResponse>(
       `/admin/api/plugins/${id}/console/login/${method}?state=${encodeURIComponent(state)}`,

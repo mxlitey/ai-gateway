@@ -39,6 +39,9 @@ type Plugin struct {
 	stream *http.Client // 流式对话（无总超时，仅首字节兜底）
 	login  *loginBroker
 	data   string
+	// dumpDir 非空时，把每个 /v1/chat/completions 收到的原始请求体全量落盘（诊断用）。
+	// 由环境变量 TRAE_DUMP_DIR 或 --dump 开关设置；默认关闭。
+	dumpDir string
 }
 
 // Windows 下宿主用 CTRL_BREAK_EVENT 通知停止，Go 会把它映射成 SIGBREAK(0x15)。
@@ -76,6 +79,7 @@ func runServe(args []string) error {
 	port := fs.Int("port", 0, "监听端口（默认取 AI_GATEWAY_PLUGIN_PORT）")
 	dataDir := fs.String("data", "", "插件数据目录（凭据与状态）")
 	configPath := fs.String("config", "", "上游接口配置覆盖文件")
+	dump := fs.String("dump", "", "诊断：把收到的原始请求体全量写入该目录（默认关闭，也可用 TRAE_DUMP_DIR）")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -87,6 +91,16 @@ func runServe(args []string) error {
 	}
 	if *configPath == "" {
 		*configPath = filepath.Join(filepath.Dir(execPath()), "config.json")
+	}
+	dumpDir := strings.TrimSpace(*dump)
+	if dumpDir == "" {
+		dumpDir = strings.TrimSpace(os.Getenv("TRAE_DUMP_DIR"))
+	}
+	if dumpDir != "" {
+		if err := os.MkdirAll(dumpDir, 0o755); err != nil {
+			return fmt.Errorf("创建 dump 目录失败：%w", err)
+		}
+		log.Printf("已开启请求体 dump：%s", dumpDir)
 	}
 
 	eps, err := loadEndpoints(*configPath)
@@ -105,11 +119,12 @@ func runServe(args []string) error {
 		ResponseHeaderTimeout: 120 * time.Second, // 首字节兜底，不限制整流时长
 	}
 	p := &Plugin{
-		eps:    eps,
-		store:  store,
-		data:   *dataDir,
-		api:    &http.Client{Timeout: 60 * time.Second, Transport: tr},
-		stream: &http.Client{Transport: tr},
+		eps:     eps,
+		store:   store,
+		data:    *dataDir,
+		dumpDir: dumpDir,
+		api:     &http.Client{Timeout: 60 * time.Second, Transport: tr},
+		stream:  &http.Client{Transport: tr},
 	}
 	p.login = newLoginBroker(p)
 

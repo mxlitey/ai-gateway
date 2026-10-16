@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type Plugin, type PluginAccount } from '../lib/api'
+import { api, type Plugin, type PluginAccount, type PluginLoginMethod } from '../lib/api'
 import { toast } from '../lib/toast'
-import { Badge, Button, Card, Empty, ErrorText, Loading, Modal } from '../components/ui'
+import { Badge, Button, Card, Empty, ErrorText, Field, IconButton, Input, Loading, Modal, RefreshIcon, Textarea } from '../components/ui'
 
 const statusTone: Record<string, 'ok' | 'off' | 'warn' | 'info'> = {
   running: 'ok',
@@ -93,9 +93,13 @@ export default function Plugins() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-base font-semibold text-zinc-800 dark:text-zinc-100">插件</h1>
-        <Button disabled={rescan.isPending} onClick={() => rescan.mutate()}>
-          {rescan.isPending ? '扫描中…' : '重新扫描'}
-        </Button>
+        <IconButton
+          title={rescan.isPending ? '扫描中…' : '重新扫描插件目录'}
+          disabled={rescan.isPending}
+          onClick={() => rescan.mutate()}
+        >
+          <RefreshIcon />
+        </IconButton>
       </div>
 
       {list.length === 0 ? (
@@ -238,6 +242,11 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
   const queryClient = useQueryClient()
   const [login, setLogin] = useState<LoginFlow | null>(null)
   const loginRef = useRef<LoginFlow | null>(null)
+  // 打开控制台时自动刷新一轮额度与签到状态（只跑一次，见下方 effect）
+  const autoRefreshed = useRef(false)
+  const [autoRefreshing, setAutoRefreshing] = useState(false)
+  // 声明了 fields 的登录方式：先收集输入再提交；未声明的一律直接提交（行为不变）
+  const [form, setForm] = useState<{ method: PluginLoginMethod; values: Record<string, string> } | null>(null)
 
   const accounts = useQuery({
     queryKey: ['plugin-console', plugin.id],
@@ -255,15 +264,17 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
   // link 类登录（OAuth）：发起后拿到授权链接，随后每 2 秒问一次结果
   // action 类（例如从本机桌面端导入）：插件直接返回 ok，无需轮询
   const startLogin = useMutation({
-    mutationFn: (method: string) => api.pluginLoginStart(plugin.id, method),
-    onSuccess: (res, method) => {
+    mutationFn: (input: { method: string; values?: Record<string, string> }) =>
+      api.pluginLoginStart(plugin.id, input.method, input.values),
+    onSuccess: (res, input) => {
+      setForm(null)
       if (!res.url || !res.state) {
         toast('ok', res.message ?? '已完成')
         void reload()
         return
       }
       keepLogin({
-        method,
+        method: input.method,
         url: res.url,
         state: res.state,
         status: res.status ?? 'pending',
@@ -273,6 +284,24 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
     },
     onError: (err: Error) => toast('err', err.message),
   })
+
+  const openForm = (method: PluginLoginMethod) => {
+    const values: Record<string, string> = {}
+    for (const f of method.fields ?? []) values[f.name] = ''
+    setForm({ method, values })
+  }
+
+  const submitForm = () => {
+    if (!form) return
+    const missing = (form.method.fields ?? []).find(
+      (f) => f.required !== false && !form.values[f.name]?.trim(),
+    )
+    if (missing) {
+      toast('err', `请填写「${missing.label}」`)
+      return
+    }
+    startLogin.mutate({ method: form.method.id, values: form.values })
+  }
 
   useEffect(() => {
     const timer = setInterval(async () => {
@@ -326,12 +355,46 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
     startLogin.isPending ||
     checkin.isPending ||
     quota.isPending ||
-    remove.isPending
+    remove.isPending ||
+    autoRefreshing
   const items = accounts.data?.accounts ?? []
   const methods = accounts.data?.login_methods ?? []
   const caps = plugin.capabilities ?? []
   const hasCheckin = caps.includes('checkin')
   const hasQuota = caps.includes('quota')
+
+  // 打开控制台时自动刷新一轮额度，只执行一次（签到仍由宿主定时调度、用户手动触发）。
+  // 接口幂等友好（见 docs/plugin-spec.md §6.1），单个账号失败只忽略：
+  // 插件会把原因写进账号的 last_error，刷新后自然显示在列表里。
+  useEffect(() => {
+    if (autoRefreshed.current || !accounts.data) return
+    autoRefreshed.current = true
+    const targets = (accounts.data.accounts ?? []).filter((a) => a.enabled !== false)
+    if (targets.length === 0 || !hasQuota) return
+
+    let cancelled = false
+    setAutoRefreshing(true)
+    void (async () => {
+      try {
+        for (const acc of targets) {
+          if (cancelled) return
+          try {
+            await api.pluginQuota(plugin.id, acc.id)
+          } catch {
+            /* 单账号失败忽略，原因由插件记到 last_error */
+          }
+        }
+      } finally {
+        if (!cancelled) {
+          setAutoRefreshing(false)
+          await reload()
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [accounts.data, hasQuota, plugin.id])
 
   return (
     <Modal
@@ -351,9 +414,14 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
             账号与凭据由插件负责，界面由面板统一渲染 · 共 {items.length} 个账号
+            {autoRefreshing ? ' · 正在刷新额度…' : ''}
           </p>
           <div className="flex flex-wrap gap-2">
-            <Button className="py-1 text-xs" onClick={() => accounts.refetch()}>
+            <Button
+              className="py-1 text-xs"
+              disabled={autoRefreshing}
+              onClick={() => accounts.refetch()}
+            >
               刷新
             </Button>
             {methods.map((m) => (
@@ -363,13 +431,58 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
                 className="py-1 text-xs"
                 disabled={busy}
                 title={m.hint}
-                onClick={() => startLogin.mutate(m.id)}
+                onClick={() => (m.fields?.length ? openForm(m) : startLogin.mutate({ method: m.id }))}
               >
                 {m.label}
               </Button>
             ))}
           </div>
         </div>
+
+        {form ? (
+          <div className="space-y-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900 dark:bg-emerald-950/40">
+            <p className="text-xs font-medium text-emerald-800 dark:text-emerald-200">
+              {form.method.label}
+            </p>
+            {(form.method.fields ?? []).map((f) => (
+              <Field key={f.name} label={f.label} hint={f.hint}>
+                {f.kind === 'multiline' ? (
+                  <Textarea
+                    rows={3}
+                    placeholder={f.placeholder}
+                    value={form.values[f.name] ?? ''}
+                    onChange={(e) =>
+                      setForm({ ...form, values: { ...form.values, [f.name]: e.target.value } })
+                    }
+                  />
+                ) : (
+                  <Input
+                    type={f.kind === 'secret' ? 'password' : 'text'}
+                    autoComplete={f.kind === 'secret' ? 'off' : undefined}
+                    placeholder={f.placeholder}
+                    value={form.values[f.name] ?? ''}
+                    onChange={(e) =>
+                      setForm({ ...form, values: { ...form.values, [f.name]: e.target.value } })
+                    }
+                  />
+                )}
+              </Field>
+            ))}
+            <div className="flex items-center gap-2">
+              <Button
+                variant="primary"
+                className="py-1 text-xs"
+                disabled={busy}
+                onClick={submitForm}
+              >
+                提交
+              </Button>
+              <Button className="py-1 text-xs" disabled={busy} onClick={() => setForm(null)}>
+                取消
+              </Button>
+            </div>
+          </div>
+        ) : null}
 
         {login ? (
           <div className="space-y-2 rounded-lg border border-emerald-200 bg-emerald-50 p-3 dark:border-emerald-900 dark:bg-emerald-950/40">

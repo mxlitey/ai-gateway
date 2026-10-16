@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api, type PricesResponse } from '../lib/api'
 import { toast } from '../lib/toast'
-import { Badge, Button, Card, Empty, Field, Input, Loading } from '../components/ui'
+import { Badge, Button, Card, Empty, Field, IconButton, Input, Loading, RefreshIcon } from '../components/ui'
 
 export default function Prices() {
   const prices = useQuery({ queryKey: ['prices'], queryFn: api.prices })
@@ -111,9 +111,13 @@ function PriceSection({
           <span className="text-xs text-zinc-500">
             {data ? `${data.count} 条 · 单位 ${data.unit}` : ''}
           </span>
-          <Button className="py-1 text-xs" disabled={refreshing} onClick={onRefresh}>
-            {refreshing ? '拉取中…' : '刷新价格'}
-          </Button>
+          <IconButton
+            title={refreshing ? '拉取中…' : '刷新价格'}
+            disabled={refreshing}
+            onClick={onRefresh}
+          >
+            <RefreshIcon />
+          </IconButton>
         </div>
       }
     >

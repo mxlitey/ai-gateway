@@ -6,13 +6,16 @@ import {
   Badge,
   Button,
   Card,
+  CrossIcon,
   Empty,
   ErrorText,
   Field,
+  IconButton,
   Input,
   Loading,
   Modal,
   Segmented,
+  Switch,
   Textarea,
 } from '../components/ui'
 
@@ -237,7 +240,7 @@ export default function Channels() {
                   <div className="flip-card-inner">
                     {/* 正面：概览 */}
                     <div className="flip-face flex flex-col justify-between rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
-                      <ChannelCardHead ch={ch} />
+                      <ChannelCardHead ch={ch} onToggle={() => toggle.mutate(ch.id)} />
                       <div className="flex items-center gap-5 text-xs text-zinc-500 dark:text-zinc-400">
                         <span>
                           模型{' '}
@@ -256,7 +259,7 @@ export default function Channels() {
 
                     {/* 背面：头部与正面一致，只把「模型 / 密钥」换成操作按钮 */}
                     <div className="flip-face flip-face-back flex flex-col justify-between rounded-xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                      <ChannelCardHead ch={ch} />
+                      <ChannelCardHead ch={ch} onToggle={() => toggle.mutate(ch.id)} />
                       <div className="flex flex-wrap items-center gap-1.5">
                         <Button
                           size="sm"
@@ -366,6 +369,15 @@ export default function Channels() {
                 </div>
                 {form.keys.map((row, i) => (
                   <div key={i} className="flex items-center gap-2">
+                    <Switch
+                      checked={row.enabled}
+                      title={row.enabled ? '已启用，点击停用' : '已停用，点击启用'}
+                      onChange={(v) => {
+                        const keys = [...form.keys]
+                        keys[i] = { ...keys[i], enabled: v }
+                        setForm({ ...form, keys })
+                      }}
+                    />
                     {form.isPlugin ? (
                       <div className="min-w-0 flex-1 rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-700">
                         <span className="text-sm text-zinc-800 dark:text-zinc-100">
@@ -386,18 +398,6 @@ export default function Channels() {
                         placeholder="sk-..."
                       />
                     )}
-                    <label className="flex shrink-0 items-center gap-1 text-xs text-zinc-600 dark:text-zinc-400">
-                      <input
-                        type="checkbox"
-                        checked={row.enabled}
-                        onChange={(e) => {
-                          const keys = [...form.keys]
-                          keys[i] = { ...keys[i], enabled: e.target.checked }
-                          setForm({ ...form, keys })
-                        }}
-                      />
-                      启用
-                    </label>
                     {form.isPlugin ? (
                       <>
                         <Button
@@ -425,14 +425,14 @@ export default function Channels() {
                       </>
                     ) : null}
                     {form.isPlugin ? null : (
-                      <Button
-                        variant="ghost"
+                      <IconButton
+                        title="移除密钥"
                         onClick={() =>
                           setForm({ ...form, keys: form.keys.filter((_, idx) => idx !== i) })
                         }
                       >
-                        移除
-                      </Button>
+                        <CrossIcon />
+                      </IconButton>
                     )}
                   </div>
                 ))}
@@ -554,14 +554,14 @@ export default function Channels() {
                       }}
                       placeholder="上游模型名"
                     />
-                    <Button
-                      variant="ghost"
+                    <IconButton
+                      title="移除映射"
                       onClick={() =>
                         setForm({ ...form, modelMap: form.modelMap.filter((_, idx) => idx !== i) })
                       }
                     >
-                      移除
-                    </Button>
+                      <CrossIcon />
+                    </IconButton>
                   </div>
                 ))}
                 <Button
@@ -599,14 +599,14 @@ export default function Channels() {
                       }}
                       placeholder="{{x-session-id | [gw-session-001]}}"
                     />
-                    <Button
-                      variant="ghost"
+                    <IconButton
+                      title="移除请求头"
                       onClick={() =>
                         setForm({ ...form, headers: form.headers.filter((_, idx) => idx !== i) })
                       }
                     >
-                      移除
-                    </Button>
+                      <CrossIcon />
+                    </IconButton>
                   </div>
                 ))}
                 <Button
@@ -618,15 +618,6 @@ export default function Channels() {
                 </Button>
               </div>
             </Field>
-
-            <label className="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
-              <input
-                type="checkbox"
-                checked={form.enabled}
-                onChange={(e) => setForm({ ...form, enabled: e.target.checked })}
-              />
-              启用该渠道
-            </label>
           </div>
         </Modal>
       ) : null}
@@ -634,8 +625,8 @@ export default function Channels() {
   )
 }
 
-// ChannelCardHead 翻转卡片正反两面共用的头部：名称 / API 地址 / 状态圆点。
-function ChannelCardHead({ ch }: { ch: Channel }) {
+// ChannelCardHead 翻转卡片正反两面共用的头部：名称 / API 地址 / 启用开关。
+function ChannelCardHead({ ch, onToggle }: { ch: Channel; onToggle: () => void }) {
   return (
     <div className="flex items-start justify-between gap-2">
       <div className="min-w-0">
@@ -652,11 +643,11 @@ function ChannelCardHead({ ch }: { ch: Channel }) {
           {ch.base_url}
         </p>
       </div>
-      <span
-        className={`mt-1.5 size-2 flex-none rounded-full ${
-          ch.enabled ? 'bg-[#34c759]' : 'bg-[#c7c7cc] dark:bg-zinc-600'
-        }`}
-        title={ch.enabled ? '启用' : '停用'}
+      <Switch
+        checked={ch.enabled}
+        onChange={onToggle}
+        title={ch.enabled ? '已启用，点击停用' : '已停用，点击启用'}
+        className="mt-1"
       />
     </div>
   )

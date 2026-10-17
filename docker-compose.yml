@@ -20,7 +20,8 @@ services:
     restart: unless-stopped
     ports:
       # 宿主机端口:容器端口；容器内固定 8787，如需改宿主机端口只改左侧
-      - "8787:8787"
+      # 默认 8788，避免与本机 Windows 桌面版的 8787 冲突
+      - "${AIGW_HOST_PORT:-8788}:8787"
     environment:
       # 监听地址与端口由镜像内置（0.0.0.0:8787），一般无需覆盖
       AIGW_HOST: "0.0.0.0"

@@ -22,6 +22,9 @@ FROM golang:1.26-alpine AS go-builder
 WORKDIR /src
 # 纯 Go 依赖（modernc sqlite），无需 CGO
 ENV CGO_ENABLED=0 GOOS=linux
+# 国内网络访问 proxy.golang.org 通常不通，默认走镜像；构建时可覆盖
+ARG GOPROXY=https://goproxy.cn,direct
+ENV GOPROXY=${GOPROXY}
 ARG VERSION=dev
 COPY go.mod go.sum* ./
 RUN go mod download

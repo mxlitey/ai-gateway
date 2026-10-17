@@ -21,7 +21,7 @@ import (
 //
 // 能力：
 //   - 实现 GET /health、POST /v1/chat/completions、GET /v1/models
-//   - 控制台：账号列表 / 网页登录（临时回调端口）/ 手工导入 / 删除 / 签到 / 额度刷新
+//   - 控制台：账号列表 / 网页登录（回调走网关统一入口）/ 手工导入 / 删除 / 签到 / 额度刷新
 //   - 按 X-Plugin-Account 精确选号（选择哪个账号全部归网关，插件不做任何调度）
 //
 // 用法：
@@ -140,6 +140,8 @@ func runServe(args []string) error {
 	mux.HandleFunc("POST /console/accounts/{id}/quota", p.handleQuota)
 	mux.HandleFunc("POST /console/login/{method}", p.handleLoginStart)
 	mux.HandleFunc("GET /console/login/{method}", p.handleLoginStatus)
+	// 统一登录回调入口：网关 /plugin-callback/<id>/web/<state> 会转发到这里（规范 §6.7）
+	mux.HandleFunc("GET /console/callback/web/{state}", p.login.handleCallback)
 
 	srv := &http.Server{
 		Addr:              "127.0.0.1:" + strconv.Itoa(*port),

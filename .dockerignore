@@ -1,0 +1,23 @@
+# 构建上下文精简：排除本机状态、构建产物与依赖，避免打进镜像
+.git
+.github
+dist
+data
+plugins
+*.db
+*.db-shm
+*.db-wal
+web/node_modules
+web/dist
+build
+docs
+examples/*/*.exe
+examples/*/*.cmd
+*.exe
+*.syso
+.idea
+.vscode
+*.log
+Dockerfile
+.dockerignore
+docker-compose.yml

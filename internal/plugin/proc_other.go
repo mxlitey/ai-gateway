@@ -3,7 +3,9 @@
 package plugin
 
 import (
+	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -32,4 +34,20 @@ func gracefulStop(cmd *exec.Cmd) error {
 // wrapCommand 非 Windows 平台直接执行 entry。
 func wrapCommand(entry string, args []string) (string, []string) {
 	return entry, args
+}
+
+// ensureExecutable 补上可执行位：从 zip 解压或经卷复制过来的插件常丢失该权限，
+// 会导致 exec 报 permission denied。仅对实际存在的普通文件操作，失败时忽略（交由 exec 报错）。
+func ensureExecutable(path string) {
+	if !strings.ContainsAny(path, `/\`) {
+		return // 裸命令名交给 PATH 查找，不处理
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return
+	}
+	if info.Mode().Perm()&0o111 != 0 {
+		return
+	}
+	_ = os.Chmod(path, info.Mode().Perm()|0o755)
 }

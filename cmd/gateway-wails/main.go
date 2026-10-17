@@ -1,4 +1,7 @@
+//go:build windows
+
 // Command gateway-wails 是 AI Gateway 的桌面外壳（Wails v3）。
+// 依赖 Wails v3 + WebView2，仅面向 Windows；无界面部署请使用 cmd/gateway。
 //
 // 设计边界——桌面窗口与 Web 管理面板相互独立：
 //   - 桌面窗口：由本进程内的 Wails bindings 直调 Go 内核，不经过 HTTP。

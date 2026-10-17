@@ -237,6 +237,49 @@ export type RuntimeInfo = {
   access_url: string
   api_url: string
   data_dir: string
+  /** 面板配置的外部访问地址（反代 / 隧道场景），未配置为空串 */
+  external_base: string
+}
+
+/** 可在面板调整的运行期设置；字符串项为空表示沿用启动参数 / 环境变量。 */
+export type RuntimeSettings = {
+  log_level: string
+  price_endpoint: string
+  price_refresh_minutes: number
+  plugin_probe_interval_seconds: number
+  plugin_probe_timeout_seconds: number
+  plugin_unhealthy_threshold: number
+  plugin_max_failures: number
+  plugin_auto_checkin_minutes: number
+  /** 是否启用上游密钥失败冷却 */
+  key_cooldown_enabled: boolean
+  /** 首次失败的冷却时长（秒） */
+  key_cooldown_base_seconds: number
+  /** 单次冷却时长上限（秒） */
+  key_cooldown_max_seconds: number
+}
+
+/** 上游密钥冷却条目（仪表盘展示）。 */
+export type KeyCooldown = {
+  channel_id: string
+  channel_name: string
+  key_hint: string
+  fail_streak: number
+  cooldown_until: number
+  updated_at: number
+  remaining_seconds: number
+}
+
+export type SettingsResponse = {
+  settings: RuntimeSettings
+  /** 内置默认值，供面板展示「留空即默认」的提示 */
+  defaults: RuntimeSettings
+  /** 启动参数 / 环境变量里的日志级别，作为留空时的回退说明 */
+  env_log_level: string
+  /** 未在面板配置时的价格源地址（环境变量或内置默认） */
+  env_price_endpoint: string
+  /** 当前生效的价格源地址 */
+  effective_price_source: string
 }
 
 export type ModelPrice = {
@@ -368,6 +411,29 @@ export const api = {
 
   // 运行信息（监听地址、端口、数据目录，按访问范围给出访问/API 地址）
   runtimeInfo: () => request<RuntimeInfo>('/admin/api/runtime'),
+
+  // 外部访问地址：反代 / 隧道场景下插件登录回调使用的基址；留空即清除
+  setExternalBase: (externalBase: string) =>
+    request<{ success: boolean; external_base: string }>('/admin/api/external-base', {
+      method: 'PUT',
+      ...json({ external_base: externalBase }),
+    }),
+
+  // 运行期设置：日志级别、价格源与刷新间隔、插件探活与签到节奏
+  settings: () => request<SettingsResponse>('/admin/api/settings'),
+  updateSettings: (body: RuntimeSettings) =>
+    request<{ success: boolean; settings: RuntimeSettings }>('/admin/api/settings', {
+      method: 'PUT',
+      ...json(body),
+    }),
+
+  // 上游密钥冷却
+  keyCooldowns: () => request<{ items: KeyCooldown[] }>('/admin/api/key-cooldowns'),
+  resetKeyCooldown: (channelId: string, keyHint: string) =>
+    request<{ success: boolean }>(
+      `/admin/api/key-cooldowns?channel_id=${encodeURIComponent(channelId)}&key_hint=${encodeURIComponent(keyHint)}`,
+      { method: 'DELETE' },
+    ),
 
   // 渠道
   channels: () => request<Channel[]>('/admin/api/channels'),

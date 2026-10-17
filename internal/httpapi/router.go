@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/czg95/ai-gateway-v2/internal/admin"
+	"github.com/czg95/ai-gateway-v2/internal/plugin"
 	"github.com/czg95/ai-gateway-v2/internal/proxy"
 	"github.com/czg95/ai-gateway-v2/web"
 )
@@ -16,6 +17,8 @@ import (
 type Deps struct {
 	Proxy *proxy.Handler
 	Admin *admin.API
+	// Host 插件宿主；用于免鉴权的统一登录回调入口（见 /plugin-callback/）。
+	Host *plugin.Host
 }
 
 // NewRouter 组装完整路由。
@@ -30,6 +33,16 @@ func NewRouter(d Deps) http.Handler {
 	// /v1/* 代理
 	mux.HandleFunc("/v1/", d.Proxy.Handle)
 	mux.HandleFunc("GET /v1", d.Proxy.Handle)
+
+	// 统一登录回调入口：免鉴权（浏览器重定向带不了管理员凭据），
+	// 因此只放行 GET 且只映射到插件 /console/callback/*（见 docs/plugin-spec.md §6.6）。
+	if d.Host != nil {
+		mux.HandleFunc(plugin.CallbackPathPrefix+"/", func(w http.ResponseWriter, r *http.Request) {
+			rest := strings.TrimPrefix(r.URL.Path, plugin.CallbackPathPrefix+"/")
+			pluginID, sub, _ := strings.Cut(rest, "/")
+			d.Host.ServeCallback(w, r, pluginID, sub)
+		})
+	}
 
 	// /admin/api/* 管理接口（鉴权在 handler 内部根据路径区分）
 	mux.HandleFunc("/admin/api/", d.Admin.Handle)

@@ -27,6 +27,9 @@ type candidate struct {
 type Balancer struct {
 	store *store.Store
 
+	// cooling 查询某密钥当前是否处于失败冷却中；为 nil 时不做冷却过滤。
+	cooling func(channelID, key string) bool
+
 	mu       sync.Mutex
 	counters map[string]uint64 // 渠道 id -> 轮询计数（决定每次的首选密钥）
 }
@@ -34,6 +37,11 @@ type Balancer struct {
 // New 创建负载均衡器。
 func New(s *store.Store) *Balancer {
 	return &Balancer{store: s, counters: map[string]uint64{}}
+}
+
+// SetCoolingChecker 注入密钥冷却判定函数（由 proxy 在构造后调用）。
+func (b *Balancer) SetCoolingChecker(fn func(channelID, key string) bool) {
+	b.cooling = fn
 }
 
 // nextCounter 取某渠道的下一个轮询序号（并发安全）。
@@ -146,12 +154,28 @@ func (b *Balancer) orderedKeys(ch *model.Channel) []string {
 		return nil
 	}
 	if ch.KeyStrategy == model.KeyStrategyOrdered {
-		return keys
+		return b.filterCooling(ch.ID, keys)
 	}
 	start := int(b.nextCounter(ch.ID) % uint64(n))
 	out := make([]string, 0, n)
 	for i := 0; i < n; i++ {
 		out = append(out, keys[(start+i)%n])
+	}
+	return b.filterCooling(ch.ID, out)
+}
+
+// filterCooling 剔除当前处于失败冷却中的密钥；不过滤时原样返回。
+// 冷却过滤后为空表示该渠道本次无可用密钥（严格屏蔽，回退由上层跳过该渠道处理）。
+func (b *Balancer) filterCooling(channelID string, keys []string) []string {
+	if b.cooling == nil {
+		return keys
+	}
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if b.cooling(channelID, k) {
+			continue
+		}
+		out = append(out, k)
 	}
 	return out
 }

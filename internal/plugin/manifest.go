@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -27,6 +28,10 @@ type Manifest struct {
 	Entry       string            `json:"entry"`
 	Args        []string          `json:"args"`
 	Env         map[string]string `json:"env"`
+	// Entries 按平台声明各自的入口，键为 "goos"（如 windows）或 "goos/goarch"（如 linux/amd64）。
+	// 值为字符串时表示可执行文件路径（沿用共享的 args）；值为数组时表示完整命令（自带参数）。
+	// 命中优先级：goos/goarch > goos > entry。仅声明 entry 时行为与旧版完全一致。
+	Entries map[string]json.RawMessage `json:"entries"`
 	// Port 由插件作者自己指定，宿主不再代为分配
 	Port int `json:"port"`
 	// Console 是否提供控制台（实现 /console/* 约定接口）
@@ -79,6 +84,100 @@ func (m *Manifest) applyDefaults() {
 // EntryPath 返回 entry 的绝对路径。
 func (m *Manifest) EntryPath() string {
 	return filepath.Join(m.Dir, filepath.FromSlash(strings.TrimSpace(m.Entry)))
+}
+
+// resolveEntry 按平台解析出本次运行应使用的入口命令与参数。
+//
+// 查找顺序：entries["<goos>/<goarch>"] → entries["<goos>"] → 旧字段 entry。
+// 值与 entry 同为「相对插件目录的路径」时沿用共享的 Args；
+// 值为数组时视为完整命令（首项为可执行文件，其余为参数），不再套用共享 Args。
+// 路径类值均相对插件目录解析为绝对路径；解释器名（如 node、cmd.exe）保持原样交给 PATH 查找。
+func (m *Manifest) resolveEntry() (string, []string, error) {
+	raw, ok := m.lookupPlatformEntry()
+	if !ok {
+		// 回落到旧字段 entry
+		return m.EntryPath(), copyArgs(m.Args), nil
+	}
+
+	var asString string
+	if err := json.Unmarshal(raw, &asString); err == nil {
+		path := strings.TrimSpace(asString)
+		if path == "" {
+			return "", nil, fmt.Errorf("entries 中 %q 的平台入口为空", platformKey())
+		}
+		return m.resolveExecPath(path), copyArgs(m.Args), nil
+	}
+
+	var asArray []string
+	if err := json.Unmarshal(raw, &asArray); err != nil {
+		return "", nil, fmt.Errorf("entries 的平台入口既不是字符串也不是数组: %s", string(raw))
+	}
+	if len(asArray) == 0 || strings.TrimSpace(asArray[0]) == "" {
+		return "", nil, fmt.Errorf("entries 的平台入口命令为空")
+	}
+	cmd := m.resolveExecPath(strings.TrimSpace(asArray[0]))
+	return cmd, asArray[1:], nil
+}
+
+// lookupPlatformEntry 在 entries 里按 "goos/goarch" → "goos" 的顺序查找。
+func (m *Manifest) lookupPlatformEntry() (json.RawMessage, bool) {
+	if len(m.Entries) == 0 {
+		return nil, false
+	}
+	arch := runtime.GOARCH
+	// 每个 OS/架构都登记一份别名：amd64 也接受 x86_64，arm64 也接受 aarch64
+	if raw, ok := m.Entries[strings.ToLower(runtime.GOOS)+"/"+strings.ToLower(arch)]; ok {
+		return raw, true
+	}
+	if alias := archAlias(arch); alias != "" {
+		if raw, ok := m.Entries[strings.ToLower(runtime.GOOS)+"/"+alias]; ok {
+			return raw, true
+		}
+	}
+	if raw, ok := m.Entries[strings.ToLower(runtime.GOOS)]; ok {
+		return raw, true
+	}
+	return nil, false
+}
+
+// archAlias 返回架构的常见别名，便于插件作者用 x86_64 / aarch64 书写。
+func archAlias(arch string) string {
+	switch strings.ToLower(arch) {
+	case "amd64":
+		return "x86_64"
+	case "arm64":
+		return "aarch64"
+	default:
+		return ""
+	}
+}
+
+// platformKey 返回当前平台标识，用于错误提示。
+func platformKey() string {
+	return runtime.GOOS + "/" + runtime.GOARCH
+}
+
+// resolveExecPath 判断给定命令是路径还是裸命令名：
+// 含路径分隔符或 . / .. 前缀时按插件目录解析为绝对路径，否则原样返回交给 PATH 查找。
+func (m *Manifest) resolveExecPath(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	if s == "." || s == ".." || strings.HasPrefix(s, "./") || strings.HasPrefix(s, "../") {
+		return filepath.Join(m.Dir, filepath.FromSlash(s))
+	}
+	if strings.ContainsAny(s, `/\`) {
+		return filepath.Join(m.Dir, filepath.FromSlash(s))
+	}
+	return s
+}
+
+// copyArgs 复制一份参数切片，避免调用方就地替换占位符时改动清单本身。
+func copyArgs(args []string) []string {
+	out := make([]string, len(args))
+	copy(out, args)
+	return out
 }
 
 // UpstreamBaseURL 返回插件渠道的上游根地址，固定 http://127.0.0.1:<port>/v1。
@@ -134,25 +233,36 @@ func Validate(dir string, m *Manifest) error {
 		return fmt.Errorf("port 非法（需 1-65535，由插件自己指定）: %d", m.Port)
 	}
 
-	entry := strings.TrimSpace(m.Entry)
+	// 入口只校验「当前平台实际会用到的那一个」：
+	// entries 里为其它平台声明的入口在本机不存在属正常（用户可能只随包携带一个平台）。
+	entry, _, err := m.resolveEntry()
+	if err != nil {
+		return err
+	}
+	entry = strings.TrimSpace(entry)
 	if entry == "" {
 		return fmt.Errorf("entry 不能为空")
 	}
-	if filepath.IsAbs(entry) {
-		return fmt.Errorf("entry 不能是绝对路径")
-	}
-	full := m.EntryPath()
-	if !IsInside(dir, full) {
-		return fmt.Errorf("entry 逃出了插件目录: %s", entry)
-	}
-	info, err := os.Stat(full)
-	if err != nil {
-		return fmt.Errorf("entry 文件不存在: %s", entry)
-	}
-	if info.IsDir() {
-		return fmt.Errorf("entry 指向的是目录: %s", entry)
+	// 指向插件目录之外的路径一律拒绝：既防相对路径逃逸（../x），也防越界的绝对路径。
+	// 裸命令名（node、cmd.exe）交由 PATH 查找，不做目录归属校验。
+	if !looksLikeCommand(entry) {
+		if !IsInside(dir, entry) {
+			return fmt.Errorf("entry 逃出了插件目录: %s", filepath.Base(entry))
+		}
+		info, statErr := os.Stat(entry)
+		if statErr != nil {
+			return fmt.Errorf("当前平台（%s）的 entry 文件不存在: %s", platformKey(), filepath.Base(entry))
+		}
+		if info.IsDir() {
+			return fmt.Errorf("entry 指向的是目录: %s", filepath.Base(entry))
+		}
 	}
 	return nil
+}
+
+// looksLikeCommand 判断是否是不含路径分隔符的裸命令名（交给 PATH 查找，无需本地文件存在）。
+func looksLikeCommand(s string) bool {
+	return !filepath.IsAbs(s) && !strings.ContainsAny(s, `/\`)
 }
 
 // IsInside 判断 target 是否位于 dir 内（含自身）。

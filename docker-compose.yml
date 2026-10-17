@@ -1,0 +1,46 @@
+# AI Gateway Docker Compose 部署示例。
+#
+# 用法：
+#   1) 修改下面 environment 里的 AIGW_ADMIN_PASSWORD
+#   2) docker compose up -d --build
+#   3) 浏览器打开 http://localhost:8787
+#
+# 说明：/data 存放数据库、日志与插件私有数据；/plugins 存放插件目录。
+# 两者都用命名卷持久化，容器重建不会丢配置与插件。
+
+services:
+  ai-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${VERSION:-dev}
+    image: ai-gateway:latest
+    container_name: ai-gateway
+    restart: unless-stopped
+    ports:
+      # 宿主机端口:容器端口；容器内固定 8787，如需改宿主机端口只改左侧
+      - "8787:8787"
+    environment:
+      # 监听地址与端口由镜像内置（0.0.0.0:8787），一般无需覆盖
+      AIGW_HOST: "0.0.0.0"
+      AIGW_PORT: "8787"
+      # 首次启动用它初始化管理员密码；初始化后改密请走面板
+      AIGW_ADMIN_PASSWORD: ${AIGW_ADMIN_PASSWORD:-change-me}
+      # 日志级别：debug | info | warn | error（也可在面板「运行期设置」中热改）
+      AIGW_LOG_LEVEL: ${AIGW_LOG_LEVEL:-info}
+      # 如需自建价格源镜像，可在此覆盖
+      # AIGW_PRICE_ENDPOINT: ""
+    volumes:
+      - ai-gateway-data:/data
+      - ai-gateway-plugins:/plugins
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  ai-gateway-data:
+  ai-gateway-plugins:

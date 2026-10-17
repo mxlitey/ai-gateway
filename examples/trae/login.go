@@ -2,23 +2,24 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
-// 网页登录（link 类）：
+// 网页登录（link 类）：回调走**网关统一入口**，插件不再监听额外端口（规范 §6.7）。
 //
-//	① POST /console/login/web → 起一个临时回环监听（内核分配端口），拼登录 URL，返回 {status,url,state}
-//	② 面板打开 url，用户在浏览器授权，浏览器跳回临时端口 /authorize
-//	③ 回调里取 refreshToken → ExchangeToken → GetUserInfo → 原子落盘 → 会话标记 ok
-//	④ 立即关闭该临时监听
+//	① POST /console/login/web → 从 X-Gateway-Callback-Base（或 AI_GATEWAY_CALLBACK_BASE）取基址，
+//	   拼出 <基址>/web/<state> 作为回调地址，返回 {status,url,state}
+//	② 面板打开 url，用户在浏览器授权，浏览器跳回网关的 /plugin-callback/<id>/web/<state>
+//	③ 网关原样转发到本插件的 /console/callback/web/<state>?<授权参数>
+//	④ 回调里取 refreshToken → ExchangeToken → GetUserInfo → 原子落盘 → 会话标记 ok
 //	⑤ 面板轮询 GET /console/login/web?state=xxx 拿到 ok → 自动刷新账号列表
 //
-// 约束（规范 §6.6）：临时监听只绑回环地址；只用 127.0.0.1:0（不能用 :0）；
-// 会话 10 分钟 TTL，超时返回 expired 并关闭监听；面板同时只跟踪一个会话，新会话替换旧会话。
+// 约束（规范 §6.7）：回调是免鉴权入口，state 必须校验（一次性 + TTL + 不可猜）；
+// 会话 10 分钟 TTL，超时返回 expired；面板同时只跟踪一个会话，新会话替换旧会话。
 
 const loginTTL = 10 * time.Minute
 
@@ -31,26 +32,6 @@ type loginSession struct {
 
 	machineID string
 	deviceID  string
-
-	ln   net.Listener
-	srv  *http.Server
-	once sync.Once
-	done chan struct{}
-}
-
-// close 关闭该会话的临时监听（幂等）。
-func (s *loginSession) close() {
-	s.once.Do(func() {
-		if s.done != nil {
-			close(s.done)
-		}
-		if s.srv != nil {
-			_ = s.srv.Close()
-		}
-		if s.ln != nil {
-			_ = s.ln.Close()
-		}
-	})
 }
 
 func (s *loginSession) setStatus(status, message string) {
@@ -69,24 +50,30 @@ func newLoginBroker(p *Plugin) *loginBroker {
 	return &loginBroker{p: p, byState: map[string]*loginSession{}}
 }
 
-// start 发起一次登录：起临时监听并返回会话（含 url 与 state）。
-func (b *loginBroker) start() (*loginSession, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, fmt.Errorf("本机回调端口不可用，请改用手工导入：%v", err)
+// callbackBase 解析本次登录应使用的回调基址，优先级见规范 §6.7：
+//  1. 请求头 X-Gateway-Callback-Base（网关每次登录现算，改域名无需重启插件）
+//  2. 环境变量 AI_GATEWAY_CALLBACK_BASE（进程启动时算好的兜底）
+//  3. 空串 —— 表示插件被单独调试、不经网关启动，调用方需自行兜底
+func callbackBase(r *http.Request) string {
+	if v := strings.TrimSpace(r.Header.Get("X-Gateway-Callback-Base")); v != "" {
+		return strings.TrimRight(v, "/")
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	callbackURL := fmt.Sprintf("http://127.0.0.1:%d/authorize", port)
+	return strings.TrimRight(strings.TrimSpace(os.Getenv("AI_GATEWAY_CALLBACK_BASE")), "/")
+}
 
+// start 发起一次登录：拼出回调地址并返回会话（含 url 与 state）。
+func (b *loginBroker) start(callbackBase string) (*loginSession, error) {
 	machineID := randomHex(16)
 	// deviceID 必须是「16 位纯数字」，且与落盘凭证共用同一个值；
 	// 否则该账号随后的每日签到会被上游拒（见 newCheckinDeviceID 的注释）。
 	deviceID, err := newCheckinDeviceID()
 	if err != nil {
-		_ = ln.Close()
 		return nil, fmt.Errorf("生成设备号失败：%v", err)
 	}
 	state := randomState()
+	// state 放进回调**路径**（而非查询串）：部分上游要求 redirect_uri 精确匹配，
+	// 路径形态更容易登记进白名单（规范 §6.7）。
+	callbackURL := callbackBase + "/web/" + state
 	authURL := BuildLoginURL(b.p.eps, machineID, deviceID, callbackURL)
 
 	s := &loginSession{
@@ -97,24 +84,12 @@ func (b *loginBroker) start() (*loginSession, error) {
 		created:   time.Now(),
 		machineID: machineID,
 		deviceID:  deviceID,
-		ln:        ln,
-		done:      make(chan struct{}),
 	}
 
-	mux := http.NewServeMux()
-	handler := func(w http.ResponseWriter, r *http.Request) { b.handleCallback(s, w, r) }
-	mux.HandleFunc("/authorize", handler)
-	mux.HandleFunc("/", handler)
-	s.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-
-	go func() { _ = s.srv.Serve(ln) }()
-	go b.expireAfterTTL(s)
-
-	// 面板同时只跟踪一个登录会话：新的替换旧的（旧的监听关闭、旧 state 立即终止）。
+	// 面板同时只跟踪一个登录会话：新的替换旧的（旧 state 立即终止）。
 	b.mu.Lock()
 	if b.cur != nil {
 		b.cur.setStatus("error", "登录会话已被新的登录取消")
-		b.cur.close()
 	}
 	b.cur = s
 	b.byState[state] = s
@@ -132,42 +107,42 @@ func (b *loginBroker) status(state string) (string, string) {
 		return "error", "登录会话不存在，请重新发起"
 	}
 	if s.Status == "pending" && time.Since(s.created) > loginTTL {
-		b.expire(s)
+		s.setStatus("expired", "授权窗口已过期，请重新发起登录")
 	}
 	return s.Status, s.Message
 }
 
-// expire 把会话标记为过期并关闭监听。
-func (b *loginBroker) expire(s *loginSession) {
-	if s.Status == "pending" {
-		s.setStatus("expired", "授权窗口已过期，请重新发起登录")
-	}
-	s.close()
+// lookup 按 state 找回会话（回调入口用）。未知 state 返回 nil，调用方必须拒绝。
+func (b *loginBroker) lookup(state string) *loginSession {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.byState[state]
 }
 
-func (b *loginBroker) expireAfterTTL(s *loginSession) {
-	timer := time.NewTimer(loginTTL)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		b.expire(s)
-	case <-s.done:
-	}
-}
-
-// closeAll 关闭全部临时监听（进程退出时调用）。
+// closeAll 清理全部会话（进程退出时调用）。
 func (b *loginBroker) closeAll() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for _, s := range b.byState {
-		s.close()
-	}
 	b.byState = map[string]*loginSession{}
 	b.cur = nil
 }
 
-// handleCallback 处理浏览器回调：解析 → ExchangeToken → GetUserInfo → 落盘 → 关闭监听。
-func (b *loginBroker) handleCallback(s *loginSession, w http.ResponseWriter, r *http.Request) {
+// handleCallback 处理网关转发来的浏览器回调（GET /console/callback/web/<state>?<授权参数>）。
+//
+// 免鉴权入口：先按 state 找回会话，找不到或已过期一律丢弃、不产生任何副作用（规范 §6.7）。
+func (b *loginBroker) handleCallback(w http.ResponseWriter, r *http.Request) {
+	state := strings.TrimSpace(r.PathValue("state"))
+	s := b.lookup(state)
+	if s == nil {
+		writeLoginPage(w, false, "登录会话不存在或已过期，请回到网关控制台重试")
+		return
+	}
+	if time.Since(s.created) > loginTTL {
+		s.setStatus("expired", "授权窗口已过期，请重新发起登录")
+		writeLoginPage(w, false, "授权窗口已过期，请回到网关控制台重新发起")
+		return
+	}
+
 	if !strings.Contains(r.URL.RawQuery, "refreshToken") && !strings.Contains(r.URL.RawQuery, "userJwt") {
 		// 可能是浏览器预取 /favicon.ico 之类，直接忽略。
 		writeLoginPage(w, false, "等待授权回调…")
@@ -178,7 +153,6 @@ func (b *loginBroker) handleCallback(s *loginSession, w http.ResponseWriter, r *
 	if err != nil {
 		s.setStatus("error", "回调解析失败："+truncateRunes(err.Error(), 60))
 		writeLoginPage(w, false, "回调解析失败，请回到网关控制台重试")
-		b.closeSoon(s)
 		return
 	}
 
@@ -192,7 +166,6 @@ func (b *loginBroker) handleCallback(s *loginSession, w http.ResponseWriter, r *
 		if err := b.p.refreshToken(&acc); err != nil {
 			s.setStatus("error", "换取 token 失败："+asUpstreamError(err).Msg)
 			writeLoginPage(w, false, "登录失败，请回到网关控制台重试")
-			b.closeSoon(s)
 			return
 		}
 	}
@@ -210,13 +183,11 @@ func (b *loginBroker) handleCallback(s *loginSession, w http.ResponseWriter, r *
 	if strings.TrimSpace(acc.UID) == "" || strings.TrimSpace(acc.AccessToken) == "" {
 		s.setStatus("error", "未能从回调确定账号信息，请重试或改用手工导入")
 		writeLoginPage(w, false, "登录失败，请回到网关控制台重试")
-		b.closeSoon(s)
 		return
 	}
 	if err := ensureCheckinDeviceID(&acc); err != nil {
 		s.setStatus("error", "生成 deviceId 失败："+err.Error())
 		writeLoginPage(w, false, "登录失败，请回到网关控制台重试")
-		b.closeSoon(s)
 		return
 	}
 
@@ -227,15 +198,6 @@ func (b *loginBroker) handleCallback(s *loginSession, w http.ResponseWriter, r *
 	}
 	s.setStatus("ok", fmt.Sprintf("登录成功，账号 %s %s", verb, saved.name()))
 	writeLoginPage(w, true, "登录成功，可关闭此窗口")
-	b.closeSoon(s)
-}
-
-// closeSoon 稍后关闭监听，保证当前响应能完整写出。
-func (b *loginBroker) closeSoon(s *loginSession) {
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		s.close()
-	}()
 }
 
 // writeLoginPage 返回友好的 HTML 提示（不返回 JSON）。
@@ -274,7 +236,13 @@ func (p *Plugin) handleLoginStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "未知的登录方式："+method)
 		return
 	}
-	s, err := p.login.start()
+	base := callbackBase(r)
+	if base == "" {
+		// 插件被单独调试（未经网关启动）：没有统一回调入口可用，如实告知而不是静默降级。
+		writeErr(w, http.StatusBadGateway, "缺少回调基址：请经网关启动插件，或手工导入凭证")
+		return
+	}
+	s, err := p.login.start(base)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return

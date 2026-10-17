@@ -152,4 +152,5 @@ const (
 	SettingAdminSessionKey   = "admin.session_secret"  // 会话签名密钥（hex）
 	SettingInitialized       = "gateway.initialized"   // "1" 表示已完成首次向导
 	SettingPriceRefreshAt    = "meta.price_refresh_at" // 上次价格快照刷新时间戳
+	SettingExternalBaseURL   = "gateway.external_base" // 面板配置的外部访问地址（反代/隧道场景）
 )

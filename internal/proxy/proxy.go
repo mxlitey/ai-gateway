@@ -17,6 +17,7 @@ import (
 	"github.com/czg95/ai-gateway-v2/internal/channel"
 	"github.com/czg95/ai-gateway-v2/internal/id"
 	"github.com/czg95/ai-gateway-v2/internal/model"
+	"github.com/czg95/ai-gateway-v2/internal/penalty"
 	"github.com/czg95/ai-gateway-v2/internal/pricing"
 	"github.com/czg95/ai-gateway-v2/internal/routing"
 	"github.com/czg95/ai-gateway-v2/internal/store"
@@ -28,6 +29,7 @@ type Handler struct {
 	client   *http.Client
 	balancer *routing.Balancer
 	pricer   *pricing.Resolver
+	cooler   *penalty.Cooler
 }
 
 // New 创建代理处理器。pricer 可为 nil（不估算费用）。
@@ -46,14 +48,42 @@ func New(s *store.Store, pricer *pricing.Resolver) *Handler {
 		// SSE 不能压缩，否则代理会缓冲整个流
 		DisableCompression: true,
 	}
+	balancer := routing.New(s)
+	cooler := penalty.New(s, penalty.DefaultConfig())
+	// 选路时严格屏蔽冷却中的密钥
+	balancer.SetCoolingChecker(cooler.Cooling)
 	return &Handler{
 		store:    s,
-		balancer: routing.New(s),
+		balancer: balancer,
 		pricer:   pricer,
+		cooler:   cooler,
 		// 不设置 Client.Timeout：长连接流式不能被总超时打断
 		client: &http.Client{Transport: transport},
 	}
 }
+
+// coolerConfig 读取当前生效的密钥冷却规则（面板可改，热生效）。
+func (h *Handler) coolerConfig() penalty.Config {
+	cfg := penalty.DefaultConfig()
+	if h.store == nil {
+		return cfg
+	}
+	rs, err := h.store.LoadRuntimeSettings()
+	if err != nil {
+		return cfg
+	}
+	cfg.Enabled = rs.KeyCooldownEnabled
+	if rs.KeyCooldownBaseSeconds > 0 {
+		cfg.Base = time.Duration(rs.KeyCooldownBaseSeconds) * time.Second
+	}
+	if rs.KeyCooldownMaxSeconds > 0 {
+		cfg.Max = time.Duration(rs.KeyCooldownMaxSeconds) * time.Second
+	}
+	return cfg
+}
+
+// Cooler 暴露密钥冷却器，供管理接口查询与手动重置。
+func (h *Handler) Cooler() *penalty.Cooler { return h.cooler }
 
 // Handle 处理 /v1/* 请求。
 func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
@@ -142,6 +172,7 @@ type fwdSpec struct {
 // forward 依次尝试目标，遇到 404/429/5xx/网络错误/无效响应则切换下一个。
 func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwdSpec) *http.Response {
 	var lastErr, last429 string
+	cdCfg := h.coolerConfig()
 
 	for _, t := range spec.targets {
 		spec.rec.Attempt()
@@ -181,6 +212,7 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 		resp, err := h.client.Do(req)
 		if err != nil {
 			lastErr = "network error: " + err.Error()
+			h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, 0)
 			h.logError(t, spec.publicModel, 0, lastErr+" ("+targetURL+")")
 			continue
 		}
@@ -188,6 +220,7 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 		switch {
 		case resp.StatusCode == http.StatusNotFound:
 			lastErr = "HTTP 404 (model not found)"
+			h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, 404)
 			h.logError(t, spec.publicModel, 404, lastErr)
 			closeBody(resp)
 			continue
@@ -195,6 +228,7 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 		case resp.StatusCode == http.StatusTooManyRequests:
 			last429 = readBodyLimited(resp, 4096)
 			lastErr = "HTTP 429 (rate limited)"
+			h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, 429)
 			h.logError(t, spec.publicModel, 429, lastErr)
 			closeBody(resp)
 			continue
@@ -203,6 +237,7 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 		// （与 docs/plugin-spec.md §5.2 的错误语义一致）
 		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 			lastErr = "HTTP " + strconv.Itoa(resp.StatusCode) + " (credential rejected)"
+			h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, resp.StatusCode)
 			h.logError(t, spec.publicModel, resp.StatusCode, lastErr)
 			closeBody(resp)
 			continue
@@ -212,13 +247,16 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 			if retry {
 				closeBody(resp)
 				lastErr = reason
+				h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, resp.StatusCode)
 				continue
 			}
 			spec.rec.Served(t)
+			h.cooler.Success(t.Channel.ID, t.Key)
 			return out
 
 		default:
 			lastErr = "HTTP " + strconv.Itoa(resp.StatusCode)
+			h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, resp.StatusCode)
 			h.logError(t, spec.publicModel, resp.StatusCode, lastErr)
 			closeBody(resp)
 			continue

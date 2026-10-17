@@ -223,11 +223,10 @@ export default function Usage() {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
         <Stat label="请求数" value={fmtInt(s.requests)} />
         <Stat label="总 token" value={fmtCompact(s.total_tokens)} />
         <Stat label="市场价" value={fmtUSD(s.cost_usd)} />
-        <Stat label="未匹配价格" value={fmtInt(s.unpriced_requests)} />
       </div>
 
       <Card title="用量趋势">

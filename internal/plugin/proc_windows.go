@@ -150,3 +150,6 @@ func wrapCommand(entry string, args []string) (string, []string) {
 	}
 	return entry, args
 }
+
+// ensureExecutable Windows 无 Unix 可执行位概念，无需处理。
+func ensureExecutable(string) {}

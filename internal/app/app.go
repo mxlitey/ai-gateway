@@ -110,7 +110,27 @@ func (a *App) Start() error {
 		return err
 	}
 
+	// 运行期设置：日志级别、插件监管策略、价格刷新节奏（面板可改，这里取启动时的值）
+	runtime, err := st.LoadRuntimeSettings()
+	if err != nil {
+		slog.Error("读取运行期设置失败，改用默认值", "err", err)
+		runtime = store.DefaultRuntimeSettings()
+	}
+	// 日志级别：面板设置优先，其次启动参数 / 环境变量
+	if runtime.LogLevel != "" {
+		config.ApplyLogLevel(runtime.LogLevel)
+	} else {
+		config.ApplyLogLevel(a.cfg.LogLevel)
+	}
+
 	host := plugin.New(a.cfg, st, slog.Default())
+	host.SetPolicy(plugin.Policy{
+		ProbeInterval:       time.Duration(runtime.PluginProbeIntervalSeconds) * time.Second,
+		ProbeTimeout:        time.Duration(runtime.PluginProbeTimeoutSeconds) * time.Second,
+		UnhealthyThreshold:  runtime.PluginUnhealthyThreshold,
+		MaxFailures:         runtime.PluginMaxFailures,
+		AutoCheckinInterval: time.Duration(runtime.PluginAutoCheckinMinutes) * time.Minute,
+	})
 
 	pricer := pricing.New(st)
 	if err := pricer.Reload(); err != nil {
@@ -118,6 +138,9 @@ func (a *App) Start() error {
 	}
 
 	api := admin.NewAPI(st, host, pricer, a.cfg)
+	proxyHandler := proxy.New(st, pricer)
+	// 管理端可查询/重置上游密钥冷却状态
+	api.SetCooler(proxyHandler.Cooler())
 	if a.cfg.AdminPassword != "" {
 		if initialized, err := api.Service().IsInitialized(); err == nil && !initialized {
 			if err := api.Service().Setup(a.cfg.AdminPassword); err != nil {
@@ -128,7 +151,7 @@ func (a *App) Start() error {
 		}
 	}
 
-	router := httpapi.NewRouter(httpapi.Deps{Proxy: proxy.New(st, pricer), Admin: api})
+	router := httpapi.NewRouter(httpapi.Deps{Proxy: proxyHandler, Admin: api, Host: host})
 	srv := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 15 * time.Second}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -167,22 +190,56 @@ func (a *App) Start() error {
 	// 自动签到：宿主定期对运行中、声明 checkin 能力的插件补签（插件不再自行定时签到）
 	host.StartAutoCheckin(ctx)
 
-	// 价格快照：启动后立刻尝试一次，之后每小时复查（同一小时内只拉一次，失败沿用现有价格表）
+	// 价格快照：启动后立刻尝试一次，之后按设置的间隔复查（同一周期内只拉一次，失败沿用现有价格表）。
+	// 面板改了间隔或价格源地址后，下一轮复查即按新值执行，无需重启。
 	go func() {
 		client := &http.Client{Timeout: 45 * time.Second}
-		ticker := time.NewTicker(time.Hour)
+		interval := priceInterval(runtime)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
-			pricer.RefreshIfDue(ctx, client, pricing.Endpoint(), time.Hour)
+			pricer.RefreshIfDue(ctx, client, a.priceEndpoint(), interval)
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 			}
+			if next := priceInterval(a.loadRuntimeSettings()); next != interval {
+				interval = next
+				ticker.Reset(interval)
+			}
 		}
 	}()
 
 	return nil
+}
+
+// loadRuntimeSettings 读取运行期设置；失败时回退为默认值。
+func (a *App) loadRuntimeSettings() store.RuntimeSettings {
+	if a.store == nil {
+		return store.DefaultRuntimeSettings()
+	}
+	rs, err := a.store.LoadRuntimeSettings()
+	if err != nil {
+		return store.DefaultRuntimeSettings()
+	}
+	return rs
+}
+
+// priceEndpoint 返回生效的价格源地址：面板设置优先，其次环境变量 / 内置默认。
+func (a *App) priceEndpoint() string {
+	if rs := a.loadRuntimeSettings(); rs.PriceEndpoint != "" {
+		return rs.PriceEndpoint
+	}
+	return pricing.Endpoint()
+}
+
+// priceInterval 把「价格刷新间隔（分钟）」换算为时长，非法值回退为 1 小时。
+func priceInterval(rs store.RuntimeSettings) time.Duration {
+	if rs.PriceRefreshMinutes <= 0 {
+		return time.Hour
+	}
+	return time.Duration(rs.PriceRefreshMinutes) * time.Minute
 }
 
 // Stop 停止网关：关闭 HTTP 服务、回收插件进程、释放数据库。

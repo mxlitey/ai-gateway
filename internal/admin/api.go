@@ -18,6 +18,7 @@ import (
 	"github.com/czg95/ai-gateway-v2/internal/id"
 	"github.com/czg95/ai-gateway-v2/internal/model"
 	"github.com/czg95/ai-gateway-v2/internal/netinfo"
+	"github.com/czg95/ai-gateway-v2/internal/penalty"
 	"github.com/czg95/ai-gateway-v2/internal/plugin"
 	"github.com/czg95/ai-gateway-v2/internal/pricing"
 	"github.com/czg95/ai-gateway-v2/internal/proxy"
@@ -32,6 +33,8 @@ type API struct {
 	host   *plugin.Host
 	pricer *pricing.Resolver
 	cfg    *config.Config
+	// cooler 上游密钥冷却器（由 app 层在构造 proxy 后注入），用于查询与手动重置。
+	cooler *penalty.Cooler
 }
 
 // NewAPI 创建管理接口处理器。host / pricer 可为 nil；cfg 提供监听地址与数据目录等运行信息。
@@ -45,6 +48,9 @@ func NewAPI(s *store.Store, host *plugin.Host, pricer *pricing.Resolver, cfg *co
 		cfg:    cfg,
 	}
 }
+
+// SetCooler 注入密钥冷却器（供 /key-cooldowns 查询与重置）。
+func (a *API) SetCooler(c *penalty.Cooler) { a.cooler = c }
 
 // Service 暴露管理端服务（供路由层判断初始化状态）。
 func (a *API) Service() *Service { return a.svc }
@@ -128,6 +134,15 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 	case path == "/password" && method == http.MethodPost:
 		a.changePassword(w, r)
 
+	case path == "/external-base" && method == http.MethodPut:
+		a.setExternalBase(w, r)
+
+	// ---- 运行期设置（面板可改，多数立即生效） ----
+	case path == "/settings" && method == http.MethodGet:
+		a.getSettings(w)
+	case path == "/settings" && method == http.MethodPut:
+		a.updateSettings(w, r)
+
 	// ---- 渠道 ----
 	case path == "/channels" && method == http.MethodGet:
 		a.listChannels(w)
@@ -147,6 +162,12 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 	// ---- 错误日志 ----
 	case path == "/errors" && method == http.MethodGet:
 		a.listErrors(w, r)
+
+	// ---- 上游密钥冷却 ----
+	case path == "/key-cooldowns" && method == http.MethodGet:
+		a.listKeyCooldowns(w)
+	case path == "/key-cooldowns" && method == http.MethodDelete:
+		a.resetKeyCooldown(w, r)
 
 	// ---- 上游辅助 ----
 	case path == "/fetch-models" && method == http.MethodPost:
@@ -630,6 +651,38 @@ func (a *API) listErrors(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]any{"date": date, "channels": result})
 }
 
+// ---------- 上游密钥冷却 ----------
+
+// listKeyCooldowns 返回当前仍在冷却中的上游密钥（含渠道名与剩余秒数）。
+func (a *API) listKeyCooldowns(w http.ResponseWriter) {
+	items, err := a.store.ListActiveKeyCooldowns(time.Now().UnixMilli())
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	jsonOK(w, map[string]any{"items": items})
+}
+
+// resetKeyCooldown 手动解除某条冷却；参数通过查询串 channel_id / key_hint 指定。
+func (a *API) resetKeyCooldown(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	channelID := strings.TrimSpace(q.Get("channel_id"))
+	keyHint := strings.TrimSpace(q.Get("key_hint"))
+	if channelID == "" || keyHint == "" {
+		jsonErr(w, http.StatusBadRequest, "channel_id 与 key_hint 必填")
+		return
+	}
+	// 清理内存状态后落库删除由 cooler.Reset 一并完成
+	if err := a.store.ClearKeyCooldown(channelID, keyHint); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if a.cooler != nil {
+		a.cooler.Reset(channelID, keyHint)
+	}
+	jsonOK(w, map[string]any{"success": true})
+}
+
 // manualCleanupDays 手动清理阈值：错误日志与用量明细都长期存储，
 // 只有用户在用量页显式点击「清理旧记录」时才删除更早的记录（两张表按同一时间点清理）。
 const manualCleanupDays = 90
@@ -652,13 +705,173 @@ func (a *API) runtimeInfo(w http.ResponseWriter) {
 	}
 	base := fmt.Sprintf("http://%s:%d", host, cfg.Port)
 	jsonOK(w, map[string]any{
-		"lan":         lan,
-		"listen_host": cfg.Host,
-		"port":        cfg.Port,
-		"access_url":  base,
-		"api_url":     base + "/v1",
-		"data_dir":    cfg.DataDir,
+		"lan":           lan,
+		"listen_host":   cfg.Host,
+		"port":          cfg.Port,
+		"access_url":    base,
+		"api_url":       base + "/v1",
+		"data_dir":      cfg.DataDir,
+		"external_base": a.externalBaseURL(),
 	})
+}
+
+// externalBaseURL 读取面板配置的「外部访问地址」（反代 / 隧道场景），未配置返回空串。
+func (a *API) externalBaseURL() string {
+	v, ok, err := a.store.GetSetting(store.SettingExternalBaseURL)
+	if err != nil || !ok {
+		return ""
+	}
+	return strings.TrimSpace(v)
+}
+
+// setExternalBase 保存「外部访问地址」。留空表示清除配置，回调基址回退为按监听地址推导。
+func (a *API) setExternalBase(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ExternalBase string `json:"external_base"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	value := strings.TrimRight(strings.TrimSpace(body.ExternalBase), "/")
+	if value != "" {
+		// 只接受「协议 + 主机[:端口]」，路径前缀由反代剥离（见 docs/plugin-spec.md §6.6）
+		var rest string
+		switch {
+		case strings.HasPrefix(value, "https://"):
+			rest = value[len("https://"):]
+		case strings.HasPrefix(value, "http://"):
+			rest = value[len("http://"):]
+		default:
+			jsonErr(w, http.StatusBadRequest, "外部访问地址需以 http:// 或 https:// 开头")
+			return
+		}
+		if rest == "" || strings.ContainsAny(rest, " \t/?#@") {
+			jsonErr(w, http.StatusBadRequest, "外部访问地址只能填到域名（可带端口），不要带路径或查询串")
+			return
+		}
+	}
+	if err := a.store.SetSetting(store.SettingExternalBaseURL, value); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	jsonOK(w, map[string]any{"success": true, "external_base": value})
+}
+
+// ---------- 运行期设置 ----------
+
+// getSettings 返回可在面板调整的运行期设置；字符串项为空表示沿用启动参数 / 环境变量。
+func (a *API) getSettings(w http.ResponseWriter) {
+	rs, err := a.store.LoadRuntimeSettings()
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	envLogLevel := ""
+	if a.cfg != nil {
+		envLogLevel = a.cfg.LogLevel
+	}
+	jsonOK(w, map[string]any{
+		"settings":               rs,
+		"defaults":               store.DefaultRuntimeSettings(),
+		"env_log_level":          envLogLevel,
+		"env_price_endpoint":     a.priceEndpointDefault(),
+		"effective_price_source": a.priceEndpoint(),
+	})
+}
+
+// updateSettings 保存运行期设置并立即应用（日志级别、价格地址、插件监管策略）。
+func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
+	var body store.RuntimeSettings
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	rs, err := a.normalizeRuntimeSettings(body)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.store.SaveRuntimeSettings(rs); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.applyRuntimeSettings(rs)
+	jsonOK(w, map[string]any{"success": true, "settings": rs})
+}
+
+// normalizeRuntimeSettings 校验并规整提交的运行期设置。
+func (a *API) normalizeRuntimeSettings(in store.RuntimeSettings) (store.RuntimeSettings, error) {
+	out := in
+	out.LogLevel = strings.ToLower(strings.TrimSpace(in.LogLevel))
+	if out.LogLevel != "" {
+		switch out.LogLevel {
+		case "debug", "info", "warn", "warning", "error":
+		default:
+			return out, fmt.Errorf("日志级别需为 debug / info / warn / error 之一")
+		}
+	}
+
+	out.PriceEndpoint = strings.TrimSpace(in.PriceEndpoint)
+	if out.PriceEndpoint != "" &&
+		!strings.HasPrefix(out.PriceEndpoint, "http://") &&
+		!strings.HasPrefix(out.PriceEndpoint, "https://") {
+		return out, fmt.Errorf("价格源地址需以 http:// 或 https:// 开头")
+	}
+
+	type bound struct {
+		name string
+		val  int
+		min  int
+		max  int
+	}
+	bounds := []bound{
+		{"价格刷新间隔", out.PriceRefreshMinutes, 1, 24 * 60},
+		{"探活间隔", out.PluginProbeIntervalSeconds, 1, 3600},
+		{"探活超时", out.PluginProbeTimeoutSeconds, 1, 3600},
+		{"不健康阈值", out.PluginUnhealthyThreshold, 1, 1000},
+		{"最大失败次数", out.PluginMaxFailures, 1, 1000},
+		{"自动签到间隔", out.PluginAutoCheckinMinutes, 1, 24 * 60},
+		{"密钥初始冷却", out.KeyCooldownBaseSeconds, 1, 86400},
+		{"密钥冷却上限", out.KeyCooldownMaxSeconds, 1, 7 * 24 * 60 * 60},
+	}
+	for _, b := range bounds {
+		if b.val < b.min || b.val > b.max {
+			return out, fmt.Errorf("%s需为 %d-%d 之间的整数", b.name, b.min, b.max)
+		}
+	}
+	if out.KeyCooldownMaxSeconds < out.KeyCooldownBaseSeconds {
+		return out, fmt.Errorf("密钥冷却上限不能小于初始冷却")
+	}
+	return out, nil
+}
+
+// applyRuntimeSettings 让设置立即生效：日志级别、插件监管策略、价格地址（后续刷新即生效）。
+func (a *API) applyRuntimeSettings(rs store.RuntimeSettings) {
+	// 日志级别：留空表示沿用启动参数 / 环境变量，由 app 层在启动时已应用过，这里不覆盖
+	if rs.LogLevel != "" {
+		config.ApplyLogLevel(rs.LogLevel)
+	}
+	if a.host != nil {
+		a.host.SetPolicy(plugin.Policy{
+			ProbeInterval:       time.Duration(rs.PluginProbeIntervalSeconds) * time.Second,
+			ProbeTimeout:        time.Duration(rs.PluginProbeTimeoutSeconds) * time.Second,
+			UnhealthyThreshold:  rs.PluginUnhealthyThreshold,
+			MaxFailures:         rs.PluginMaxFailures,
+			AutoCheckinInterval: time.Duration(rs.PluginAutoCheckinMinutes) * time.Minute,
+		})
+	}
+}
+
+// priceEndpoint 返回生效的价格源地址：面板设置优先，其次环境变量 / 内置默认。
+func (a *API) priceEndpoint() string {
+	if rs, err := a.store.LoadRuntimeSettings(); err == nil && rs.PriceEndpoint != "" {
+		return rs.PriceEndpoint
+	}
+	return a.priceEndpointDefault()
+}
+
+// priceEndpointDefault 返回未在面板配置时的价格源地址（环境变量或内置默认）。
+func (a *API) priceEndpointDefault() string {
+	return pricing.Endpoint()
 }
 
 // ---------- 上游辅助 ----------
@@ -1218,6 +1431,14 @@ func (a *API) pluginConsole(w http.ResponseWriter, r *http.Request, pluginID, su
 	}
 	req.Header.Set("Accept", "application/json")
 
+	// 登录请求：注入本次推导出的回调基址，插件据此拼授权链接的回调地址。
+	// 改隧道域名 / 换访问入口后无需重启插件即可生效（见 docs/plugin-spec.md §6.6）。
+	if strings.HasPrefix(sub, "login/") {
+		if base := a.host.CallbackBaseForPlugin(pluginID, r); base != "" {
+			req.Header.Set(plugin.CallbackHeader, base)
+		}
+	}
+
 	resp, err := a.client.Do(req)
 	if err != nil {
 		jsonErr(w, http.StatusBadGateway, "调用插件控制台失败: "+err.Error())
@@ -1299,7 +1520,7 @@ func (a *API) usageSummary(w http.ResponseWriter, r *http.Request) {
 		"days":         days,
 		"summary":      sum,
 		"price_count":  priceCount,
-		"price_source": pricing.Endpoint(),
+		"price_source": a.priceEndpoint(),
 		"refreshed_at": refreshedAt,
 	})
 }
@@ -1450,7 +1671,7 @@ func (a *API) listPrices(w http.ResponseWriter) {
 	jsonOK(w, map[string]any{
 		"items":        items,
 		"count":        len(items),
-		"endpoint":     pricing.Endpoint(),
+		"endpoint":     a.priceEndpoint(),
 		"refreshed_at": refreshedAt,
 		"unit":         "USD / 百万 token",
 	})
@@ -1464,7 +1685,7 @@ func (a *API) refreshPrices(w http.ResponseWriter) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
-	n, err := a.pricer.Refresh(ctx, a.client, pricing.Endpoint())
+	n, err := a.pricer.Refresh(ctx, a.client, a.priceEndpoint())
 	if err != nil {
 		jsonErr(w, http.StatusBadGateway, err.Error())
 		return

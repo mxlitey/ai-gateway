@@ -1,3 +1,5 @@
+//go:build windows
+
 package main
 
 import (
@@ -95,8 +97,8 @@ func (s *GatewayService) attach(app *application.App, win *application.WebviewWi
 		s.lan = isLANHost(v)
 	}
 
-	// 接管 slog：内核日志同时进界面
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logSink{s: s}, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	// 接管 slog：内核日志同时进界面，级别走全局 Leveler（面板可热切换）
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logSink{s: s}, &slog.HandlerOptions{Level: config.Leveler()})))
 
 	s.appendLog("窗口已就绪，数据目录：" + cfg.DataDir)
 	s.Start(s.port, s.lan)

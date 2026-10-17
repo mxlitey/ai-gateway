@@ -37,16 +37,36 @@ const (
 )
 
 const (
-	probeInterval      = 2 * time.Second // 探活间隔
-	probeTimeout       = 2 * time.Second // 单次探活超时
-	unhealthyThreshold = 3               // 连续失败多少次判定不健康
-	maxFailures        = 5               // 连续失败多少次后放弃自动重启
-	stopGracePeriod    = 5 * time.Second // 优雅停止等待时长
-	defaultChannelKey  = "gw-local"      // 插件没有账号时使用的占位渠道密钥
+	stopGracePeriod   = 5 * time.Second // 优雅停止等待时长
+	defaultChannelKey = "gw-local"      // 插件没有账号时使用的占位渠道密钥
 
-	autoCheckinInterval = time.Hour        // 自动签到复查间隔
-	checkinTimeout      = 30 * time.Second // 单次签到请求超时
+	checkinTimeout = 30 * time.Second // 单次签到请求超时
 )
+
+// Policy 插件监管策略：探活与自动签到的节奏，可在面板中调整并热生效。
+type Policy struct {
+	// ProbeInterval 探活间隔。
+	ProbeInterval time.Duration
+	// ProbeTimeout 单次探活超时。
+	ProbeTimeout time.Duration
+	// UnhealthyThreshold 连续探活失败多少次判定不健康并触发重启。
+	UnhealthyThreshold int
+	// MaxFailures 连续失败多少次后放弃自动重启。
+	MaxFailures int
+	// AutoCheckinInterval 自动签到复查间隔。
+	AutoCheckinInterval time.Duration
+}
+
+// DefaultPolicy 返回内置的监管策略默认值。
+func DefaultPolicy() Policy {
+	return Policy{
+		ProbeInterval:       2 * time.Second,
+		ProbeTimeout:        2 * time.Second,
+		UnhealthyThreshold:  3,
+		MaxFailures:         5,
+		AutoCheckinInterval: time.Hour,
+	}
+}
 
 type instance struct {
 	manifest *Manifest
@@ -90,6 +110,8 @@ type Host struct {
 	mu       sync.Mutex
 	items    map[string]*instance
 	shutdown bool
+	// policy 监管策略（探活 / 重启 / 签到节奏），可在面板中热更新。
+	policy Policy
 }
 
 // New 创建插件宿主。
@@ -103,7 +125,37 @@ func New(cfg *config.Config, st *store.Store, logger *slog.Logger) *Host {
 		log:    logger,
 		items:  map[string]*instance{},
 		client: &http.Client{Transport: &http.Transport{DisableCompression: true}},
+		policy: DefaultPolicy(),
 	}
+}
+
+// SetPolicy 更新监管策略：已在运行的插件在下一轮巡检/签到生效。
+func (h *Host) SetPolicy(p Policy) {
+	if p.ProbeInterval <= 0 {
+		p.ProbeInterval = 2 * time.Second
+	}
+	if p.ProbeTimeout <= 0 {
+		p.ProbeTimeout = 2 * time.Second
+	}
+	if p.UnhealthyThreshold <= 0 {
+		p.UnhealthyThreshold = 3
+	}
+	if p.MaxFailures <= 0 {
+		p.MaxFailures = 5
+	}
+	if p.AutoCheckinInterval <= 0 {
+		p.AutoCheckinInterval = time.Hour
+	}
+	h.mu.Lock()
+	h.policy = p
+	h.mu.Unlock()
+}
+
+// Policy 返回当前监管策略快照。
+func (h *Host) Policy() Policy {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.policy
 }
 
 // ---------- 发现与注册 ----------
@@ -571,6 +623,7 @@ func (h *Host) supervise(inst *instance) {
 	}()
 
 	backoffs := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+	maxFailures := h.Policy().MaxFailures
 
 	for {
 		if h.stopRequested(inst) {
@@ -677,13 +730,18 @@ func (h *Host) spawn(inst *instance) error {
 		return fmt.Errorf("创建插件数据目录失败: %w", err)
 	}
 
-	entry := inst.manifest.EntryPath()
-	args := make([]string, 0, len(inst.manifest.Args))
-	for _, a := range inst.manifest.Args {
+	entry, rawArgs, err := inst.manifest.resolveEntry()
+	if err != nil {
+		return err
+	}
+	args := make([]string, 0, len(rawArgs))
+	for _, a := range rawArgs {
 		args = append(args, substitute(a, vars))
 	}
 	// Windows 上 .cmd/.bat 需要经命令解释器转发
 	entry, args = wrapCommand(entry, args)
+	// 非 Windows 平台需要可执行位；从 zip 解压或卷复制过来的文件常会丢失该权限。
+	ensureExecutable(entry)
 
 	cmd := exec.Command(entry, args...)
 	cmd.Dir = inst.dir
@@ -697,6 +755,8 @@ func (h *Host) spawn(inst *instance) error {
 		"AI_GATEWAY_PLUGIN_PORT="+strconv.Itoa(inst.port),
 		"AI_GATEWAY_PLUGIN_DIR="+inst.dir,
 		"AI_GATEWAY_PLUGIN_DATA="+vars.Data,
+		// 统一登录回调入口的基址（见 callback.go）；登录时还会用请求头覆盖它
+		CallbackEnvVar+"="+h.CallbackBase(inst),
 	)
 	cmd.Env = env
 
@@ -785,12 +845,17 @@ func (h *Host) waitReady(inst *instance) bool {
 
 // watch 巡检运行中的插件，返回异常原因（空串表示收到停止请求）。
 func (h *Host) watch(inst *instance) string {
-	ticker := time.NewTicker(probeInterval)
+	policy := h.Policy()
+	ticker := time.NewTicker(policy.ProbeInterval)
 	defer ticker.Stop()
 
-	// 每隔 accountSyncTicks 次探活（约 30s）把插件账号同步进渠道密钥，
-	// 插件内部新增/删除账号后无需人工介入即可反映到渠道里。
-	const accountSyncTicks = 15
+	// 把插件账号同步进渠道密钥的节拍固定在约 30s：探活间隔可配置后，
+	// 用「探活次数」换算，保证账号同步频率不随探活间隔一起被放大或缩小。
+	const accountSyncWindow = 30 * time.Second
+	accountSyncTicks := int(accountSyncWindow / policy.ProbeInterval)
+	if accountSyncTicks < 1 {
+		accountSyncTicks = 1
+	}
 
 	ticks := 0
 	fails := 0
@@ -811,7 +876,7 @@ func (h *Host) watch(inst *instance) string {
 				continue
 			}
 			fails++
-			if fails >= unhealthyThreshold {
+			if fails >= policy.UnhealthyThreshold {
 				return fmt.Sprintf("连续 %d 次探活失败", fails)
 			}
 		}
@@ -822,7 +887,7 @@ func (h *Host) watch(inst *instance) string {
 func (h *Host) probe(inst *instance) bool {
 	addr := "127.0.0.1:" + strconv.Itoa(inst.port)
 
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), h.Policy().ProbeTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+healthPath, nil)
@@ -1020,7 +1085,8 @@ func (h *Host) pluginAccountKeys(inst *instance, existing []model.ChannelKey) (k
 // 这里只负责运行期间的定期复查，覆盖跨天场景。
 func (h *Host) StartAutoCheckin(ctx context.Context) {
 	go func() {
-		ticker := time.NewTicker(autoCheckinInterval)
+		interval := h.Policy().AutoCheckinInterval
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -1028,6 +1094,11 @@ func (h *Host) StartAutoCheckin(ctx context.Context) {
 				return
 			case <-ticker.C:
 				h.runAutoCheckin()
+				// 面板改过间隔就重建 ticker，让新节奏无需重启即可生效
+				if next := h.Policy().AutoCheckinInterval; next != interval {
+					interval = next
+					ticker.Reset(interval)
+				}
 			}
 		}
 	}()

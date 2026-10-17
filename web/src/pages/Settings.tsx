@@ -1,18 +1,51 @@
 import { useState, type FormEvent } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { api } from '../lib/api'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api, type RuntimeSettings } from '../lib/api'
 import { toast } from '../lib/toast'
-import { Button, Card, ErrorText, Field, Input } from '../components/ui'
+import { Button, Card, ErrorText, Field, Input, Segmented } from '../components/ui'
 
 export default function Settings() {
+  const queryClient = useQueryClient()
   const [oldPassword, setOldPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirm, setConfirm] = useState('')
   // 清理旧记录：保留最近多少天（0 = 连当天一起清理）
   const [cleanupDays, setCleanupDays] = useState('90')
+  // 外部访问地址（反代 / 隧道场景下插件登录回调使用的基址）
+  const [externalBase, setExternalBase] = useState('')
 
   const runtime = useQuery({ queryKey: ['runtime'], queryFn: api.runtimeInfo })
   const info = runtime.data
+  // 首次拉到配置后回填输入框；之后用户编辑不受影响
+  const [externalBaseLoaded, setExternalBaseLoaded] = useState(false)
+  if (info && !externalBaseLoaded) {
+    setExternalBase(info.external_base ?? '')
+    setExternalBaseLoaded(true)
+  }
+
+  // 运行期设置（日志级别 / 价格源 / 插件监管策略）
+  const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.settings })
+  const [draft, setDraft] = useState<RuntimeSettings | null>(null)
+  if (settingsQuery.data && draft === null) {
+    setDraft(settingsQuery.data.settings)
+  }
+  const defaults = settingsQuery.data?.defaults
+
+  const saveSettings = useMutation({
+    mutationFn: (body: RuntimeSettings) => api.updateSettings(body),
+    onSuccess: () => {
+      toast('ok', '运行期设置已保存并生效')
+      void queryClient.invalidateQueries({ queryKey: ['settings'] })
+      void queryClient.invalidateQueries({ queryKey: ['prices'] })
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  // 数值输入：空串按 0 处理，由后端校验区间
+  function setNum(key: keyof RuntimeSettings, raw: string) {
+    if (!draft) return
+    setDraft({ ...draft, [key]: raw === '' ? 0 : Number(raw) })
+  }
 
   const change = useMutation({
     mutationFn: () => api.changePassword(oldPassword, newPassword),
@@ -21,6 +54,15 @@ export default function Settings() {
       setOldPassword('')
       setNewPassword('')
       setConfirm('')
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  const saveExternalBase = useMutation({
+    mutationFn: () => api.setExternalBase(externalBase.trim()),
+    onSuccess: (res) => {
+      toast('ok', res.external_base ? '外部访问地址已保存' : '已清除外部访问地址')
+      void queryClient.invalidateQueries({ queryKey: ['runtime'] })
     },
     onError: (err: Error) => toast('err', err.message),
   })
@@ -123,6 +165,202 @@ export default function Settings() {
         <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
           安全提示：默认仅监听本机回环地址。若改为对外监听，请自行确认网络与访问控制。
         </p>
+      </Card>
+
+      <Card title="外部访问地址">
+        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+          用反向代理 / 隧道（nginx、frp、Cloudflare Tunnel 等）把网关暴露到公网时，填这里的外部域名。
+          插件登录授权完成后，浏览器会跳回这个地址下的统一回调入口；留空则按监听地址推导（仅本机 / 局域网可用）。
+        </p>
+        <div className="max-w-md space-y-4">
+          <Field
+            label="外部访问地址"
+            hint="只填到域名（可带端口），如 https://gw.example.com；不要带路径。反代需把路径原样透传到网关根路径。"
+          >
+            <Input
+              value={externalBase}
+              onChange={(e) => setExternalBase(e.target.value)}
+              placeholder="https://gw.example.com"
+            />
+          </Field>
+          <Button
+            variant="primary"
+            disabled={saveExternalBase.isPending || externalBase.trim() === (info?.external_base ?? '')}
+            onClick={() => saveExternalBase.mutate()}
+          >
+            {saveExternalBase.isPending ? '保存中…' : '保存'}
+          </Button>
+        </div>
+      </Card>
+
+      <Card title="运行期设置">
+        {settingsQuery.isError ? (
+          <div className="mb-3">
+            <ErrorText text={(settingsQuery.error as Error).message} />
+          </div>
+        ) : null}
+        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+          这些设置保存在数据库里，保存后立即生效，无需重启。留空的文本项表示沿用启动参数 / 环境变量。
+        </p>
+        {draft ? (
+          <div className="max-w-2xl space-y-4">
+            <Field label="日志级别" hint={`留空沿用启动参数（当前 ${settingsQuery.data?.env_log_level || 'info'}）`}>
+              <Segmented
+                value={draft.log_level}
+                onChange={(v) => setDraft({ ...draft, log_level: v })}
+                options={[
+                  { value: '', label: '跟随启动参数' },
+                  { value: 'debug', label: 'debug' },
+                  { value: 'info', label: 'info' },
+                  { value: 'warn', label: 'warn' },
+                  { value: 'error', label: 'error' },
+                ]}
+              />
+            </Field>
+
+            <Field
+              label="价格源地址"
+              hint={`留空沿用环境变量 / 内置默认（当前生效：${settingsQuery.data?.effective_price_source ?? '—'}）`}
+            >
+              <Input
+                value={draft.price_endpoint}
+                onChange={(e) => setDraft({ ...draft, price_endpoint: e.target.value })}
+                placeholder="https://openrouter.ai/api/v1/models"
+              />
+            </Field>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="价格刷新间隔（分钟）" hint={`默认 ${defaults?.price_refresh_minutes ?? 60}`}>
+                <Input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={draft.price_refresh_minutes}
+                  onChange={(e) => setNum('price_refresh_minutes', e.target.value)}
+                />
+              </Field>
+              <Field label="自动签到间隔（分钟）" hint={`默认 ${defaults?.plugin_auto_checkin_minutes ?? 60}`}>
+                <Input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={draft.plugin_auto_checkin_minutes}
+                  onChange={(e) => setNum('plugin_auto_checkin_minutes', e.target.value)}
+                />
+              </Field>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="插件探活间隔（秒）" hint={`默认 ${defaults?.plugin_probe_interval_seconds ?? 2}`}>
+                <Input
+                  type="number"
+                  min={1}
+                  max={3600}
+                  value={draft.plugin_probe_interval_seconds}
+                  onChange={(e) => setNum('plugin_probe_interval_seconds', e.target.value)}
+                />
+              </Field>
+              <Field label="插件探活超时（秒）" hint={`默认 ${defaults?.plugin_probe_timeout_seconds ?? 2}`}>
+                <Input
+                  type="number"
+                  min={1}
+                  max={3600}
+                  value={draft.plugin_probe_timeout_seconds}
+                  onChange={(e) => setNum('plugin_probe_timeout_seconds', e.target.value)}
+                />
+              </Field>
+            </div>
+
+            <Field
+              label="上游密钥失败冷却"
+              hint="开启后，某密钥请求上游失败即冷却该密钥，冷却期内不再使用；连续失败按倍数递增冷却时长，任意一次成功即重置。"
+            >
+              <Segmented
+                value={draft.key_cooldown_enabled ? 'on' : 'off'}
+                onChange={(v) => setDraft({ ...draft, key_cooldown_enabled: v === 'on' })}
+                options={[
+                  { value: 'on', label: '开启' },
+                  { value: 'off', label: '关闭' },
+                ]}
+              />
+            </Field>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field
+                label="初始冷却（秒）"
+                hint={`首次失败的冷却时长，默认 ${defaults?.key_cooldown_base_seconds ?? 60}`}
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={86400}
+                  value={draft.key_cooldown_base_seconds}
+                  onChange={(e) => setNum('key_cooldown_base_seconds', e.target.value)}
+                />
+              </Field>
+              <Field
+                label="冷却上限（秒）"
+                hint={`单次冷却最长时间，默认 ${defaults?.key_cooldown_max_seconds ?? 1800}`}
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={604800}
+                  value={draft.key_cooldown_max_seconds}
+                  onChange={(e) => setNum('key_cooldown_max_seconds', e.target.value)}
+                />
+              </Field>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field
+                label="不健康阈值（次）"
+                hint={`连续探活失败达到该次数即重启，默认 ${defaults?.plugin_unhealthy_threshold ?? 3}`}
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={draft.plugin_unhealthy_threshold}
+                  onChange={(e) => setNum('plugin_unhealthy_threshold', e.target.value)}
+                />
+              </Field>
+              <Field
+                label="最大失败次数（次）"
+                hint={`连续失败达到该次数后放弃自动重启，默认 ${defaults?.plugin_max_failures ?? 5}`}
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={draft.plugin_max_failures}
+                  onChange={(e) => setNum('plugin_max_failures', e.target.value)}
+                />
+              </Field>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Button
+                variant="primary"
+                disabled={saveSettings.isPending}
+                onClick={() => saveSettings.mutate(draft)}
+              >
+                {saveSettings.isPending ? '保存中…' : '保存'}
+              </Button>
+              <Button
+                variant="ghost"
+                disabled={saveSettings.isPending || !settingsQuery.data}
+                onClick={() => {
+                  if (settingsQuery.data) setDraft(settingsQuery.data.settings)
+                }}
+              >
+                重置
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">读取中…</p>
+        )}
       </Card>
 
       <Card title="清理旧记录">

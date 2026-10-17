@@ -11,6 +11,9 @@ web/node_modules
 web/dist
 build
 docs
+# Docker 验证用的构建产物与脚本需要参与构建上下文
+!out
+!examples/docker-test
 examples/*/*.exe
 examples/*/*.cmd
 *.exe

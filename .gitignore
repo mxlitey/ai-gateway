@@ -9,5 +9,9 @@ web/dist/*
 *.db-wal
 *.db-shm
 
+# Python 插件的字节码缓存
+__pycache__/
+*.pyc
+
 # 本地发布说明，不入库
 /releas_notes/

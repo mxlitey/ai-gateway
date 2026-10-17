@@ -143,6 +143,16 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 	case path == "/settings" && method == http.MethodPut:
 		a.updateSettings(w, r)
 
+	// ---- Python 插件运行时 ----
+	case path == "/python/status" && method == http.MethodGet:
+		a.pythonStatus(w)
+	case path == "/python/download" && method == http.MethodPost:
+		a.downloadPythonRuntime(w, r)
+	case path == "/python/settings" && method == http.MethodGet:
+		a.getPythonSettings(w)
+	case path == "/python/settings" && method == http.MethodPut:
+		a.updatePythonSettings(w, r)
+
 	// ---- 渠道 ----
 	case path == "/channels" && method == http.MethodGet:
 		a.listChannels(w)
@@ -872,6 +882,100 @@ func (a *API) priceEndpoint() string {
 // priceEndpointDefault 返回未在面板配置时的价格源地址（环境变量或内置默认）。
 func (a *API) priceEndpointDefault() string {
 	return pricing.Endpoint()
+}
+
+// ---------- Python 插件运行时 ----------
+
+// pythonStatus 返回 Python 运行时的探测结果（系统 Python / 便携 Python / 未找到）。
+func (a *API) pythonStatus(w http.ResponseWriter) {
+	if a.host == nil {
+		jsonErr(w, http.StatusNotImplemented, "插件宿主未启用")
+		return
+	}
+	jsonOK(w, a.host.PythonStatus())
+}
+
+// downloadPythonRuntime 下载便携 Python（显式操作，可能需要数十秒到数分钟）。
+func (a *API) downloadPythonRuntime(w http.ResponseWriter, r *http.Request) {
+	if a.host == nil {
+		jsonErr(w, http.StatusNotImplemented, "插件宿主未启用")
+		return
+	}
+	var body struct {
+		Version string `json:"version"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body)
+	path, err := a.host.DownloadPortablePython(r.Context(), body.Version)
+	if err != nil {
+		jsonErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	jsonOK(w, map[string]any{"success": true, "path": path, "status": a.host.PythonStatus()})
+}
+
+// getPythonSettings 返回 Python 插件的运行时设置（均为可选覆盖项）。
+func (a *API) getPythonSettings(w http.ResponseWriter) {
+	get := func(key string) string {
+		v, ok, err := a.store.GetSetting(key)
+		if err != nil || !ok {
+			return ""
+		}
+		return v
+	}
+	jsonOK(w, map[string]any{
+		"settings": map[string]string{
+			"python_runtime_dir": get(store.SettingPythonRuntimeDir),
+			"python_mirror":      get(store.SettingPythonMirror),
+			"pip_index_urls":     get(store.SettingPipIndexURLs),
+		},
+	})
+}
+
+// updatePythonSettings 保存 Python 插件运行时设置；留空表示恢复默认行为。
+func (a *API) updatePythonSettings(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		PythonRuntimeDir string `json:"python_runtime_dir"`
+		PythonMirror     string `json:"python_mirror"`
+		PipIndexURLs     string `json:"pip_index_urls"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	mirror := strings.TrimSpace(body.PythonMirror)
+	if mirror != "" && !strings.HasPrefix(mirror, "http://") && !strings.HasPrefix(mirror, "https://") {
+		jsonErr(w, http.StatusBadRequest, "便携 Python 下载地址需以 http:// 或 https:// 开头")
+		return
+	}
+	// pip 源逐条校验，避免把明显写错的地址存进去
+	var sources []string
+	for _, s := range strings.FieldsFunc(body.PipIndexURLs, func(r rune) bool { return r == ',' || r == ';' || r == '\n' }) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if !strings.HasPrefix(s, "http://") && !strings.HasPrefix(s, "https://") {
+			jsonErr(w, http.StatusBadRequest, "pip 源需以 http:// 或 https:// 开头："+s)
+			return
+		}
+		sources = append(sources, s)
+	}
+
+	pairs := map[string]string{
+		store.SettingPythonRuntimeDir: strings.TrimSpace(body.PythonRuntimeDir),
+		store.SettingPythonMirror:     strings.TrimRight(mirror, "/"),
+		store.SettingPipIndexURLs:     strings.Join(sources, ","),
+	}
+	for k, v := range pairs {
+		if err := a.store.SetSetting(k, v); err != nil {
+			jsonErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	jsonOK(w, map[string]any{"success": true, "settings": map[string]string{
+		"python_runtime_dir": pairs[store.SettingPythonRuntimeDir],
+		"python_mirror":      pairs[store.SettingPythonMirror],
+		"pip_index_urls":     pairs[store.SettingPipIndexURLs],
+	}})
 }
 
 // ---------- 上游辅助 ----------

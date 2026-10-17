@@ -282,6 +282,36 @@ export type SettingsResponse = {
   effective_price_source: string
 }
 
+/** Python 插件运行时探测结果。 */
+export type PythonStatus = {
+  found: boolean
+  path: string
+  version: string
+  /** 是否来自便携目录（false 表示系统 Python） */
+  portable: boolean
+  /** 便携 Python 存放根目录 */
+  runtime_dir: string
+  /** 便携 Python 下载镜像前缀 */
+  mirror: string
+  /** 当前平台会使用的官方下载地址 */
+  download_url: string
+  /** 生效的 pip 源尝试顺序 */
+  index_urls: string[]
+  error: string
+}
+
+/** Python 插件运行时相关设置（字符串留空表示沿用默认）。 */
+export type PythonSettings = {
+  python_runtime_dir: string
+  python_mirror: string
+  pip_index_urls: string
+}
+
+/** 读取 Python 插件运行时设置的响应。 */
+export type PythonSettingsResponse = {
+  settings: PythonSettings
+}
+
 export type ModelPrice = {
   model: string
   display_name: string
@@ -423,6 +453,20 @@ export const api = {
   settings: () => request<SettingsResponse>('/admin/api/settings'),
   updateSettings: (body: RuntimeSettings) =>
     request<{ success: boolean; settings: RuntimeSettings }>('/admin/api/settings', {
+      method: 'PUT',
+      ...json(body),
+    }),
+
+  // Python 插件运行时：探测状态与便携 Python 下载
+  pythonStatus: () => request<PythonStatus>('/admin/api/python/status'),
+  downloadPython: (version: string) =>
+    request<{ success: boolean; path: string; status: PythonStatus }>('/admin/api/python/download', {
+      method: 'POST',
+      ...json({ version }),
+    }),
+  pythonSettings: () => request<PythonSettingsResponse>('/admin/api/python/settings'),
+  updatePythonSettings: (body: PythonSettings) =>
+    request<{ success: boolean; settings: PythonSettings }>('/admin/api/python/settings', {
       method: 'PUT',
       ...json(body),
     }),

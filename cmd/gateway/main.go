@@ -1,13 +1,15 @@
-// Command gateway 是 AI Gateway 的无界面（headless）入口，面向容器与服务器部署。
+// Command gateway 是 AI Gateway 的命令行入口（无桌面窗口）。
 //
-// 它只做三件事：解析配置 → 启动内核 → 等待退出信号。
-// 与桌面外壳 cmd/gateway-wails 平级，二者共用 internal/app 里的同一套装配逻辑；
-// 区别在于本入口不依赖任何 GUI（Wails / WebView2），因此可在 Linux / Docker / macOS 中运行，
-// 日志输出到 stdout，便于容器日志采集。
+// 桌面窗口（cmd/gateway-wails）依赖 Wails + WebView2，只能在 Windows 上构建；
+// Linux / macOS / Docker 用这个入口跑后端，管理面板仍通过浏览器访问。
+//
+//	go run ./cmd/gateway -host 0.0.0.0 -port 8787
+//	go run ./cmd/gateway -admin-password xxx -no-browser
 package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -15,40 +17,58 @@ import (
 
 	"github.com/czg95/ai-gateway-v2/internal/app"
 	"github.com/czg95/ai-gateway-v2/internal/config"
+	"github.com/czg95/ai-gateway-v2/internal/version"
 )
 
 func main() {
-	cfg, err := config.Load(os.Args[1:])
-	if err != nil {
-		slog.Error("解析参数失败", "err", err)
-		os.Exit(2)
+	// 去掉子命令（serve），其余参数交给 config.Load 解析（CLI > 环境变量 > 默认值）
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "serve" {
+		args = args[1:]
+	}
+	if len(args) > 0 && (args[0] == "version" || args[0] == "-v" || args[0] == "--version") {
+		fmt.Println("ai-gateway " + version.Version)
+		return
 	}
 
-	// 日志写入 stdout，级别由 config.Leveler() 承载，
-	// 可在面板「运行期设置」中热切换（无需重启进程）。
-	handler := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: config.Leveler()})
-	slog.SetDefault(slog.New(handler))
+	cfg, err := config.Load(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "参数错误：", err)
+		os.Exit(2)
+	}
+	// 命令行入口默认不自动打开浏览器（容器 / 服务器场景没有桌面）
+	if !flagPresent(args, "no-browser") {
+		cfg.NoBrowser = true
+	}
 
-	a := app.New(cfg)
-	if err := a.Start(); err != nil {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: config.Leveler()})))
+
+	gw := app.New(cfg)
+	if err := gw.Start(); err != nil {
 		slog.Error("网关启动失败", "err", err)
 		os.Exit(1)
 	}
 
-	// 等待退出信号：容器里 docker stop 会发 SIGTERM，本地 Ctrl-C 为 SIGINT。
-	// 同时监听内核异常退出通道，避免服务已死却仍挂在这里。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	select {
-	case <-ctx.Done():
-		slog.Info("收到退出信号，正在停止网关")
-	case err := <-a.Err():
+	case err := <-gw.Err():
 		slog.Error("网关异常退出", "err", err)
-	}
-
-	if err := a.Stop(); err != nil {
-		slog.Error("网关停止时出错", "err", err)
+		_ = gw.Stop()
 		os.Exit(1)
+	case <-ctx.Done():
+		slog.Info("收到停止信号，正在退出")
+		_ = gw.Stop()
 	}
+}
+
+// flagPresent 判断命令行里是否显式写了某个布尔开关。
+func flagPresent(args []string, name string) bool {
+	for _, a := range args {
+		if a == "-"+name || a == "--"+name {
+			return true
+		}
+	}
+	return false
 }

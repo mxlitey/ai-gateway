@@ -5,6 +5,8 @@ package plugin
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 )
@@ -31,12 +33,22 @@ func gracefulStop(cmd *exec.Cmd) error {
 	return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 }
 
-// wrapCommand 非 Windows 平台直接执行 entry。
-func wrapCommand(entry string, args []string) (string, []string) {
-	return entry, args
+// hideWindow 非 Windows 平台没有控制台窗口概念。
+func hideWindow(*exec.Cmd) {}
+
+// clearQuarantine macOS 从网络下载的二进制会被打上 quarantine 属性，
+// 不清理时执行可能被 Gatekeeper 拦截；其它平台无此机制。
+func clearQuarantine(path string) {
+	if runtime.GOOS != "darwin" {
+		return
+	}
+	if _, err := os.Stat(path); err != nil {
+		return
+	}
+	_ = exec.Command("xattr", "-dr", "com.apple.quarantine", path).Run()
 }
 
-// ensureExecutable 补上可执行位：从 zip 解压或经卷复制过来的插件常丢失该权限，
+// ensureExecutable 补上可执行位：从 zip 解压或经卷复制过来的文件常丢失该权限，
 // 会导致 exec 报 permission denied。仅对实际存在的普通文件操作，失败时忽略（交由 exec 报错）。
 func ensureExecutable(path string) {
 	if !strings.ContainsAny(path, `/\`) {
@@ -50,4 +62,14 @@ func ensureExecutable(path string) {
 		return
 	}
 	_ = os.Chmod(path, info.Mode().Perm()|0o755)
+}
+
+// postInstallPython 解压后补齐解释器可执行位（macOS / Linux 的 install_only 包通常已带，这里兜底）。
+func postInstallPython(root string) {
+	for _, p := range []string{
+		filepath.Join(root, "bin", "python3"),
+		filepath.Join(root, "python", "bin", "python3"),
+	} {
+		ensureExecutable(p)
+	}
 }

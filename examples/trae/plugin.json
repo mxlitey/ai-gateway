@@ -2,7 +2,7 @@
   "name": "TRAE",
   "version": "1.0.0",
   "description": "TRAE 通道 → OpenAI 兼容上游",
-  "entry": "trae.exe",
+  "entry": "main.py",
   "port": 20727,
   "startup_timeout_ms": 30000,
   "console": true,

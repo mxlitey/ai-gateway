@@ -3,10 +3,7 @@
 package plugin
 
 import (
-	"os"
 	"os/exec"
-	"path/filepath"
-	"strings"
 	"syscall"
 	"unsafe"
 
@@ -137,19 +134,17 @@ func gracefulStop(cmd *exec.Cmd) error {
 	return windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(cmd.Process.Pid))
 }
 
-// wrapCommand Windows 无法直接用 CreateProcess 执行 .cmd/.bat，
-// 需要经命令解释器转发（例如 Node/Python 脚本插件常见的启动壳）。
-func wrapCommand(entry string, args []string) (string, []string) {
-	switch strings.ToLower(filepath.Ext(entry)) {
-	case ".cmd", ".bat":
-		interpreter := os.Getenv("ComSpec")
-		if interpreter == "" {
-			interpreter = "cmd.exe"
-		}
-		return interpreter, append([]string{"/c", entry}, args...)
+// hideWindow 隐藏子进程的控制台窗口：宿主以 GUI 方式运行时，
+// python / pip 这类控制台程序不加该标志会闪现黑色窗口。
+func hideWindow(cmd *exec.Cmd) {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
-	return entry, args
+	cmd.SysProcAttr.HideWindow = true
 }
 
-// ensureExecutable Windows 无 Unix 可执行位概念，无需处理。
-func ensureExecutable(string) {}
+// clearQuarantine Windows 没有 macOS 的 quarantine 属性。
+func clearQuarantine(string) {}
+
+// postInstallPython Windows 无需补可执行位。
+func postInstallPython(string) {}

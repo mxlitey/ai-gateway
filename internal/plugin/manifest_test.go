@@ -27,14 +27,14 @@ func writePlugin(t *testing.T, root, id, manifest, entry string) string {
 const validManifest = `{
   "name": "Hello",
   "version": "1.0.0",
-  "entry": "main.js",
+  "entry": "main.py",
   "port": 20800,
   "console": true,
   "capabilities": ["quota", "unknown-cap", "checkin"]
 }`
 
 func TestLoadAndValidateValidPlugin(t *testing.T) {
-	dir := writePlugin(t, t.TempDir(), "hello", validManifest, "main.js")
+	dir := writePlugin(t, t.TempDir(), "hello", validManifest, "main.py")
 
 	manifest, err := LoadManifest(dir)
 	if err != nil {
@@ -68,7 +68,7 @@ func TestUpstreamBaseURL(t *testing.T) {
 }
 
 func TestValidateRejectsBadID(t *testing.T) {
-	dir := writePlugin(t, t.TempDir(), "Hello", `{"name":"H","entry":"main.js","port":20800}`, "main.js")
+	dir := writePlugin(t, t.TempDir(), "Hello", `{"name":"H","entry":"main.py","port":20800}`, "main.py")
 	manifest, err := LoadManifest(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +84,7 @@ func TestValidateRejectsEntryEscape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest.Entry = "../evil.exe"
+	manifest.Entry = "../evil.py"
 
 	if err := Validate(dir, manifest); err == nil {
 		t.Fatal("entry 逃出插件目录时应报错")
@@ -99,7 +99,7 @@ func TestValidateRejectsAbsoluteEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest.Entry = filepath.Join(dir, "main.js")
+	manifest.Entry = filepath.Join(dir, "main.py")
 	if err := Validate(dir, manifest); err == nil {
 		t.Fatal("entry 为绝对路径时应报错")
 	}
@@ -117,7 +117,7 @@ func TestValidateRejectsMissingEntry(t *testing.T) {
 }
 
 func TestValidateRejectsBadPort(t *testing.T) {
-	dir := writePlugin(t, t.TempDir(), "hello", `{"name":"H","entry":"main.js"}`, "main.js")
+	dir := writePlugin(t, t.TempDir(), "hello", `{"name":"H","entry":"main.py"}`, "main.py")
 	manifest, err := LoadManifest(dir)
 	if err != nil {
 		t.Fatal(err)

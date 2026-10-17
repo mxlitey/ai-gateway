@@ -730,27 +730,47 @@ func (h *Host) spawn(inst *instance) error {
 		return fmt.Errorf("创建插件数据目录失败: %w", err)
 	}
 
-	entry, rawArgs, err := inst.manifest.resolveEntry()
+	entry := inst.manifest.EntryPath()
+	args := make([]string, 0, len(inst.manifest.Args))
+	for _, a := range inst.manifest.Args {
+		args = append(args, substitute(a, vars))
+	}
+
+	// 插件一律由宿主解析 Python 解释器、安装声明依赖，再用它执行入口脚本。
+	// 同一份 main.py 在 Windows / macOS / Linux 上无需改动（见 docs/plugin-spec.md §2）。
+	pyEnvCfg := h.pythonEnv()
+	interp, err := h.resolvePython(pyEnvCfg)
 	if err != nil {
 		return err
 	}
-	args := make([]string, 0, len(rawArgs))
-	for _, a := range rawArgs {
-		args = append(args, substitute(a, vars))
+	var pyPath string
+	if inst.manifest.HasRequirements() {
+		pyPath, err = h.ensurePythonDeps(context.Background(), inst, interp, vars.Data, pyEnvCfg)
+		if err != nil {
+			return err
+		}
 	}
-	// Windows 上 .cmd/.bat 需要经命令解释器转发
-	entry, args = wrapCommand(entry, args)
-	// 非 Windows 平台需要可执行位；从 zip 解压或卷复制过来的文件常会丢失该权限。
-	ensureExecutable(entry)
+	h.logger().Info("使用 Python 解释器", "plugin", inst.manifest.ID,
+		"path", interp.Path, "version", interp.Version, "portable", interp.Portable)
+	bin, pre := interp.Command(append([]string{entry}, args...)...)
 
-	cmd := exec.Command(entry, args...)
+	cmd := exec.Command(bin, pre...)
 	cmd.Dir = inst.dir
 
-	env := os.Environ()
+	childEnv := os.Environ()
 	for k, v := range inst.manifest.Env {
-		env = append(env, k+"="+substitute(v, vars))
+		childEnv = append(childEnv, k+"="+substitute(v, vars))
 	}
-	env = append(env,
+	// 关闭输出缓冲、强制 UTF-8，并让 deps 目录可被 import
+	childEnv = append(childEnv,
+		"PYTHONUNBUFFERED=1",
+		"PYTHONUTF8=1",
+		"PYTHONIOENCODING=utf-8",
+	)
+	if pyPath != "" {
+		childEnv = append(childEnv, "PYTHONPATH="+pyPath)
+	}
+	childEnv = append(childEnv,
 		"AI_GATEWAY_PLUGIN_ID="+inst.manifest.ID,
 		"AI_GATEWAY_PLUGIN_PORT="+strconv.Itoa(inst.port),
 		"AI_GATEWAY_PLUGIN_DIR="+inst.dir,
@@ -758,7 +778,7 @@ func (h *Host) spawn(inst *instance) error {
 		// 统一登录回调入口的基址（见 callback.go）；登录时还会用请求头覆盖它
 		CallbackEnvVar+"="+h.CallbackBase(inst),
 	)
-	cmd.Env = env
+	cmd.Env = childEnv
 
 	pipeReader, pipeWriter, err := os.Pipe()
 	if err != nil {
@@ -817,7 +837,7 @@ func (h *Host) pipeLogs(inst *instance, r io.Reader) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		h.log.Info("[plugin:"+inst.manifest.ID+"] "+line)
+		h.log.Info("[plugin:" + inst.manifest.ID + "] " + line)
 	}
 }
 
@@ -1081,7 +1101,7 @@ func (h *Host) pluginAccountKeys(inst *instance, existing []model.ChannelKey) (k
 // StartAutoCheckin 启动宿主侧自动签到复查：每 autoCheckinInterval 对运行中、
 // 声明了 checkin 能力的插件执行一轮签到。ctx 取消即退出。
 //
-//「启动补签」由监管循环在插件进入 running 时触发（见 supervise），
+// 「启动补签」由监管循环在插件进入 running 时触发（见 supervise），
 // 这里只负责运行期间的定期复查，覆盖跨天场景。
 func (h *Host) StartAutoCheckin(ctx context.Context) {
 	go func() {

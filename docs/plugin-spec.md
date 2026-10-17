@@ -7,7 +7,7 @@
 
 ## 1. 插件是什么
 
-**一个插件就是一个独立的本地进程**，通常是一个 HTTP 服务：
+**一个插件就是一个独立的本地进程**，用 **Python** 写成，通常是一个 HTTP 服务：
 
 ```
               ┌──────────────────────── AI Gateway（单二进制） ────────────────────────┐
@@ -36,14 +36,17 @@
 
 ## 2. 最小可用插件
 
-目录结构（**目录名就是插件 id**，用小写字母/数字/`-`/`_` 命名即可）：
+**网关只支持 Python 插件**：插件就是一段 Python 源码，宿主负责解析解释器并拉起它。
+同一份 `main.py` 原样复制到 Windows / macOS / Linux（含 Docker）都能跑，
+不需要为各平台准备不同的启动壳或编译产物。
+
+目录结构（**目录名就是插件 id**：总长 2–32 位，首字符必须是字母或数字，其余可用小写字母/数字/`-`/`_`）：
 
 ```
 plugins/
 └── hello/
     ├── plugin.json      # 清单：必须叫这个名字
-    ├── main.js          # 你的程序（任意语言/任意可执行文件）
-    └── start.cmd        # 可选：启动脚本（也可以把 entry 直接指向 exe）
+    └── main.py          # 你的程序：清单里 entry 指向的 .py 脚本
 ```
 
 `plugin.json`：
@@ -51,7 +54,7 @@ plugins/
 ```json
 {
   "name": "Hello 示例插件",
-  "entry": "start.cmd",
+  "entry": "main.py",
   "port": 20723
 }
 ```
@@ -88,10 +91,20 @@ plugins/
 
 > 模型不会自动进渠道：即便实现了 `/v1/models`，用户仍要在「渠道管理」里编辑该渠道、点「获取上游模型」后勾选。
 > 插件**无法自行注册模型**。
+>
+> 勾选之后客户端就能用了——渠道的 `models` 里命中即可**同名透传**，**不需要**再去「模型路由」建映射；
+> 只有当你想把上游模型暴露成**别的公开名**时，才需要去「模型路由」做映射。
+>
+> 注意：宿主「获取上游模型」时会以 `X-Plugin-Account` 头调用你的 `GET /v1/models`（规则同 §5），
+> 所以别对不认识的账号值直接返回 `4xx`，否则模型列表拉不出来。
 
-上面是最小形态的示意（`hello` 只是示例名，语言不限），**不宜直接照抄上线**。
-仓库里可直接运行的参考实现是 `examples/workbuddy/`（Go，含控制台、多账号、签到、额度与三种登录方式），
-把它整个复制到 `plugins/workbuddy/` 后点面板「重新扫描」即可拉起。
+上面是最小形态的示意（`hello` 只是示例名），**不宜直接照抄上线**。
+仓库里可直接运行的参考实现：
+
+- `examples/hello-py/` —— 只用标准库的最小实现，最适合当起点；
+- `examples/trae/`、`examples/workbuddy/` —— 完整实现（控制台、多账号、签到、额度与多种登录方式）。
+
+把目录整个复制到 `plugins/<id>/` 后点面板「重新扫描」即可拉起。
 
 ---
 
@@ -100,20 +113,22 @@ plugins/
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 |---|---|---|---|---|
 | `name` | string | ✅ | — | 展示名，同时也是渠道名 |
-| `entry` | string | ✅ | — | 入口文件，**相对插件目录**，不允许绝对路径或 `..` 逃逸 |
+| `entry` | string | ✅ | — | 入口脚本，**必须是插件目录内的 `.py` 文件**（相对路径，不允许绝对路径或 `..` 逃逸） |
 | `port` | int | ✅ | — | **插件自己监听的端口**（1–65535），由你选定；被别的程序占用时会在面板上报错 |
 | `version` | string | | `""` | 仅用于展示 |
 | `description` | string | | `""` | 仅用于展示 |
-| `args` | string[] | | `[]` | 传给 entry 的参数，支持 `{{port}}` |
+| `args` | string[] | | `[]` | 传给入口脚本的额外参数，支持 `{{port}}` |
 | `env` | object | | `{}` | 追加的环境变量，值支持 `{{port}}` |
 | `console` | bool | | `false` | 是否提供控制台（实现 `/console/*` 约定接口，见 §6） |
 | `capabilities` | string[] | | `[]` | 控制台能力：`checkin` / `quota`，见 §6.1 |
+| `requirements` | string[] | | `[]` | Python 依赖，格式同 `requirements.txt`，由宿主安装到插件私有目录（见 §11.2） |
 
 ### 3.1 高级（通常不用写）
 
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `startup_timeout_ms` | int | `20000` | 启动后等待探活通过的最长时间，慢启动的程序可以调大 |
+| `python_version` | string | `3.12` | 期望的便携 Python 版本（仅用于下载；不满足也不会阻止用系统 Python 启动） |
 
 **端口规则**：`port` 由你自己选定并写死在清单里（1–65535）。网关只做两件事：把它注入到
 `AI_GATEWAY_PLUGIN_PORT` 和 `{{port}}`，以及启动前确认它没被别的程序占用——被占用时插件会以
@@ -141,6 +156,9 @@ plugins/
 
 > 建议：端口读 `AI_GATEWAY_PLUGIN_PORT`，数据一律落 `AI_GATEWAY_PLUGIN_DATA`。
 > `{{port}}` 占位符只在 `args` / `env` 里可用，等价于 `AI_GATEWAY_PLUGIN_PORT`。
+>
+> 补充：插件进程的**工作目录（CWD）就是插件目录本身**，所以「相对路径」是相对插件目录解析的；
+> 但不要把插件目录当成可写盘——可写内容一律放 `AI_GATEWAY_PLUGIN_DATA`（见 §10）。
 
 `AI_GATEWAY_CALLBACK_BASE` 形如 `http://127.0.0.1:8787/plugin-callback/<你的插件id>`。
 它是**进程启动时**算出来的，进程运行期间不会变；但每次登录请求还会用请求头
@@ -167,19 +185,17 @@ plugins/
 
 插件侧实现要点：
 
-```go
-// X-Plugin-Account 命中账号 id 就用该账号，否则回退到自动挑号（兼容直连调试）
-func (p *Plugin) accountForRequest(r *http.Request) (*Account, error) {
-    if id := r.Header.Get("X-Plugin-Account"); id != "" {
-        if acc, ok := p.store.get(id); ok {
-            if !acc.Enabled {
-                return nil, fmt.Errorf("账号 %s 已在插件侧停用", id)
-            }
-            return &acc, nil
-        }
-    }
-    return p.pickAccount()
-}
+```python
+def account_for_request(handler):
+    """命中 X-Plugin-Account 就用该账号，否则回退到自动挑号（兼容直连调试）"""
+    acc_id = handler.headers.get("X-Plugin-Account") or ""
+    if acc_id:
+        acc = store.get(acc_id)
+        if acc is not None:
+            if not acc.enabled:
+                raise AccountDisabled("账号 %s 已在插件侧停用" % acc_id)
+            return acc
+    return pick_account()
 ```
 
 - 账号增删只在控制台里做，宿主会自动把变更同步到渠道密钥（账号变更后立即同步，运行期间约每 30 秒复查一次），无需人工操作；
@@ -194,7 +210,7 @@ func (p *Plugin) accountForRequest(r *http.Request) (*Account, error) {
 
 | 头 | 网关行为 |
 |---|---|
-| `X-Plugin-Account` | `/v1/*` **一定带**。值为渠道密钥 = 账号 id；未声明 `console` 时为 `gw-local` |
+| `X-Plugin-Account` | `/v1/*` **一定带**（含宿主拉模型列表的 `GET /v1/models`）。值为渠道密钥 = 账号 id；未声明 `console` 时为 `gw-local` |
 | `Authorization` / `x-api-key` | 插件渠道**不带**；客户端传来的同名头会被网关剥离，不会透传给你 |
 | `cookie` | 同样被剥离，不透传 |
 | 其余客户端头 | 原样透传 |
@@ -632,10 +648,15 @@ running/任何状态 ──▶ stopped（宿主停止或用户停用）
 
 插件应处理停止信号并尽快退出：
 
-```js
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
-  process.on(sig, () => server.close(() => process.exit(0)))
-}
+```python
+import signal
+
+def stop(*_):
+    server.shutdown()   # http.server：关闭监听并让 serve_forever 返回
+    raise SystemExit(0)
+
+for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGBREAK", signal.SIGTERM)):
+    signal.signal(sig, stop)
 ```
 
 ---
@@ -655,13 +676,13 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
 排错入口：
 
 - 插件列表 / 状态 / 端口：桌面窗口的「插件」区（点「重扫」重新读取插件目录）
-- 运行日志（含插件 stdout/stderr 转发）：桌面窗口底部的日志区
+- 运行日志（含插件 stdout/stderr 转发，每行以 `[plugin:<插件id>]` 为前缀，便于区分是哪个插件打出来的）：桌面窗口底部的日志区
 
 常见问题：
 
 | 现象 | 原因 / 处理 |
 |---|---|
-| 面板里看不到插件 | 目录名不合规（需小写字母/数字/`-`/`_`）；或缺 `plugin.json`；或校验失败（看日志） |
+| 面板里看不到插件 | 目录名不合规（2–32 位、首字符须为字母/数字，其余为小写字母/数字/`-`/`_`）；或缺 `plugin.json`；或校验失败（看日志） |
 | 状态一直 `starting` | 探活没过：没监听 `AI_GATEWAY_PLUGIN_PORT`、没实现 `GET /health`、启动太慢（调大 `startup_timeout_ms`） |
 | 状态 `failed` 且 `last_error` 提示端口被占用 | `port` 与别的程序冲突，改 `plugin.json` 里的 `port` 后点「启动」 |
 | 状态 `failed` | 连续 5 次失败已放弃；看面板 `last_error` 与日志，修好后点「启动」 |
@@ -678,7 +699,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
 | 回调页报「插件当前不可用」 | 插件未运行 / 未声明 `console`，网关没有转发。回面板确认插件状态后重试 |
 | 回调请求返回 405 | 上游重定向用了 POST 或其它方法。网关只放行 `GET`，请改用授权码模式的 `GET` 重定向 |
 | 面板上加不了账号 | 插件只实现了 `POST /accounts`，但没返回 `login_methods`——面板没有表单入口（见 §6.3 / §6.6） |
-| Windows 上 `.cmd` 起不来 | entry 用 `.cmd/.bat` 时宿主会经 `cmd.exe /c` 转发；脚本里避免交互式命令 |
+| 插件报 `entry 必须是 .py 脚本` | 网关只支持 Python 插件，入口脚本必须以 `.py` 结尾（见 §2） |
 
 ---
 
@@ -686,12 +707,88 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK']) {
 
 一个插件就是 `plugins/<id>/` 整个目录，打包成 zip 即可分发。注意：
 
-1. 目录名就是插件 id（小写字母/数字/`-`/`_`）
+1. 目录名就是插件 id（2–32 位，首字符为字母/数字，其余为小写字母/数字/`-`/`_`）
 2. 入口文件与清单都在目录内，不要依赖目录外的路径
-3. 如果插件需要额外运行时（Node/Python），在 `README` 里写清依赖与安装方式；
-   或者直接编译成单文件可执行程序（**推荐**：用户解压即用）
+3. 依赖只用 Python 标准库，或写进 `requirements`（宿主会自动装进插件私有目录，见 §11.2）；
+   不要要求用户手工 `pip install`
 4. 凭据、缓存等可写内容一律放 `AI_GATEWAY_PLUGIN_DATA`，不要写进插件目录
    （插件目录可能被整体覆盖升级）
 5. **数据目录的升级由你自己负责**：`AI_GATEWAY_PLUGIN_DATA` 不会被覆盖，
    建议在里面放一个 schema 版本标记（如 `state.json` 里的 `"schema": 3`），新版启动时先读它再决定是否迁移；
    `plugin.json` 的 `version` 只用于面板展示，网关不会据此做任何迁移
+
+---
+
+## 11. Python 运行时：一份源码跨平台
+
+**网关只支持 Python 插件**（见 §2）：`entry` 必须是插件目录内的 `.py` 脚本，交给 Python 解释器执行。
+同一份 `main.py` 原样复制到 Windows / macOS / Linux（含 Docker）都能运行，
+不需要为每个平台准备不同的启动壳或编译产物。清单里**不需要**再声明运行时。
+
+```json
+{
+  "name": "Hello Python",
+  "entry": "main.py",
+  "port": 20801,
+  "requirements": ["httpx>=0.27"]
+}
+```
+
+插件侧要做的与任何进程插件完全一样：监听 `AI_GATEWAY_PLUGIN_PORT`、实现 `GET /health` 与
+`POST /v1/chat/completions`（见 §2）。区别只在于**是谁把进程拉起来**。
+
+### 11.1 解释器从哪来
+
+宿主按顺序解析，找到即用：
+
+1. **系统 Python**：Windows 依次尝试 `py -3` → `python3` → `python`（会自动跳过应用商店的占位程序）；
+   macOS / Linux 依次尝试 `python3` → `python`。只接受 Python 3。
+2. **便携 Python**：`<数据目录>/runtime/python/<版本>/`（可在面板「设置 → 便携 Python 目录」改位置，
+   或设置环境变量 `AIGW_PYTHON_RUNTIME_DIR`）。
+3. 都没有 → 插件以 `failed` 停下，`last_error` 给出安装指引。**宿主不会在启动流程里自动下载**。
+
+便携 Python 由用户在面板「设置 → Python 插件运行时」点「下载便携 Python」显式获取：
+默认从 python-build-standalone 官方发布地址下载，下载完成后校验、解压到便携目录（临时目录 + 原子改名）。
+国内或内网可自行转存一份，并把「便携 Python 下载地址」填成镜像前缀（**文件名与官方保持一致**）。
+也可以手工解压后放进便携目录，宿主会直接识别。
+
+> 便携 Python 不随网关安装包分发，安装包体积不变；只有真正用 Python 插件的机器才需要这一份运行时。
+
+### 11.2 依赖安装
+
+声明 `requirements` 时，宿主用 pip 把包装进**插件私有目录** `<AI_GATEWAY_PLUGIN_DATA>/deps`，
+启动时通过 `PYTHONPATH` 注入，不会污染系统 Python，也不会装到插件目录里。
+
+- **源顺序**：官方源 `https://pypi.org/simple` 优先，失败后依次退避到清华、阿里云、腾讯云、中科大镜像；
+  每次只向 pip 传一个 `--index-url`（不使用多源合并，避免同名包来源不确定）。
+- **缓存**：成功的源与 `requirements` 指纹一起写入 `deps/.pip.lock`，24 小时内同指纹同解释器版本直接复用。
+- **自定义**：面板「设置 → pip 源」可填写自己的源列表（逗号分隔），填了就不再使用内置列表；
+  也可用环境变量 `AIGW_PIP_INDEX_URLS`。内网环境建议全部指向内网源。
+- **失败提示**：所有源都失败时，`last_error` 会列出每个源的具体原因，便于判断是网络、证书还是包不存在。
+- 只使用标准库的插件**完全不会触发 pip**。
+
+### 11.3 运行时注入的环境变量
+
+除 §4 的公用变量外，宿主额外设置：
+
+| 变量 | 作用 |
+|---|---|
+| `PYTHONUNBUFFERED=1` | 关闭输出缓冲，日志实时进入网关 |
+| `PYTHONUTF8=1` / `PYTHONIOENCODING=utf-8` | 强制 UTF-8，避免 Windows 默认 GBK 导致中文乱码 |
+| `PYTHONPATH=<deps>` | 让已安装的依赖可被 `import`（仅声明了 `requirements` 时） |
+
+### 11.4 示例
+
+`examples/hello-py/` 是一个只用标准库的最小实现（`http.server` + `json`），
+复制到 `plugins/hello-py/` 后点面板「重新扫描」即可拉起。它同时演示了
+`/health`、`/v1/models`、`/v1/chat/completions` 三个端点以及按 `X-Plugin-Account` 取账号。
+
+### 11.5 注意事项
+
+- **停止信号**：Unix 收 `SIGTERM`，Windows 收 `Ctrl-Break`（Python 里的 `signal.SIGBREAK`）。
+  桌面 GUI 无控制台时会退化为强杀，所以账号与状态**必须原子落盘**（写临时文件再 rename）。
+- **只监听一个端口**：与其它插件一致，登录回调走网关的 `/plugin-callback/<id>/...`。
+- **macOS Gatekeeper**：宿主会自动清理便携 Python 的 quarantine 属性；手工放入的可执行文件如被拦截，
+  执行 `xattr -dr com.apple.quarantine <目录>`。
+- **Alpine / musl**：便携 Python 默认取 glibc 版本；Alpine 基础镜像本身通常已带 `python3`，
+  会走系统 Python，无需下载。

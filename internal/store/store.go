@@ -154,3 +154,13 @@ const (
 	SettingPriceRefreshAt    = "meta.price_refresh_at" // 上次价格快照刷新时间戳
 	SettingExternalBaseURL   = "gateway.external_base" // 面板配置的外部访问地址（反代/隧道场景）
 )
+
+// Python 插件运行时相关设置。
+const (
+	// SettingPythonRuntimeDir 便携 Python 根目录（留空 = 数据目录下的 runtime/python）。
+	SettingPythonRuntimeDir = "plugins.python_runtime_dir"
+	// SettingPythonMirror 便携 Python 下载地址镜像前缀（留空 = 官方发布地址）。
+	SettingPythonMirror = "plugins.python_mirror"
+	// SettingPipIndexURLs 自定义 pip 源（逗号分隔，留空 = 官方源 + 内置国内镜像退避）。
+	SettingPipIndexURLs = "plugins.pip_index_urls"
+)

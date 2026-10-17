@@ -1,0 +1,8 @@
+{
+  "name": "Hello Python 示例",
+  "version": "1.0.0",
+  "description": "最小 Python 插件：只用标准库，同一份 main.py 可在 Windows / macOS / Linux 运行",
+  "entry": "main.py",
+  "port": 20801,
+  "startup_timeout_ms": 30000
+}

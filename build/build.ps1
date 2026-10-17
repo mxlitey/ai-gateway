@@ -1,4 +1,4 @@
-﻿# AI Gateway 绿色版一键构建
+# AI Gateway 绿色版一键构建
 # 用法：pwsh -File build/build.ps1 -Version 0.1.0
 param(
     [string]$Version = "dev"
@@ -86,21 +86,16 @@ Remove-Item "dist/ai-gateway.exe~" -Force -ErrorAction SilentlyContinue
 Write-Host "[4/4] 组装绿色版 ..." -ForegroundColor Cyan
 Copy-Item "build/README.txt" "dist/README.txt" -Force
 New-Item -ItemType Directory -Force -Path "dist/plugins", "dist/data" | Out-Null
-if (Test-Path "build/plugins") {
-    Copy-Item "build/plugins/*" "dist/plugins/" -Recurse -Force
-}
-# 内置示例插件，便于首次体验（可自行删除）
-if (Test-Path "examples/hello") {
-    New-Item -ItemType Directory -Force -Path "dist/plugins/hello" | Out-Null
-    Copy-Item "examples/hello/*" "dist/plugins/hello/" -Recurse -Force
-}
-# WorkBuddy 插件：源码在 examples/workbuddy，这里现编译成 exe 一起打包
-if (Test-Path "examples/workbuddy/plugin.json") {
-    New-Item -ItemType Directory -Force -Path "dist/plugins/workbuddy" | Out-Null
-    go build -trimpath -ldflags "-s -w" -o "dist/plugins/workbuddy/workbuddy.exe" ./examples/workbuddy
-    # 插件被正在运行的网关占用时，Go 会把旧文件备份成 xxx.exe~，这里顺手清掉
-    Remove-Item "dist/plugins/workbuddy/workbuddy.exe~" -Force -ErrorAction SilentlyContinue
-    Copy-Item "examples/workbuddy/plugin.json" "dist/plugins/workbuddy/plugin.json" -Force
+
+# 内置插件：插件一律是 Python 源码（同一份源码在 Windows / macOS / Linux 通用），
+# 整目录拷贝即可，不需要任何编译。先删旧目录，避免残留上一次的可执行产物。
+foreach ($name in @("trae", "workbuddy", "hello-py")) {
+    if (-not (Test-Path "examples/$name/plugin.json")) { continue }
+    $dst = "dist/plugins/$name"
+    Remove-Item $dst -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Copy-Item "examples/$name/*.py" $dst -Force
+    Copy-Item "examples/$name/plugin.json" "$dst/plugin.json" -Force
 }
 
 Write-Host ""

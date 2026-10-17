@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type RuntimeSettings } from '../lib/api'
+import { api, type PythonSettings, type RuntimeSettings } from '../lib/api'
 import { toast } from '../lib/toast'
 import { Button, Card, ErrorText, Field, Input, Segmented } from '../components/ui'
 
@@ -30,6 +30,33 @@ export default function Settings() {
     setDraft(settingsQuery.data.settings)
   }
   const defaults = settingsQuery.data?.defaults
+
+  // Python 插件运行时：探测结果 + 可选覆盖项（便携目录 / 下载镜像 / pip 源）
+  const python = useQuery({ queryKey: ['python-status'], queryFn: api.pythonStatus })
+  const pythonSettingsQuery = useQuery({ queryKey: ['python-settings'], queryFn: api.pythonSettings })
+  const [pyDraft, setPyDraft] = useState<PythonSettings | null>(null)
+  if (pythonSettingsQuery.data && pyDraft === null) {
+    setPyDraft(pythonSettingsQuery.data.settings)
+  }
+
+  const savePythonSettings = useMutation({
+    mutationFn: (body: PythonSettings) => api.updatePythonSettings(body),
+    onSuccess: () => {
+      toast('ok', 'Python 运行时设置已保存')
+      void queryClient.invalidateQueries({ queryKey: ['python-status'] })
+      void queryClient.invalidateQueries({ queryKey: ['python-settings'] })
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  const downloadPython = useMutation({
+    mutationFn: () => api.downloadPython(''),
+    onSuccess: (res) => {
+      toast('ok', `便携 Python 已就绪：${res.path}`)
+      void queryClient.invalidateQueries({ queryKey: ['python-status'] })
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
 
   const saveSettings = useMutation({
     mutationFn: (body: RuntimeSettings) => api.updateSettings(body),
@@ -361,6 +388,117 @@ export default function Settings() {
         ) : (
           <p className="text-sm text-zinc-500 dark:text-zinc-400">读取中…</p>
         )}
+      </Card>
+
+      <Card title="Python 插件运行时">
+        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+          插件一律是 Python 源码（入口为 <code className="text-xs">.py</code> 脚本），
+          同一份源码可在
+          Windows / macOS / Linux 通用。宿主优先使用系统 Python；没有时可用这里的便携 Python（下载到数据目录，不随安装包分发）。
+        </p>
+        {python.isError ? (
+          <div className="mb-3">
+            <ErrorText text={(python.error as Error).message} />
+          </div>
+        ) : null}
+        <dl className="grid max-w-2xl gap-x-6 gap-y-3 text-sm sm:grid-cols-[8rem_1fr]">
+          <dt className="text-zinc-500 dark:text-zinc-400">当前解释器</dt>
+          <dd className="text-zinc-700 dark:text-zinc-300">
+            {python.data ? (
+              python.data.found ? (
+                <span>
+                  {python.data.version}
+                  <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    {python.data.portable ? '便携' : '系统'}
+                  </span>
+                  <div className="mt-1 font-mono text-xs break-all text-zinc-500">{python.data.path}</div>
+                </span>
+              ) : (
+                <span className="text-amber-600 dark:text-amber-400">未找到 Python 3</span>
+              )
+            ) : (
+              '探测中…'
+            )}
+          </dd>
+          <dt className="text-zinc-500 dark:text-zinc-400">便携目录</dt>
+          <dd className="font-mono text-xs break-all text-zinc-700 dark:text-zinc-300">
+            {python.data?.runtime_dir ?? '—'}
+          </dd>
+          <dt className="text-zinc-500 dark:text-zinc-400">pip 源顺序</dt>
+          <dd className="text-xs break-all text-zinc-600 dark:text-zinc-300">
+            {(python.data?.index_urls ?? []).join(' → ') || '—'}
+          </dd>
+        </dl>
+        {python.data && !python.data.found ? (
+          <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+            {python.data.error}
+          </p>
+        ) : null}
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button
+            variant="primary"
+            disabled={downloadPython.isPending}
+            onClick={() => downloadPython.mutate()}
+          >
+            {downloadPython.isPending ? '下载中…（可能需要数分钟）' : '下载便携 Python'}
+          </Button>
+          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+            下载后会自动解压到便携目录；重复点击不会重复下载已就绪的版本。
+          </span>
+        </div>
+
+        {pyDraft ? (
+          <div className="mt-5 max-w-2xl space-y-4">
+            <Field
+              label="便携 Python 下载地址（镜像前缀）"
+              hint="留空使用官方发布地址；内网/国内加速时可填自建镜像前缀，文件名保持与官方一致。"
+            >
+              <Input
+                value={pyDraft.python_mirror}
+                onChange={(e) => setPyDraft({ ...pyDraft, python_mirror: e.target.value })}
+                placeholder="https://your-mirror.example.com/python-build-standalone"
+              />
+            </Field>
+            <Field
+              label="便携 Python 目录"
+              hint="留空使用数据目录下的 runtime/python；也可以把已解压的 Python 目录手动放到这里。"
+            >
+              <Input
+                value={pyDraft.python_runtime_dir}
+                onChange={(e) => setPyDraft({ ...pyDraft, python_runtime_dir: e.target.value })}
+                placeholder={python.data?.runtime_dir ?? ''}
+              />
+            </Field>
+            <Field
+              label="pip 源（按顺序退避）"
+              hint="留空使用内置顺序：官方源优先，失败后依次尝试清华、阿里云、腾讯云、中科大镜像。多条用逗号分隔。"
+            >
+              <Input
+                value={pyDraft.pip_index_urls}
+                onChange={(e) => setPyDraft({ ...pyDraft, pip_index_urls: e.target.value })}
+                placeholder="https://pypi.org/simple, https://pypi.tuna.tsinghua.edu.cn/simple"
+              />
+            </Field>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="primary"
+                disabled={savePythonSettings.isPending}
+                onClick={() => savePythonSettings.mutate(pyDraft)}
+              >
+                {savePythonSettings.isPending ? '保存中…' : '保存'}
+              </Button>
+              <Button
+                variant="ghost"
+                disabled={savePythonSettings.isPending || !pythonSettingsQuery.data}
+                onClick={() => {
+                  if (pythonSettingsQuery.data) setPyDraft(pythonSettingsQuery.data.settings)
+                }}
+              >
+                重置
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </Card>
 
       <Card title="清理旧记录">

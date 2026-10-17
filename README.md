@@ -136,14 +136,17 @@ Claude 协议同理：把 `baseURL` 指向 `http://127.0.0.1:8787`，密钥放�
 
 ## 🔌 插件系统
 
-一个插件就是一个**独立的本地进程**（任意语言），放进 `plugins/<id>/` 即可被网关自动拉起并注册为渠道：
+一个插件就是一个**独立的本地进程**（用 **Python** 写），放进 `plugins/<id>/` 即可被网关自动拉起并注册为渠道：
 
 ```
 plugins/
 └── hello/
     ├── plugin.json      # 清单：name / entry / port（+ 可选 console / capabilities）
-    └── main.js          # 你的程序（实现 OpenAI 兼容上游即可）
+    └── main.py          # 你的程序（实现 OpenAI 兼容上游即可）
 ```
+
+同一份 `main.py` 在 Windows / macOS / Linux（含 Docker）上通用，不需要编译多份。
+网关只支持 Python 插件：`entry` 必须是插件目录内的 `.py` 脚本。
 
 内置示例：`examples/workbuddy` 演示了如何把第三方账号的模型额度接入网关（导入本机登录态 / OAuth 授权 → 获取上游模型 → 路由暴露）。
 
@@ -188,7 +191,7 @@ ai-gateway-v2/
 │   ├── store/             # SQLite 存储（migrations/ 为版本化建表脚本）
 │   └── version/           # 构建期注入的版本信息
 ├── web/                   # 管理面板前端（React 19 + Vite + Tailwind，embed.go 内嵌产物）
-├── examples/              # 示例插件（workbuddy）
+├── examples/              # 示例插件（hello-py / trae / workbuddy，均为 Python）
 ├── docs/                  # 插件开发规范
 └── build/                 # 一键构建脚本与绿色版模板
 ```

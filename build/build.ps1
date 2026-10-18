@@ -1,7 +1,12 @@
 # AI Gateway 绿色版一键构建
 # 用法：pwsh -File build/build.ps1 -Version 0.1.0
+#       加 -Docker 同时构建 Linux 镜像并导出 dist/ai-gateway-<版本>-docker.tar
 param(
-    [string]$Version = "dev"
+    [string]$Version = "dev",
+    # 额外构建 Docker 镜像（debian:bookworm-slim，内置 trae / workbuddy 插件）
+    [switch]$Docker,
+    # apt 镜像站，国内默认阿里云；传空串则用 debian 官方源
+    [string]$AptMirror = "mirrors.aliyun.com"
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,9 +23,10 @@ function Require-Command([string]$name, [string]$hint) {
 Require-Command "go" "请安装 Go 1.23+：winget install GoLang.Go"
 
 $module = "github.com/czg95/ai-gateway-v2"
+$totalSteps = if ($Docker) { 5 } else { 4 }
 
 # ---- 1. 前端构建 ----
-Write-Host "[1/4] 构建前端 ..." -ForegroundColor Cyan
+Write-Host "[1/$totalSteps] 构建前端 ..." -ForegroundColor Cyan
 if (Test-Path "web/package.json") {
     Require-Command "node" "请安装 Node.js 20+"
     # 清掉上一次的构建产物（保留 .gitkeep，供 embed 使用），避免旧资源被打进二进制
@@ -39,13 +45,13 @@ if (Test-Path "web/package.json") {
 }
 
 # ---- 2. Go 依赖 ----
-Write-Host "[2/4] 解析 Go 依赖 ..." -ForegroundColor Cyan
+Write-Host "[2/$totalSteps] 解析 Go 依赖 ..." -ForegroundColor Cyan
 # 国内网络默认走不通 proxy.golang.org，未显式配置时回落到国内镜像
 if (-not $env:GOPROXY) { $env:GOPROXY = "https://goproxy.cn,direct" }
 go mod tidy
 
 # ---- 3. 编译 ----
-Write-Host "[3/4] 编译可执行文件 ..." -ForegroundColor Cyan
+Write-Host "[3/$totalSteps] 编译可执行文件 ..." -ForegroundColor Cyan
 $commit = "none"
 try { $commit = (git rev-parse --short HEAD 2>$null) } catch { }
 if (-not $commit) { $commit = "none" }
@@ -83,7 +89,7 @@ go build -trimpath -ldflags "$ldflags -H=windowsgui" -o dist/ai-gateway.exe ./cm
 Remove-Item "dist/ai-gateway.exe~" -Force -ErrorAction SilentlyContinue
 
 # ---- 4. 组装绿色版 ----
-Write-Host "[4/4] 组装绿色版 ..." -ForegroundColor Cyan
+Write-Host "[4/$totalSteps] 组装绿色版 ..." -ForegroundColor Cyan
 Copy-Item "build/README.txt" "dist/README.txt" -Force
 New-Item -ItemType Directory -Force -Path "dist/plugins", "dist/data" | Out-Null
 
@@ -98,6 +104,38 @@ foreach ($name in @("trae", "workbuddy")) {
     Copy-Item "examples/$name/plugin.json" "$dst/plugin.json" -Force
 }
 
+# ---- 5. Docker 镜像（可选）----
+if ($Docker) {
+    Write-Host "[5/$totalSteps] 构建 Docker 镜像 ..." -ForegroundColor Cyan
+    Require-Command "docker" "请安装并启动 Docker Desktop"
+
+    # 镜像内嵌前端产物与 Go 二进制都在 Dockerfile 里自己构建，这里只需传版本号与 apt 源
+    $buildArgs = @("build", "--progress=plain", "-t", "ai-gateway:latest",
+                   "--build-arg", "VERSION=$Version",
+                   "--build-arg", "APT_MIRROR=$AptMirror", ".")
+    & docker @buildArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[错误] Docker 镜像构建失败" -ForegroundColor Red
+        exit 1
+    }
+
+    # 导出为离线可分发的 tar；用 -o 而不是 >，避免 PowerShell 按 UTF-16 写坏文件
+    $tar = "dist/ai-gateway-$Version-docker.tar"
+    Write-Host "  导出镜像 -> $tar ..." -ForegroundColor Cyan
+    & docker save "ai-gateway:latest" -o $tar
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[错误] docker save 失败" -ForegroundColor Red
+        exit 1
+    }
+    $sizeMB = [math]::Round((Get-Item $tar).Length / 1MB, 1)
+    Write-Host "  已导出: $tar ($sizeMB MB)" -ForegroundColor Green
+}
+
 Write-Host ""
 Write-Host "构建完成: dist/ai-gateway.exe ($Version)" -ForegroundColor Green
 Write-Host "双击 dist/ai-gateway.exe 即可启动并打开管理面板" -ForegroundColor Green
+if ($Docker) {
+    Write-Host "Docker 镜像: ai-gateway:latest，已导出到 dist/ai-gateway-$Version-docker.tar" -ForegroundColor Green
+    Write-Host "  目标机器导入: docker load -i ai-gateway-$Version-docker.tar" -ForegroundColor Green
+    Write-Host "  首次启动前清空旧插件卷: docker volume rm ai-gateway-plugins -f" -ForegroundColor Yellow
+}

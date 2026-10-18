@@ -7,6 +7,10 @@
 #
 # 说明：/data 存放数据库、日志与插件私有数据；/plugins 存放插件目录。
 # 两者都用命名卷持久化，容器重建不会丢配置与插件。
+#
+# 注意：镜像已内置 TRAE / WorkBuddy 插件，但命名卷只在「首次创建」时从镜像初始化。
+# 如果你跑过旧版镜像（ai-gateway-plugins 卷已存在且里面是空的），内置插件不会自动进去，
+# 需先删掉旧卷再启动：docker volume rm ai-gateway-plugins（或换一个新的卷名）。
 
 services:
   ai-gateway:
@@ -36,7 +40,8 @@ services:
       - ai-gateway-data:/data
       - ai-gateway-plugins:/plugins
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/health"]
+      # debian-slim 没有 wget/curl，用镜像内的 python3 探活
+      test: ["CMD", "python3", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/health',timeout=4).status==200 else 1)"]
       interval: 30s
       timeout: 5s
       start_period: 10s

@@ -24,3 +24,6 @@ examples/*/*.cmd
 Dockerfile
 .dockerignore
 docker-compose.yml
+# Python 字节码缓存不进构建上下文（examples 下的插件源码会被拷进镜像）
+**/__pycache__
+**/*.pyc

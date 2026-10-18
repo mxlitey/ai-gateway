@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type UsageBucket } from '../lib/api'
 import { Badge, Button, Card, Empty, ErrorText, IconButton, Loading, RefreshIcon, Segmented } from '../components/ui'
@@ -43,7 +43,7 @@ function saveFilters(v: StoredFilters): void {
 
 // 趋势图筛选用的下拉框样式（与 Input 视觉一致）
 const selectClass =
-  'rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none focus:border-emerald-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100'
+  'rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none focus:border-emerald-500 max-md:py-2.5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100'
 
 export default function Usage() {
   // 粒度与时间范围（日历选择器）：按天选日期范围，按小时可精确到小时
@@ -149,7 +149,7 @@ export default function Usage() {
               setOffset(0)
               persist({ channelFilter: e.target.value, modelFilter: '', keyFilter: '' })
             }}
-            className={`${selectClass} w-40`}
+            className={`${selectClass} w-full sm:w-40`}
           >
             <option value="">全部渠道</option>
             {s.by_channel.map((b) => (
@@ -167,7 +167,7 @@ export default function Usage() {
               setOffset(0)
               persist({ modelFilter: e.target.value, keyFilter: '' })
             }}
-            className={`${selectClass} w-48`}
+            className={`${selectClass} w-full sm:w-48`}
           >
             <option value="">全部模型</option>
             {s.by_model.map((b) => (
@@ -183,7 +183,7 @@ export default function Usage() {
               setOffset(0)
               persist({ keyFilter: e.target.value })
             }}
-            className={`${selectClass} w-44`}
+            className={`${selectClass} w-full sm:w-44`}
           >
             <option value="">全部上游密钥</option>
             {s.by_key
@@ -223,7 +223,7 @@ export default function Usage() {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
         <Stat label="请求数" value={fmtInt(s.requests)} />
         <Stat label="总 token" value={fmtCompact(s.total_tokens)} />
         <Stat label="市场价" value={fmtUSD(s.cost_usd)} />
@@ -247,7 +247,7 @@ export default function Usage() {
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[46rem] text-sm">
                 <thead>
                   <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800">
                     <th className="py-2 pr-3 font-medium">时间</th>
@@ -324,7 +324,7 @@ export default function Usage() {
               </table>
             </div>
 
-            <div className="mt-3 flex items-center justify-between text-xs text-zinc-500">
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
               <span>
                 第 {page} / {totalPages} 页
               </span>
@@ -355,11 +355,40 @@ export default function Usage() {
 // TrendChart 用量趋势柱状图：三色堆叠（未缓存输入 / 缓存输入 / 输出），悬停显示明细与缓存命中率。
 function TrendChart({ points }: { points: UsageBucket[] }) {
   const [hover, setHover] = useState(-1)
+  // 图表可用宽度：柱子按宽度自适应收缩，避免桶数多（30/90/180 天）时撑破卡片
+  const barsRef = useRef<HTMLDivElement>(null)
+  const [chartWidth, setChartWidth] = useState(0)
+
+  useEffect(() => {
+    const el = barsRef.current
+    if (!el) return
+    setChartWidth(el.clientWidth)
+    const ro = new ResizeObserver((entries) => {
+      setChartWidth(entries[0].contentRect.width)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   const { top, step } = chartScale(Math.max(...points.map((p) => p.total_tokens), 0))
   const ticks = [4, 3, 2, 1, 0].map((i) => step * i)
-  // 柱子太多时抽稀横轴标签，保证可读
-  const labelEvery = Math.max(1, Math.ceil(points.length / 8))
+
+  const n = Math.max(1, points.length)
+  // 每个时间桶占用的槽位宽度 = 柱宽 + 间隙；桶多时整体压缩，保证永不超出卡片
+  // 首帧还没量到宽度时先按 24px 槽位估算，量到后再校准
+  const slot = chartWidth > 0 ? Math.min(32, chartWidth / n) : 24
+  const cell = slot >= 32 ? 28 : slot * 0.75
+  const gap = slot >= 32 ? 4 : slot * 0.25
+  const totalW = n * cell + Math.max(0, n - 1) * gap
+  const startX = Math.max(0, (chartWidth - totalW) / 2)
+  // 横轴标签按可用宽度抽稀，保证相邻标签不重叠
+  const maxLabels = Math.max(2, Math.floor(chartWidth / 56))
+  const labelEvery = Math.max(1, Math.ceil(n / maxLabels))
+  // 标签按柱子中心点定位，并夹在容器内避免首尾标签被裁掉
+  const labelLeft = (i: number) => {
+    const x = startX + i * (cell + gap) + cell / 2
+    return Math.min(Math.max(x, 16), Math.max(16, chartWidth - 16))
+  }
 
   // 未缓存输入 = 输入 - 缓存命中；三段之和即总 token
   const parts = (p: UsageBucket) => {
@@ -368,10 +397,6 @@ function TrendChart({ points }: { points: UsageBucket[] }) {
     return { uncached, cached, output: p.completion_tokens }
   }
   const pct = (part: number, whole: number) => (whole > 0 ? (part / whole) * 100 : 0)
-
-  // 单个时间桶的最大宽度：按「24 个桶 + 23 个 4px 空隙」均分区块宽度。
-  // 桶变少时不会被拉宽（否则单个桶会占满整个区块），整组居中、桶间保留 4px 空隙。
-  const barWidth = 'calc((100% - 92px) / 24)'
 
   return (
     <div>
@@ -383,7 +408,11 @@ function TrendChart({ points }: { points: UsageBucket[] }) {
           ))}
         </div>
 
-        <div className="relative flex h-40 flex-1 items-end justify-center gap-1">
+        <div
+          ref={barsRef}
+          className="relative flex h-40 min-w-0 flex-1 items-end justify-center"
+          style={{ gap: `${gap}px` }}
+        >
           {ticks.map((_, i) => (
             <div
               key={i}
@@ -396,10 +425,11 @@ function TrendChart({ points }: { points: UsageBucket[] }) {
             return (
               <div
                 key={p.key}
-                className="relative flex h-full items-end"
-                style={{ width: barWidth }}
+                className="relative flex h-full shrink-0 items-end"
+                style={{ width: `${cell}px` }}
                 onMouseEnter={() => setHover(i)}
                 onMouseLeave={() => setHover(-1)}
+                onClick={() => setHover(hover === i ? -1 : i)}
               >
                 <div
                   className={`flex w-full flex-col overflow-hidden rounded-t ${
@@ -467,16 +497,19 @@ function TrendChart({ points }: { points: UsageBucket[] }) {
 
       <div className="mt-1 flex gap-3">
         <div className="w-14 shrink-0" />
-        <div className="flex flex-1 justify-center gap-1">
-          {points.map((p, i) => (
-            <span
-              key={p.key}
-              className="whitespace-nowrap text-center text-[10px] text-zinc-400 dark:text-zinc-500"
-              style={{ width: barWidth }}
-            >
-              {i % labelEvery === 0 ? shortBucketKey(p.key) : ''}
-            </span>
-          ))}
+        {/* 横轴标签用绝对定位贴合柱心，容器始终不会因文字宽度而溢出 */}
+        <div className="relative h-4 min-w-0 flex-1">
+          {points.map((p, i) =>
+            i % labelEvery === 0 ? (
+              <span
+                key={p.key}
+                className="absolute -translate-x-1/2 whitespace-nowrap text-center text-[10px] text-zinc-400 dark:text-zinc-500"
+                style={{ left: `${labelLeft(i)}px` }}
+              >
+                {shortBucketKey(p.key)}
+              </span>
+            ) : null,
+          )}
         </div>
       </div>
     </div>
@@ -486,7 +519,7 @@ function TrendChart({ points }: { points: UsageBucket[] }) {
 // tipBoxClass 悬浮提示框样式：始终贴在柱子两侧（靠近中心的一侧），避免遮挡当前桶。
 function tipBoxClass(i: number, total: number): string {
   const side = i * 2 >= total ? 'right-full mr-2' : 'left-full ml-2'
-  return `pointer-events-none absolute top-0 z-10 w-max max-w-[18rem] rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs leading-relaxed shadow-lg dark:border-zinc-700 dark:bg-zinc-900 ${side}`
+  return `pointer-events-none absolute top-0 z-10 w-max max-w-[calc(100vw-2rem)] rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs leading-relaxed shadow-lg sm:max-w-[18rem] dark:border-zinc-700 dark:bg-zinc-900 ${side}`
 }
 
 // TipRow 悬浮提示里的一行：可选的色块 + 名称 + 右对齐的数值。
@@ -532,9 +565,11 @@ function shortBucketKey(key: string): string {
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+    <div className="rounded-xl border border-zinc-200 bg-white p-3 sm:p-4 dark:border-zinc-800 dark:bg-zinc-900">
       <p className="text-xs text-zinc-500 dark:text-zinc-400">{label}</p>
-      <p className="mt-1 font-mono text-xl font-semibold text-zinc-800 dark:text-zinc-100">{value}</p>
+      <p className="mt-1 truncate font-mono text-lg font-semibold text-zinc-800 sm:text-xl dark:text-zinc-100">
+        {value}
+      </p>
     </div>
   )
 }

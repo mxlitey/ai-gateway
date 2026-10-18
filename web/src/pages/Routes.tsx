@@ -110,7 +110,7 @@ export default function ModelRoutes() {
               }
             >
               <div className="overflow-x-auto">
-                <table className="w-full table-fixed text-sm">
+                <table className="w-full min-w-[34rem] table-fixed text-sm">
                   <colgroup>
                     <col className="w-[26%]" />
                     <col className="w-[30%]" />
@@ -241,7 +241,7 @@ export default function ModelRoutes() {
                   {diagGroup.routes.map((r) => (
                     <label
                       key={r.channel_id}
-                      className="flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800"
+                      className="flex flex-wrap items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-800"
                     >
                       <input
                         type="checkbox"
@@ -249,7 +249,7 @@ export default function ModelRoutes() {
                         onChange={(e) => toggleTarget(r.channel_id, e.target.checked)}
                       />
                       <span className="text-zinc-700 dark:text-zinc-300">{r.channel_name}</span>
-                      <code className="ml-auto font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                      <code className="ml-auto min-w-0 truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
                         {r.upstream_model}
                       </code>
                     </label>

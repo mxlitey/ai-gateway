@@ -49,7 +49,7 @@ export default function Dashboard() {
       {errors.isError ? <ErrorText text={(errors.error as Error).message} /> : null}
 
       {/* 用量与运行状态一览（用量均为当天） */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-7">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-7">
         <Stat label="请求数" value={fmtInt(usageSummary?.requests ?? 0)} />
         <Stat label="总 token" value={fmtCompact(usageSummary?.total_tokens ?? 0)} />
         <Stat label="缓存命中率" value={cacheHitRate} />
@@ -77,8 +77,8 @@ export default function Dashboard() {
             <ul className="space-y-3">
               {usageSummary.by_model.map((b) => (
                 <li key={b.key} className="space-y-1">
-                  <div className="flex items-center justify-between gap-3 text-sm">
-                    <span className="truncate font-mono text-xs text-zinc-700 dark:text-zinc-300">
+                  <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-sm">
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-700 dark:text-zinc-300">
                       {b.key}
                     </span>
                     <span className="shrink-0 font-mono text-xs text-zinc-500">
@@ -212,9 +212,11 @@ export default function Dashboard() {
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+    <div className="rounded-xl border border-zinc-200 bg-white p-3 sm:p-4 dark:border-zinc-800 dark:bg-zinc-900">
       <p className="text-xs text-zinc-500 dark:text-zinc-400">{label}</p>
-      <p className="mt-1 font-mono text-xl font-semibold text-zinc-800 dark:text-zinc-100">{value}</p>
+      <p className="mt-1 truncate font-mono text-lg font-semibold text-zinc-800 sm:text-xl dark:text-zinc-100">
+        {value}
+      </p>
     </div>
   )
 }
@@ -322,7 +324,7 @@ function KeyCooldownCard() {
             return (
               <li
                 key={`${c.channel_id}:${c.key_hint}`}
-                className="flex items-center justify-between gap-3 text-xs"
+                className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs"
               >
                 <span className="min-w-0 truncate text-zinc-700 dark:text-zinc-300">
                   {c.channel_name || c.channel_id}

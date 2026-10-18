@@ -31,7 +31,7 @@ def account_view(account):
         "name": account.name(),
         "site": "cn",
         "enabled": account.usable(),
-        "plan": "免费计划",
+        "plan": account.plan or "免费版",
         "credits": account.credits,
         "checked_in_today": account.checked_in_today,
         "expires_at": expires,
@@ -133,14 +133,16 @@ def perform_checkin(plugin, account_id):
         st.last_error = ""
 
     updated = plugin.store.update_state(account_id, mutate)
-    # 顺带刷新额度快照（credits 只在签到/额度刷新时查询，不做定时轮询）
+    # 顺带刷新额度与套餐快照（只在签到/额度刷新时查询，不做定时轮询）
     try:
-        credits = plugin.upstream.ent_usage_remain(work)
+        credits, plan = plugin.upstream.ent_usage_info(work)
     except Exception:
-        credits = None
+        credits, plan = None, ""
     if credits is not None:
         def mutate_credits(st):
             st.credits = credits
+            if plan:
+                st.plan = plan
             st.credits_at = now_millis()
 
         updated = plugin.store.update_state(account_id, mutate_credits)
@@ -181,7 +183,7 @@ def refresh_quota_snapshot(plugin, account_id):
         unavailable = "（签到服务未对该账号开放）"
 
     try:
-        credits = plugin.upstream.ent_usage_remain(account)
+        credits, plan = plugin.upstream.ent_usage_info(account)
     except Exception as exc:
         # 额度查询失败：保留既有快照，只更新签到状态，并如实说明
         def mutate(st):
@@ -195,6 +197,8 @@ def refresh_quota_snapshot(plugin, account_id):
         st.checked_in_today = state.checked_in
         st.streak_days = state.streak_days
         st.credits = credits
+        if plan:
+            st.plan = plan
         st.credits_at = now_millis()
         st.last_error = ""
 
@@ -206,15 +210,13 @@ def handle_login_start(plugin, method, headers):
     """发起登录：POST /console/login/web → {"status","message","url","state"}。
 
     响应体里**同时有 url 与 state**，面板据此判定为 link 类并轮询。
+    回调地址固定为 http://127.0.0.1:<插件端口>/authorize（官方授权页硬校验该形态）。
     """
-    from login import callback_base
+    from login import loopback_base
 
     if method != "web":
         return 400, {"error": "未知的登录方式：" + method}
-    base = callback_base(headers)
-    if not base:
-        # 插件被单独调试（未经网关启动）：没有统一回调入口可用，如实告知而不是静默降级
-        return 502, {"error": "缺少回调基址：请经网关启动插件，或手工导入凭证"}
+    base = loopback_base(plugin.port)
     try:
         session = plugin.login.start(base)
     except Exception as exc:

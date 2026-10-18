@@ -199,7 +199,7 @@ export default function Channels() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-base font-semibold text-zinc-800 dark:text-zinc-100">渠道管理</h1>
         <Button variant="primary" onClick={openNew}>
           添加渠道
@@ -217,7 +217,7 @@ export default function Channels() {
             }
           />
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-3">
             {list.map((ch) => {
               const enabledKeys = ch.keys.filter((k) => k.enabled).length
               const modelCount = Object.keys(ch.model_map).length + ch.models.length
@@ -235,7 +235,7 @@ export default function Channels() {
                       setFlippedId(flipped ? null : ch.id)
                     }
                   }}
-                  className={`flip-card h-40 cursor-pointer ${flipped ? 'flipped' : ''}`}
+                  className={`flip-card h-40 max-sm:h-44 cursor-pointer ${flipped ? 'flipped' : ''}`}
                 >
                   <div className="flip-card-inner">
                     {/* 正面：概览 */}
@@ -368,7 +368,7 @@ export default function Channels() {
                   </span>
                 </div>
                 {form.keys.map((row, i) => (
-                  <div key={i} className="flex items-center gap-2">
+                  <div key={i} className="flex flex-wrap items-center gap-2">
                     <Switch
                       checked={row.enabled}
                       title={row.enabled ? '已启用，点击停用' : '已停用，点击启用'}
@@ -379,16 +379,19 @@ export default function Channels() {
                       }}
                     />
                     {form.isPlugin ? (
-                      <div className="min-w-0 flex-1 rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-700">
+                      <div className="min-w-0 flex-1 basis-40 rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-700">
                         <span className="text-sm text-zinc-800 dark:text-zinc-100">
                           {row.label || row.key}
                         </span>
                         {row.label ? (
-                          <span className="ml-2 font-mono text-xs text-zinc-400">{row.key}</span>
+                          <span className="ml-2 font-mono text-xs break-all text-zinc-400">
+                            {row.key}
+                          </span>
                         ) : null}
                       </div>
                     ) : (
                       <Input
+                        className="min-w-0 flex-1 basis-40"
                         value={row.key}
                         onChange={(e) => {
                           const keys = [...form.keys]
@@ -534,8 +537,9 @@ export default function Channels() {
             <Field label="模型映射" hint="公开模型名 → 上游模型名，优先于模型列表">
               <div className="space-y-2">
                 {form.modelMap.map((row, i) => (
-                  <div key={i} className="flex items-center gap-2">
+                  <div key={i} className="flex flex-wrap items-center gap-2">
                     <Input
+                      className="min-w-0 flex-1 basis-36"
                       value={row.pub}
                       onChange={(e) => {
                         const modelMap = [...form.modelMap]
@@ -546,6 +550,7 @@ export default function Channels() {
                     />
                     <span className="text-zinc-400">→</span>
                     <Input
+                      className="min-w-0 flex-1 basis-36"
                       value={row.upstream}
                       onChange={(e) => {
                         const modelMap = [...form.modelMap]
@@ -580,8 +585,9 @@ export default function Channels() {
             >
               <div className="space-y-2">
                 {form.headers.map((row, i) => (
-                  <div key={i} className="flex items-center gap-2">
+                  <div key={i} className="flex flex-wrap items-center gap-2">
                     <Input
+                      className="min-w-0 flex-1 basis-36"
                       value={row.name}
                       onChange={(e) => {
                         const headers = [...form.headers]
@@ -591,6 +597,7 @@ export default function Channels() {
                       placeholder="x-session-id"
                     />
                     <Input
+                      className="min-w-0 flex-1 basis-36"
                       value={row.value}
                       onChange={(e) => {
                         const headers = [...form.headers]

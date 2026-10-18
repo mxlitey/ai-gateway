@@ -1,16 +1,22 @@
 # -*- coding: utf-8 -*-
 """网页登录（link 类，对应 Go 版 login.go）。
 
-回调走**网关统一入口**，插件不再监听额外端口：
-  ① POST /console/login/web → 从 X-Gateway-Callback-Base（或 AI_GATEWAY_CALLBACK_BASE）取基址，
-     拼出 <基址>/web/<state> 作为回调地址，返回 {status,url,state}
-  ② 面板打开 url，用户在浏览器授权，浏览器跳回网关的 /plugin-callback/<id>/web/<state>
-  ③ 网关原样转发到本插件的 /console/callback/web/<state>?<授权参数>
+**回调地址必须是 http://127.0.0.1:<port>/authorize**：
+TRAE 官方授权页（www.trae.cn/authorization）对 auth_callback_url 做硬校验，
+线上页面代码为 `/^http:\\/\\/127\\.0\\.0\\.1:(\\d+)\\/authorize$/`，
+不匹配就直接进入「登录失败 / 网络错误，请刷新页面重试」。
+因此不能再走网关的 /plugin-callback/<id>/web/<state>（路径形态不合法）。
+
+流程：
+  ① POST /console/login/web → 拼出 http://127.0.0.1:<插件端口>/authorize，返回 {status,url,state}
+  ② 面板打开 url，用户在浏览器授权，浏览器跳回插件主端口的 /authorize?<授权参数>
+  ③ state 无法放进回调地址（正则要求精确/authorize），改由服务端单会话跟踪
   ④ 回调里取 refreshToken → ExchangeToken → GetUserInfo → 原子落盘 → 会话标记 ok
   ⑤ 面板轮询 GET /console/login/web?state=xxx 拿到 ok → 自动刷新账号列表
+
+插件仍只监听清单里的那一个端口（/authorize 挂在主端口上），不新增额外端口。
 """
 
-import os
 import threading
 import time
 
@@ -19,6 +25,11 @@ from upstream import as_upstream_error, build_login_url, parse_callback
 from util import new_checkin_device_id, random_hex, random_state, truncate_runes
 
 LOGIN_TTL = 10 * 60  # 10 分钟
+
+
+def loopback_base(port):
+    """回调基址：官方授权页只接受 127.0.0.1 + 任意端口的 /authorize 形态。"""
+    return "http://127.0.0.1:%d" % int(port or 0)
 
 
 class LoginSession:
@@ -51,8 +62,9 @@ class LoginBroker:
         # deviceID 必须是「16 位纯数字」，且与落盘凭证共用同一个值
         device_id = new_checkin_device_id()
         state = random_state()
-        # state 放进回调**路径**（而非查询串）：部分上游要求 redirect_uri 精确匹配
-        callback_url = callback_base + "/web/" + state
+        # 回调地址被官方授权页硬校验为 /authorize，无法再塞 state；
+        # 会话由 broker 单条跟踪（面板同一时间也只有一个登录会话）。
+        callback_url = callback_base + "/authorize"
         auth_url = build_login_url(self.plugin.eps, machine_id, device_id, callback_url)
 
         session = LoginSession(state, auth_url, machine_id, device_id)
@@ -77,14 +89,23 @@ class LoginBroker:
         with self.mu:
             return self.by_state.get(state)
 
+    def current(self):
+        """当前登录会话（回调地址无法携带 state，按唯一会话匹配）。"""
+        with self.mu:
+            return self.cur
+
     def close_all(self):
         with self.mu:
             self.by_state = {}
             self.cur = None
 
     def handle_callback(self, state, raw_url, raw_query):
-        """处理网关转发来的浏览器回调。免鉴权入口：先按 state 找回会话。"""
-        session = self.lookup((state or "").strip())
+        """处理浏览器打到插件 /authorize 的授权回调。
+
+        state 无法出现在回调地址里（官方只接受 /authorize），因此按
+        「当前唯一会话」匹配；若带了 state 仍做一致性校验。
+        """
+        session = self.lookup((state or "").strip()) if (state or "").strip() else self.current()
         if session is None:
             return False, "登录会话不存在或已过期，请回到网关控制台重试"
         if time.time() - session.created > LOGIN_TTL:
@@ -135,18 +156,6 @@ class LoginBroker:
         verb = "已更新" if not created else "已新增"
         session.set_status("ok", "登录成功，账号 %s %s" % (verb, saved.name()))
         return True, "登录成功，可关闭此窗口"
-
-
-def callback_base(headers):
-    """解析本次登录应使用的回调基址。
-
-    优先级：请求头 X-Gateway-Callback-Base（网关每次登录现算）→ 环境变量
-    AI_GATEWAY_CALLBACK_BASE（进程启动时算好的兜底）→ 空串（插件被单独调试）。
-    """
-    value = (headers.get("X-Gateway-Callback-Base") or "").strip()
-    if value:
-        return value.rstrip("/")
-    return (os.environ.get("AI_GATEWAY_CALLBACK_BASE") or "").strip().rstrip("/")
 
 
 LOGIN_PAGE_HTML = """<!doctype html>

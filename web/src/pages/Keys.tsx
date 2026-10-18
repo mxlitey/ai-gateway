@@ -87,7 +87,7 @@ export default function Keys() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-base font-semibold text-zinc-800 dark:text-zinc-100">API 密钥</h1>
         <Button variant="primary" onClick={() => setCreating(true)}>
           生成密钥
@@ -105,7 +105,7 @@ export default function Keys() {
             }
           />
         ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-3">
             {list.map((key) => {
               const flipped = flippedId === key.id
               const scope =
@@ -239,8 +239,8 @@ export default function Keys() {
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
               密钥已保存，之后在列表里可以随时点「复制」取用。
             </p>
-            <div className="flex items-center gap-2">
-              <Input readOnly value={created.key} className="font-mono" />
+            <div className="flex flex-wrap items-center gap-2">
+              <Input readOnly value={created.key} className="min-w-0 flex-1 basis-48 font-mono" />
               <Button onClick={() => copyKey(created.key)}>复制</Button>
             </div>
           </div>

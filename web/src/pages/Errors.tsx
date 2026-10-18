@@ -6,8 +6,9 @@ import { Card, Empty, ErrorText, IconButton, Loading, RefreshIcon } from '../com
 import DatePicker, { fmtDate } from '../components/DatePicker'
 
 // 明细行的列宽：展开箭头 / 时间 / 渠道 / 模型 / 状态 / 错误信息 / 复制
+// 窄屏（< sm）把时间/渠道/模型/状态/错误信息合并成一列堆叠展示，避免横向溢出
 const rowGrid =
-  'grid grid-cols-[1rem_8.5rem_7rem_minmax(0,1.2fr)_4.5rem_minmax(0,1.8fr)_1.75rem] gap-3'
+  'grid grid-cols-[1rem_minmax(0,1fr)_1.75rem] items-start gap-2 sm:grid-cols-[1rem_8.5rem_7rem_minmax(0,1.2fr)_4.5rem_minmax(0,1.8fr)_1.75rem] sm:gap-3'
 
 export default function Errors() {
   // 默认看今天（北京时区），与仪表盘的「今日错误分布」口径一致
@@ -49,7 +50,7 @@ export default function Errors() {
           <Card>
             {/* 表格行 + 点击展开详情 + 复制整条记录 */}
             <div
-              className={`${rowGrid} items-center border-b border-zinc-200 pb-2 text-xs font-medium text-zinc-500 dark:border-zinc-800 dark:text-zinc-400`}
+              className={`${rowGrid} hidden items-center border-b border-zinc-200 pb-2 text-xs font-medium text-zinc-500 sm:grid dark:border-zinc-800 dark:text-zinc-400`}
             >
               <span />
               <span>时间</span>
@@ -89,14 +90,16 @@ function ErrorRow({ e, open, onToggle }: { e: ErrorLog; open: boolean; onToggle:
         >
           ▶
         </span>
-        <span className="text-xs text-zinc-500 dark:text-zinc-400">{fmtTime(e.created_at)}</span>
+        <span className="hidden text-xs text-zinc-500 sm:block dark:text-zinc-400">
+          {fmtTime(e.created_at)}
+        </span>
         <span
-          className="min-w-0 truncate text-xs text-zinc-600 dark:text-zinc-400"
+          className="hidden min-w-0 truncate text-xs text-zinc-600 sm:block dark:text-zinc-400"
           title={e.channel_name}
         >
           {e.channel_name || '-'}
         </span>
-        <span className="min-w-0">
+        <span className="hidden min-w-0 sm:block">
           <span className="block truncate font-mono text-xs text-zinc-700 dark:text-zinc-300">
             {e.model || '-'}
           </span>
@@ -105,11 +108,28 @@ function ErrorRow({ e, open, onToggle }: { e: ErrorLog; open: boolean; onToggle:
             {e.key_hint ? ` @ ${e.key_hint}` : ''}
           </span>
         </span>
-        <span>
+        <span className="hidden sm:block">
           <StatusBadge status={e.status} text={statusText} />
         </span>
-        <span className="min-w-0 truncate text-xs text-zinc-600 dark:text-zinc-400">
+        <span className="hidden min-w-0 truncate text-xs text-zinc-600 sm:block dark:text-zinc-400">
           {e.message || '-'}
+        </span>
+
+        {/* 窄屏：把上面几列合并成一段堆叠信息 */}
+        <span className="min-w-0 space-y-0.5 sm:hidden">
+          <span className="block font-mono text-xs break-all text-zinc-700 dark:text-zinc-300">
+            {e.model || '-'}
+          </span>
+          <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">
+            {fmtTime(e.created_at)}
+            {e.channel_name ? ` · ${e.channel_name}` : ''}
+          </span>
+          <span className="flex items-center gap-1.5">
+            <StatusBadge status={e.status} text={statusText} />
+            <span className="min-w-0 truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+              {e.message || '-'}
+            </span>
+          </span>
         </span>
         <button
           type="button"
@@ -119,7 +139,7 @@ function ErrorRow({ e, open, onToggle }: { e: ErrorLog; open: boolean; onToggle:
             ev.stopPropagation()
             copyRecord(e)
           }}
-          className="mt-0.5 rounded-md p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+          className="mt-0.5 rounded-md p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 max-sm:inline-flex max-sm:min-h-10 max-sm:min-w-10 max-sm:items-center max-sm:justify-center dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
         >
           <svg
             width="14"

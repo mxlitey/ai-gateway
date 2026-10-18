@@ -24,8 +24,9 @@ const buttonStyles: Record<ButtonVariant, string> = {
 }
 
 const buttonSizes: Record<ButtonSize, string> = {
-  md: 'gap-1.5 rounded-lg px-3 py-1.5 text-sm',
-  sm: 'gap-1 rounded-md px-2 py-1 text-xs',
+  // 窄屏加大点击热区，避免手指点到相邻按钮
+  md: 'gap-1.5 rounded-lg px-3 py-1.5 text-sm max-md:py-2.5',
+  sm: 'gap-1 rounded-md px-2 py-1 text-xs max-md:py-1.5',
 }
 
 export function Button({
@@ -57,14 +58,14 @@ export function Segmented<T extends string>({
 }) {
   return (
     <div
-      className={`inline-flex gap-0.5 rounded-[10px] bg-zinc-100 p-0.5 dark:bg-zinc-800 ${className}`}
+      className={`inline-flex max-w-full gap-0.5 overflow-x-auto rounded-[10px] bg-zinc-100 p-0.5 dark:bg-zinc-800 ${className}`}
     >
       {options.map((o) => (
         <button
           key={o.value}
           type="button"
           onClick={() => onChange(o.value)}
-          className={`h-7 rounded-[8px] px-3 text-xs transition-colors ${
+          className={`h-7 flex-none rounded-[8px] px-3 text-xs transition-colors max-md:h-10 ${
             value === o.value
               ? 'bg-white font-semibold text-zinc-800 shadow-sm dark:bg-zinc-700 dark:text-zinc-100'
               : 'text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100'
@@ -118,8 +119,10 @@ export function Card({
       className={`rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900 ${className}`}
     >
       {title || action ? (
-        <header className="flex items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-          <h2 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">{title}</h2>
+        <header className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+          <h2 className="min-w-0 truncate text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+            {title}
+          </h2>
           {action}
         </header>
       ) : null}
@@ -204,7 +207,7 @@ export function IconButton({
       type="button"
       title={title}
       aria-label={title}
-      className={`inline-flex flex-none items-center justify-center rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700 disabled:cursor-not-allowed disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 ${className}`}
+      className={`inline-flex flex-none items-center justify-center rounded-md p-1.5 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700 disabled:cursor-not-allowed disabled:opacity-40 max-md:min-h-10 max-md:min-w-10 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200 ${className}`}
     >
       {children}
     </button>
@@ -263,25 +266,39 @@ export function Modal({
   footer?: ReactNode
   wide?: boolean
 }) {
+  // 弹层打开时锁定背景滚动（手机端避免背后的长页面跟着滑动）
+  useEffect(() => {
+    if (!open) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.body.style.overflow = prev
+    }
+  }, [open])
+
   if (!open) return null
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-6">
+    <div className="fixed inset-0 z-50 flex items-end justify-center overflow-y-auto bg-black/40 p-0 sm:items-start sm:p-6">
       <div
-        className={`mt-10 w-full ${wide ? 'max-w-3xl' : 'max-w-lg'} rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-900`}
+        className={`flex max-h-[92dvh] w-full flex-col rounded-t-2xl border border-zinc-200 bg-white shadow-xl sm:mt-10 sm:max-h-[calc(100dvh-5rem)] sm:rounded-xl dark:border-zinc-800 dark:bg-zinc-900 ${
+          wide ? 'sm:max-w-3xl' : 'sm:max-w-lg'
+        }`}
       >
-        <header className="flex items-center justify-between border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
-          <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">{title}</h3>
+        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+          <h3 className="min-w-0 truncate text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+            {title}
+          </h3>
           <button
             onClick={onClose}
-            className="rounded-md px-2 py-0.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+            className="-mr-1 flex-none rounded-md px-2 py-1 text-zinc-500 hover:bg-zinc-100 active:bg-zinc-100 max-sm:min-h-10 max-sm:min-w-10 sm:py-0.5 dark:hover:bg-zinc-800"
             aria-label="关闭"
           >
             ✕
           </button>
         </header>
-        <div className="max-h-[70vh] overflow-y-auto p-4">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">{children}</div>
         {footer ? (
-          <footer className="flex justify-end gap-2 border-t border-zinc-200 px-4 py-3 dark:border-zinc-800">
+          <footer className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-zinc-200 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:pb-3 dark:border-zinc-800">
             {footer}
           </footer>
         ) : null}
@@ -328,7 +345,7 @@ export function Toaster() {
   }, [])
 
   return (
-    <div className="pointer-events-none fixed right-4 bottom-4 z-[60] flex w-80 flex-col gap-2">
+    <div className="pointer-events-none fixed inset-x-4 bottom-[calc(1rem+env(safe-area-inset-bottom))] z-[60] flex flex-col items-stretch gap-2 sm:inset-x-auto sm:right-4 sm:w-80 sm:items-end">
       {items.map((item) => (
         <div
           key={item.id}

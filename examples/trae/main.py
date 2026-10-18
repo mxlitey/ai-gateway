@@ -46,11 +46,13 @@ _STOP = threading.Event()
 
 
 class Plugin:
-    def __init__(self, eps, store, data_dir, dump_dir=""):
+    def __init__(self, eps, store, data_dir, dump_dir="", port=0):
         self.eps = eps
         self.store = store
         self.data_dir = data_dir
         self.dump_dir = dump_dir
+        # 监听端口：登录回调地址要用它拼 http://127.0.0.1:<port>/authorize
+        self.port = port
         self.upstream = Upstream(eps)
         self.login = login.LoginBroker(self)
         self._log_lock = threading.Lock()
@@ -342,12 +344,15 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "console" and parts[1] == "accounts":
             status, body = console.handle_accounts_list(plugin)
             return self.send_json(status, body)
-        if len(parts) == 4 and parts[0] == "console" and parts[1] == "callback" and parts[2] == "web":
-            ok, message = plugin.login.handle_callback(parts[3], self.path, self.path.split("?", 1)[1] if "?" in self.path else "")
-            return self.send_html(login.render_login_page(ok, message))
         if len(parts) == 3 and parts[0] == "console" and parts[1] == "login":
             status, body = console.handle_login_status(plugin, parts[2], self.query())
             return self.send_json(status, body)
+        # TRAE 官方授权页只接受 http://127.0.0.1:<port>/authorize 作为回调，
+        # 因此回调落点挂在插件主端口上（不是网关的 /plugin-callback）。
+        if self.path.split("?", 1)[0] == "/authorize":
+            raw_query = self.path.split("?", 1)[1] if "?" in self.path else ""
+            ok, message = plugin.login.handle_callback("", self.path, raw_query)
+            return self.send_html(login.render_login_page(ok, message))
         return self.send_json(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802
@@ -449,7 +454,7 @@ def run_serve(args):
 
     eps = load_endpoints(config_path)
     store = AccountStore(data_dir)
-    plugin = Plugin(eps, store, data_dir, dump_dir)
+    plugin = Plugin(eps, store, data_dir, dump_dir, port=port)
     if dump_dir:
         plugin.log("已开启请求体 dump：%s" % dump_dir)
 

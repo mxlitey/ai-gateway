@@ -130,7 +130,7 @@ function PriceSection({
         )}
       </p>
 
-      <div className="mb-4 grid gap-2 sm:grid-cols-5">
+      <div className="mb-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
         <Field label="模型名">
           <Input
             value={form.model}
@@ -168,7 +168,7 @@ function PriceSection({
 
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <Input
-          className="w-56 py-1 text-xs"
+          className="w-full py-1 text-xs sm:w-56"
           placeholder="搜索模型名"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -185,11 +185,12 @@ function PriceSection({
       ) : shown.length === 0 ? (
         <Empty text={`没有匹配「${query.trim()}」的模型`} />
       ) : (
-        <div className="max-h-72 overflow-y-auto">
-          <table className="w-full table-fixed text-sm">
+        <div className="max-h-72 overflow-auto">
+          {/* 窄屏表格需要最小宽度：列宽按百分比分配，过窄时「来源」徽标会压到相邻列 */}
+          <table className="w-full min-w-[34rem] table-fixed text-sm">
             <colgroup>
-              <col className="w-[32%]" />
-              <col className="w-[14%]" />
+              <col className="w-[30%]" />
+              <col className="w-[16%]" />
               <col className="w-[14%]" />
               <col className="w-[14%]" />
               <col className="w-[14%]" />
@@ -222,7 +223,7 @@ function PriceSection({
                   <td className="py-1.5 pr-3 text-right font-mono text-xs">{fmtPrice(p.cache_read_price)}</td>
                   <td className="py-1.5 text-right">
                     <button
-                      className="text-xs text-red-600 hover:underline dark:text-red-400"
+                      className="text-xs text-red-600 hover:underline max-sm:inline-flex max-sm:min-h-10 max-sm:min-w-10 max-sm:items-center max-sm:justify-end dark:text-red-400"
                       onClick={() => onDelete(p.model)}
                     >
                       删除

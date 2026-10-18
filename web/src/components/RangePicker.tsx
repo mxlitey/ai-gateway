@@ -123,7 +123,7 @@ export default function RangePicker({
     <div ref={boxRef} className="relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+        className="flex max-w-full items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50 max-sm:py-2.5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
       >
         <svg
           width="15"
@@ -133,17 +133,23 @@ export default function RangePicker({
           stroke="currentColor"
           strokeWidth="1.5"
           strokeLinecap="round"
+          className="flex-none"
         >
           <rect x="2" y="3.5" width="12" height="11" rx="2.5" />
           <path d="M2 7h12M5.5 2v3M10.5 2v3" />
         </svg>
-        {granularity === 'hour'
-          ? `${fmtHour(value.from)} ~ ${fmtHour(value.to - 1)}`
-          : `${fmtDay(value.from)} ~ ${fmtDay(value.to - 1)}`}
+        <span className="truncate">
+          {granularity === 'hour'
+            ? `${fmtHour(value.from)} ~ ${fmtHour(value.to - 1)}`
+            : `${fmtDay(value.from)} ~ ${fmtDay(value.to - 1)}`}
+        </span>
       </button>
 
       {open ? (
-        <div className="absolute right-0 z-20 mt-2 w-72 rounded-xl border border-zinc-200 bg-white p-3 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
+        <>
+          {/* 窄屏：日历改为底部弹层，避免浮层超出屏幕 */}
+          <div className="fixed inset-0 z-20 bg-black/30 sm:hidden" onClick={close} />
+          <div className="absolute right-0 z-20 mt-2 w-72 rounded-xl border border-zinc-200 bg-white p-3 shadow-lg max-sm:fixed max-sm:inset-x-3 max-sm:top-auto max-sm:bottom-[calc(0.75rem+env(safe-area-inset-bottom))] max-sm:mt-0 max-sm:w-auto dark:border-zinc-700 dark:bg-zinc-900">
           <div className="mb-2 flex items-center justify-between">
             <button
               onClick={() => setMonth(shiftMonth(month, -1))}
@@ -189,7 +195,7 @@ export default function RangePicker({
                   disabled={dayDisabled(d)}
                   onMouseEnter={() => setHoverDay(d)}
                   onClick={() => pick(d, tab === 'end')}
-                  className={`h-8 rounded-lg text-xs disabled:cursor-not-allowed ${
+                  className={`h-8 rounded-lg text-xs max-sm:h-10 disabled:cursor-not-allowed ${
                     dayDisabled(d)
                       ? 'text-zinc-300 dark:text-zinc-700'
                       : d === pendingDay
@@ -221,7 +227,7 @@ export default function RangePicker({
                       key={h}
                       disabled={off}
                       onClick={() => commit(p, tab === 'end')}
-                      className={`rounded-md px-1 py-1 text-[11px] disabled:cursor-not-allowed ${
+                      className={`rounded-md px-1 py-1 text-[11px] max-sm:py-2 disabled:cursor-not-allowed ${
                         off
                           ? 'text-zinc-300 dark:text-zinc-700'
                           : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
@@ -253,7 +259,8 @@ export default function RangePicker({
               </button>
             ))}
           </div>
-        </div>
+          </div>
+        </>
       ) : null}
     </div>
   )

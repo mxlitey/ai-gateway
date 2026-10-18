@@ -91,7 +91,7 @@ export default function Plugins() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-base font-semibold text-zinc-800 dark:text-zinc-100">插件</h1>
         <IconButton
           title={rescan.isPending ? '扫描中…' : '重新扫描插件目录'}
@@ -513,7 +513,7 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
           <Empty text="还没有账号：用上面的按钮导入或授权登录" />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[36rem] text-sm">
               <thead>
                 <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800">
                   <th className="py-2 pr-3 font-medium">账号</th>

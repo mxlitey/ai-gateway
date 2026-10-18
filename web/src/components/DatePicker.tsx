@@ -60,67 +60,71 @@ export default function DatePicker({
       </button>
 
       {open ? (
-        <div className="absolute right-0 z-20 mt-2 w-64 rounded-xl border border-zinc-200 bg-white p-3 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
-          <div className="mb-2 flex items-center justify-between">
-            <button
-              onClick={() => shiftMonth(-1)}
-              aria-label="上个月"
-              className="rounded-md px-2 py-0.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-            >
-              ‹
-            </button>
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
-              {y} 年 {m} 月
-            </span>
-            <button
-              onClick={() => shiftMonth(1)}
-              aria-label="下个月"
-              className="rounded-md px-2 py-0.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-            >
-              ›
-            </button>
+        <>
+          {/* 窄屏：日历改为底部弹层，避免浮层超出屏幕 */}
+          <div className="fixed inset-0 z-20 bg-black/30 sm:hidden" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 z-20 mt-2 w-64 rounded-xl border border-zinc-200 bg-white p-3 shadow-lg max-sm:fixed max-sm:inset-x-3 max-sm:top-auto max-sm:bottom-[calc(0.75rem+env(safe-area-inset-bottom))] max-sm:mt-0 max-sm:w-auto dark:border-zinc-700 dark:bg-zinc-900">
+            <div className="mb-2 flex items-center justify-between">
+              <button
+                onClick={() => shiftMonth(-1)}
+                aria-label="上个月"
+                className="rounded-md px-2 py-0.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              >
+                ‹
+              </button>
+              <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+                {y} 年 {m} 月
+              </span>
+              <button
+                onClick={() => shiftMonth(1)}
+                aria-label="下个月"
+                className="rounded-md px-2 py-0.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              >
+                ›
+              </button>
+            </div>
+            <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-zinc-400 dark:text-zinc-500">
+              {['一', '二', '三', '四', '五', '六', '日'].map((w) => (
+                <span key={w}>{w}</span>
+              ))}
+            </div>
+            <div className="mt-1 grid grid-cols-7 gap-1">
+              {cells.map((d, i) =>
+                d === null ? (
+                  <span key={`blank-${i}`} />
+                ) : (
+                  <button
+                    key={d}
+                    onClick={() => {
+                      onChange(d)
+                      setOpen(false)
+                    }}
+                    className={`h-8 rounded-lg text-xs max-sm:h-10 ${
+                      d === value
+                        ? 'bg-emerald-600 text-white'
+                        : d === today
+                          ? 'text-emerald-600 hover:bg-zinc-100 dark:text-emerald-400 dark:hover:bg-zinc-800'
+                          : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
+                    }`}
+                  >
+                    {Number(d.slice(8))}
+                  </button>
+                ),
+              )}
+            </div>
+            <div className="mt-2 border-t border-zinc-100 pt-2 text-right dark:border-zinc-800">
+              <button
+                onClick={() => {
+                  onChange(today)
+                  setOpen(false)
+                }}
+                className="text-xs text-emerald-600 hover:underline dark:text-emerald-400"
+              >
+                今天
+              </button>
+            </div>
           </div>
-          <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-zinc-400 dark:text-zinc-500">
-            {['一', '二', '三', '四', '五', '六', '日'].map((w) => (
-              <span key={w}>{w}</span>
-            ))}
-          </div>
-          <div className="mt-1 grid grid-cols-7 gap-1">
-            {cells.map((d, i) =>
-              d === null ? (
-                <span key={`blank-${i}`} />
-              ) : (
-                <button
-                  key={d}
-                  onClick={() => {
-                    onChange(d)
-                    setOpen(false)
-                  }}
-                  className={`h-8 rounded-lg text-xs ${
-                    d === value
-                      ? 'bg-emerald-600 text-white'
-                      : d === today
-                        ? 'text-emerald-600 hover:bg-zinc-100 dark:text-emerald-400 dark:hover:bg-zinc-800'
-                        : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
-                  }`}
-                >
-                  {Number(d.slice(8))}
-                </button>
-              ),
-            )}
-          </div>
-          <div className="mt-2 border-t border-zinc-100 pt-2 text-right dark:border-zinc-800">
-            <button
-              onClick={() => {
-                onChange(today)
-                setOpen(false)
-              }}
-              className="text-xs text-emerald-600 hover:underline dark:text-emerald-400"
-            >
-              今天
-            </button>
-          </div>
-        </div>
+        </>
       ) : null}
     </div>
   )

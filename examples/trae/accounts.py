@@ -23,7 +23,7 @@ class Account:
     __slots__ = (
         "uid", "nickname", "enterprise_id", "access_token", "refresh_token",
         "expires_at", "domain", "api_host", "machine_id", "device_id",
-        "enabled", "hard_disabled", "credits", "credits_at",
+        "enabled", "hard_disabled", "credits", "credits_at", "plan",
         "checked_in_today", "streak_days", "last_error",
     )
 
@@ -42,6 +42,7 @@ class Account:
         self.hard_disabled = bool(kwargs.get("hard_disabled", False))
         self.credits = float(kwargs.get("credits", 0) or 0)
         self.credits_at = int(kwargs.get("credits_at", 0) or 0)
+        self.plan = kwargs.get("plan", "")  # 套餐名（额度接口按 product_type 识别）
         self.checked_in_today = bool(kwargs.get("checked_in_today", False))
         self.streak_days = int(kwargs.get("streak_days", 0) or 0)
         self.last_error = kwargs.get("last_error", "")
@@ -99,7 +100,7 @@ class Auth:
 class AccountState:
     """state.json 里单个账号的可持久化状态（不含任何凭据）。"""
 
-    __slots__ = ("enabled", "hard_disabled", "credits", "credits_at",
+    __slots__ = ("enabled", "hard_disabled", "credits", "credits_at", "plan",
                  "checked_in_today", "streak_days", "last_error")
 
     def __init__(self, enabled=True):
@@ -107,6 +108,7 @@ class AccountState:
         self.hard_disabled = False
         self.credits = 0.0
         self.credits_at = 0
+        self.plan = ""
         self.checked_in_today = False
         self.streak_days = 0
         self.last_error = ""
@@ -121,6 +123,8 @@ class AccountState:
             doc["hard_disabled"] = True
         if self.credits_at:
             doc["credits_at"] = self.credits_at
+        if self.plan:
+            doc["plan"] = self.plan
         if self.streak_days:
             doc["streak_days"] = self.streak_days
         if self.last_error:
@@ -133,6 +137,7 @@ class AccountState:
         state.hard_disabled = bool(doc.get("hard_disabled", False))
         state.credits = float(doc.get("credits", 0) or 0)
         state.credits_at = int(doc.get("credits_at", 0) or 0)
+        state.plan = doc.get("plan", "") or ""
         state.checked_in_today = bool(doc.get("checked_in_today", False))
         state.streak_days = int(doc.get("streak_days", 0) or 0)
         state.last_error = doc.get("last_error", "") or ""
@@ -235,6 +240,7 @@ class AccountStore:
             acc.hard_disabled = state.hard_disabled
             acc.credits = state.credits
             acc.credits_at = state.credits_at
+            acc.plan = state.plan
             acc.checked_in_today = state.checked_in_today
             acc.streak_days = state.streak_days
             acc.last_error = state.last_error

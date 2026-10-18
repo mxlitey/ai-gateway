@@ -28,11 +28,42 @@ body,
   height: 100%;
 }
 
+html {
+  /* 移动端横竖屏切换时不要放大字号 */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
 body {
   margin: 0;
   font-family: -apple-system, "Segoe UI Variable Text", "Segoe UI", system-ui,
     "PingFang SC", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
+  /* 消除移动端点击高亮与双击缩放延迟 */
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a,
+[role="button"] {
+  touch-action: manipulation;
+}
+
+/* iOS Safari 在输入框字号小于 16px 时会在聚焦时自动放大页面。
+   窄屏统一提到 16px，保证竖屏手机上点输入框不会把页面顶飞。 */
+@media (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  /* 勾选框在触屏上适当放大，便于点中 */
+  input[type="checkbox"],
+  input[type="radio"] {
+    width: 1.125rem;
+    height: 1.125rem;
+  }
 }
 
 /* 统一的细节滚动条 */

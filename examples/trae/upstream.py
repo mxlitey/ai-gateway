@@ -20,6 +20,40 @@ from util import (
 # 上游在「今天已签到」时也用成功码返回；按幂等语义当成功处理。
 _CHECKED_IN_RE = re.compile(r"已签到|已经签到|already", re.IGNORECASE)
 
+# 权益包 product_type 官方枚举（见 www.trae.cn 前端 ProductType）：
+#   0 Free / 1 Pro / 2 Package / 3 PromoCode / 4 ProPlus / 5 ProPlusPack /
+#   6 Ultra / 7 PayGo / 8 Lite / 9 SoloInvite / 100 CNExpress
+# 其中 0/1/4/6/8/100 是「套餐身份」，2/3/5/7/9 是活动、兑换码等临时包。
+PACK_PLAN_NAMES = {
+    0: "免费版",
+    1: "Pro",
+    4: "Pro+",
+    6: "Ultra",
+    8: "Lite",
+    100: "Express",
+}
+
+# 套餐档位从低到高（仅用于在一堆包中挑出当前生效的最高档）。
+PACK_PLAN_RANK = [0, 8, 1, 4, 6, 100]
+
+# 不属于任何套餐的临时包：它们不参与套餐识别。
+PACK_NON_PLAN_TYPES = {2, 3, 5, 7, 9}
+
+
+def pack_rank(product_type):
+    """套餐档位序号；未知/非套餐类型返回 -1（永远排在已知套餐之后）。"""
+    try:
+        ptype = int(product_type)
+    except (TypeError, ValueError):
+        return -1
+    if ptype in PACK_NON_PLAN_TYPES:
+        return -1
+    try:
+        return PACK_PLAN_RANK.index(ptype)
+    except ValueError:
+        return -1
+
+
 
 class UpstreamError(Exception):
     """映射到网关切号语义后的错误。"""
@@ -415,8 +449,13 @@ class Upstream:
         return out, UpstreamError(502, util.truncate_runes(msg, 100), code=code)
 
     def checkin_claim_with_retry(self, account):
-        """执行签到；遇到上游容量类错误（9074）时退避重试。"""
-        attempts = 4
+        """执行签到；遇到上游容量类错误（9074）时退避重试。
+
+        9074 是上游对该账号的签到限流（实测同 IP 同时刻另一个账号可正常领取，
+        换 deviceId / machineId / 刷新 token 均无效），短间隔重试基本不会成功，
+        因此只做少量退避，避免把面板请求拖到几十秒。
+        """
+        attempts = 3
         out = CheckinClaimResult()
         last = None
         for i in range(attempts):
@@ -425,22 +464,23 @@ class Upstream:
                 return out, None
             if not is_retryable_upstream(last) or i == attempts - 1:
                 break
-            time.sleep(1 << i)  # 1s / 2s / 4s
+            time.sleep(3 * (i + 1))  # 3s / 6s
         if isinstance(last, UpstreamError) and is_retryable_upstream(last):
             return out, UpstreamError(
                 last.status,
-                "上游暂时拒绝签到（业务码 %d），已自动重试 %d 次仍未成功，请稍后再试" % (last.code, attempts),
+                "上游拒绝签到（业务码 %d）：该账号被上游限流，与设备/网络无关，请稍后重试或改用其他账号" % last.code,
                 code=last.code,
             )
         return out, last
 
     # ---------- 额度 ----------
 
-    def ent_usage_remain(self, account):
-        """查账号额度明细，返回未过期权益包的剩余积分之和。
+    def ent_usage_info(self, account):
+        """查账号额度明细，返回 (未过期剩余积分之和, 套餐名)。
 
         逐包规则：隐藏包 / 已取消（status=3）/ 兑换码包（product_type=3）跳过；
         credits_limit 缺失或为 0 的包不属于该账号；credits_limit < 0 是不限量哨兵（整体返回 -1）。
+        套餐名按 product_type 取「当前生效包」里的最高档位（含免费包，它没有 credits_limit）。
         """
         url = self.eps.ug_host + self.eps.ep_ent_usage
         try:
@@ -463,6 +503,7 @@ class Upstream:
         total = 0.0
         unlimited = False
         valid = 0
+        plan_type = -1
         for item in packs:
             if not isinstance(item, dict):
                 continue
@@ -472,10 +513,8 @@ class Upstream:
             if ok and int(status) == 3:
                 continue
             product_type, ok = dig_number(item, "product_type")
-            if ok and int(product_type) == 3:
-                continue
-            limit, ok = dig_number(item, "credits_limit")
-            if not ok or limit == 0:
+            ptype = int(product_type) if ok else 0
+            if ptype == 3:
                 continue
             # 到期时间可能以秒或毫秒给出；取不到视为长期有效
             expired = False
@@ -488,6 +527,12 @@ class Upstream:
                     break
             if expired:
                 continue
+            # 套餐档位与额度分开判定：免费包只给功能开关，没有 credits_limit
+            if pack_rank(ptype) > pack_rank(plan_type):
+                plan_type = ptype
+            limit, ok = dig_number(item, "credits_limit")
+            if not ok or limit == 0:
+                continue
             valid += 1
             if limit < 0:
                 unlimited = True
@@ -496,11 +541,16 @@ class Upstream:
             remain = limit - used
             if remain > 0:
                 total += remain
-        if valid == 0:
+        if valid == 0 and plan_type < 0:
             raise UpstreamError(502, "上游未返回有效额度包")
+        plan = PACK_PLAN_NAMES.get(plan_type, "")
         if unlimited:
-            return -1.0
-        return total
+            return -1.0, plan
+        return total, plan
+
+    def ent_usage_remain(self, account):
+        """兼容旧调用：只取剩余积分。"""
+        return self.ent_usage_info(account)[0]
 
     def extract_ide_credits(self, doc):
         """从对话流的 notify_usage 里提取 SOLO 通道专属的 ide_credits。

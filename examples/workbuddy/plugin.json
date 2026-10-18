@@ -1,5 +1,5 @@
 {
-  "name": "WorkBuddy (CodeBuddy)",
+  "name": "WorkBuddy",
   "version": "0.4.0",
   "description": "把本机 WorkBuddy 桌面端账号接进网关：读本机登录态导入、OAuth 授权登录、多账号、签到、额度查询与对话转发",
   "entry": "main.py",

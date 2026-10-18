@@ -36,8 +36,9 @@ RUN go build -trimpath -ldflags "-s -w -X github.com/czg95/ai-gateway-v2/interna
 
 # ---- 阶段 3：精简运行时 ----
 FROM alpine:3.20
-# 插件以独立进程运行，容器内需有基础 CA 证书与 tzdata 供上游 HTTPS / 本地时间使用
-RUN apk add --no-cache ca-certificates tzdata && \
+# 插件一律是 Python 程序，宿主用 Python 解释器拉起入口脚本，镜像内必须有 python3；
+# 另需基础 CA 证书与 tzdata 供上游 HTTPS / 本地时间使用
+RUN apk add --no-cache ca-certificates tzdata python3 && \
     adduser -D -u 10001 gateway && \
     mkdir -p /data /plugins && \
     chown -R gateway:gateway /data /plugins

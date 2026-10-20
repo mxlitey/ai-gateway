@@ -343,6 +343,117 @@ export type ChannelInput = {
   enabled: boolean
 }
 
+/** 一个 MCP 上游服务器下的密钥；daily_limit 为该密钥每日成功调用上限，-1 表示不限、0 表示不允许调用。 */
+export type MCPKey = {
+  key: string
+  label?: string
+  enabled: boolean
+  daily_limit: number
+}
+
+/** 一个 MCP 上游服务器（对外工具名为 alias__tool）。 */
+export type MCPServer = {
+  id: string
+  name: string
+  alias: string
+  url: string
+  headers: HeaderItem[]
+  keys: MCPKey[]
+  key_strategy: string
+  /** 整台服务器每日成功调用上限，-1 表示不限、0 表示不允许调用 */
+  daily_limit: number
+  /** 工具级每日成功调用上限（上游工具名 -> 上限），-1 或未列出的工具表示不限、0 表示该工具不允许调用 */
+  tool_limits: Record<string, number>
+  timeout_ms: number
+  enabled: boolean
+  source: string
+  sort_order: number
+  created_at: number
+
+  // 运行时派生字段
+  tool_count: number
+  last_status: string
+  last_error: string
+  daily_calls: number
+  /** 各密钥当天的成功调用次数（key_hint -> 次数） */
+  key_daily_calls: Record<string, number>
+  /** 各密钥每日上限之和（0 表示没有任何密钥设了上限） */
+  daily_limit_total: number
+  /** 各工具当天的成功调用次数（上游工具名 -> 次数） */
+  tool_daily_calls: Record<string, number>
+}
+
+export type MCPTool = {
+  server_id: string
+  exposed_name: string
+  tool: { name?: string; description?: string; inputSchema?: unknown }
+  updated_at: number
+}
+
+export type MCPCallLog = {
+  id: number
+  created_at: number
+  server_id: string
+  server_name: string
+  server_url: string
+  tool: string
+  key_hint: string
+  success: boolean
+  http_status: number
+  attempts: number
+  duration_ms: number
+  error: string
+}
+
+export type MCPUsageBucket = {
+  key: string
+  calls: number
+  success: number
+  failures: number
+}
+
+/** 单个密钥的调用统计；key_hint 为脱敏值，label 来自当前配置。 */
+export type MCPKeyUsage = {
+  server_id: string
+  server_name: string
+  key_hint: string
+  label: string
+  calls: number
+  success: number
+  failures: number
+  daily_limit: number
+  enabled: boolean
+  /** 该密钥没有单独的每日上限 */
+  unlimited: boolean
+}
+
+export type MCPUsageSummary = {
+  from: number
+  to: number
+  calls: number
+  success: number
+  failures: number
+  by_server: MCPUsageBucket[]
+  by_tool: MCPUsageBucket[]
+  /** 按密钥维度（服务器 + 脱敏密钥）的调用次数 */
+  by_key: MCPKeyUsage[]
+  by_day: MCPUsageBucket[]
+}
+
+export type MCPServerInput = {
+  name: string
+  alias: string
+  url: string
+  headers: HeaderItem[]
+  keys: MCPKey[]
+  key_strategy: string
+  daily_limit: number
+  /** 工具级每日上限（上游工具名 -> 上限），未列出的工具不受限制 */
+  tool_limits: Record<string, number>
+  timeout_ms: number
+  enabled: boolean
+}
+
 const TOKEN_KEY = 'aigw.token'
 
 // 会话被服务端拒绝（401）时的回调，由 AuthProvider 注册：用于清空本地登录态并回到登录页
@@ -643,6 +754,65 @@ export const api = {
       `/admin/api/usage?days=${days}`,
       { method: 'DELETE' },
     ),
+
+  // ---- MCP 上游聚合 ----
+  mcpServers: () => request<MCPServer[]>('/admin/api/mcp/servers'),
+  createMCPServer: (body: MCPServerInput) =>
+    request<MCPServer>('/admin/api/mcp/servers', { method: 'POST', ...json(body) }),
+  updateMCPServer: (id: string, body: MCPServerInput) =>
+    request<MCPServer>(`/admin/api/mcp/servers/${id}`, { method: 'PUT', ...json(body) }),
+  deleteMCPServer: (id: string) =>
+    request<{ success: boolean }>(`/admin/api/mcp/servers/${id}`, { method: 'DELETE' }),
+  toggleMCPServer: (id: string) =>
+    request<MCPServer>(`/admin/api/mcp/servers/${id}/toggle`, { method: 'PATCH' }),
+  // 重新拉取上游工具列表（刷新工具缓存）
+  refreshMCPServer: (id: string) =>
+    request<{ success: boolean; tools: number }>(`/admin/api/mcp/servers/${id}/refresh`, {
+      method: 'POST',
+    }),
+  testMCPServer: (id: string) =>
+    request<{ success: boolean; duration_ms: number; error?: string }>(
+      `/admin/api/mcp/servers/${id}/test`,
+      { method: 'POST' },
+    ),
+  mcpTools: (serverId?: string) =>
+    request<MCPTool[]>(
+      `/admin/api/mcp/tools${serverId ? `?server_id=${encodeURIComponent(serverId)}` : ''}`,
+    ),
+  callMCPTool: (name: string, args: unknown) =>
+    request<unknown>('/admin/api/mcp/tools/call', {
+      method: 'POST',
+      ...json({ name, arguments: args }),
+    }),
+  mcpUsageSummary: (params: { days?: number; from?: number; to?: number }) => {
+    const q = new URLSearchParams()
+    if (params.from != null && params.to != null) {
+      q.set('from', String(params.from))
+      q.set('to', String(params.to))
+    } else if (params.days != null) {
+      q.set('days', String(params.days))
+    }
+    return request<MCPUsageSummary>(`/admin/api/mcp/usage/summary?${q.toString()}`)
+  },
+  mcpCallLogs: (params: {
+    days?: number
+    server_id?: string
+    tool?: string
+    only_fail?: boolean
+    limit?: number
+    offset?: number
+  }) => {
+    const q = new URLSearchParams()
+    if (params.days != null) q.set('days', String(params.days))
+    if (params.server_id) q.set('server_id', params.server_id)
+    if (params.tool) q.set('tool', params.tool)
+    if (params.only_fail) q.set('only_fail', '1')
+    if (params.limit) q.set('limit', String(params.limit))
+    if (params.offset) q.set('offset', String(params.offset))
+    return request<{ items: MCPCallLog[]; total: number; from: number; to: number }>(
+      `/admin/api/mcp/calls?${q.toString()}`,
+    )
+  },
 
   // 价格表
   prices: () => request<PricesResponse>('/admin/api/prices'),

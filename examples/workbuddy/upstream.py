@@ -100,14 +100,19 @@ def billing_headers(acc, cfg):
     return headers
 
 
-def chat_headers(acc, cfg):
+def chat_headers(acc, cfg, meta=None):
     """对话转发用的「官方客户端身份」头。
 
     上游认这套头，缺了会被当成非官方客户端拒掉：
     X-IDE-Type / X-IDE-Name / X-Product = WorkBuddy、X-Agent-Purpose: conversation。
+
+    meta 是官方客户端的会话头族（见 chat.conversation_meta）：上游按
+    X-Conversation-Request-ID 把「一次用户发送」内的多次调用聚成一条，按
+    X-Conversation-ID 归组多轮会话。缺了这些头，官网用量明细里每次请求都会
+    裂成一条无归属记录，和自己用桌面端对话的效果不一致。
     """
     ide_version = "5.5.2" if cfg.intl else "5.5.6"
-    return {
+    headers = {
         "Content-Type": "application/json",
         "Accept": "application/json, text/plain, */*",
         "X-Agent-Purpose": "conversation",
@@ -119,9 +124,33 @@ def chat_headers(acc, cfg):
         "User-Agent": cfg.chat_ua,
         "X-User-Id": acc.uid,
         "Authorization": "Bearer " + acc.access_token,
-        # 对话头用 32 位随机 hex，与账单头的稳定 request_id 不可混用
-        "X-Request-ID": secrets.token_hex(16),
     }
+
+    # 消息级 ID：每条独立，同时充当 X-Request-ID / X-Conversation-Message-ID
+    message_id = (meta or {}).get("message_id") or secrets.token_hex(16)
+    conversation_id = (meta or {}).get("conversation_id") or ""
+    turn_id = (meta or {}).get("conversation_request_id") or message_id
+
+    if conversation_id:
+        headers["X-Conversation-ID"] = conversation_id
+    headers["X-Conversation-Request-ID"] = turn_id
+    headers["X-Conversation-Message-ID"] = message_id
+    headers["X-Request-ID"] = message_id
+    headers["X-Root-Request-ID"] = turn_id
+    headers["X-Trace-ID"] = turn_id
+    # B3 只认 16/32 位 hex；turn_id 非法时回落到恒 32 hex 的消息级 ID
+    b3_trace = turn_id if _is_hex_id(turn_id) else message_id
+    headers["X-B3-TraceId"] = b3_trace
+    headers["X-B3-SpanId"] = message_id[:16]
+    headers["X-B3-Sampled"] = "1"
+    return headers
+
+
+def _is_hex_id(value):
+    """B3 TraceId 合法性：16 或 32 位 hex。"""
+    if len(value) not in (16, 32):
+        return False
+    return all(ch in "0123456789abcdefABCDEF" for ch in value)
 
 
 def oauth_base_headers(cfg):

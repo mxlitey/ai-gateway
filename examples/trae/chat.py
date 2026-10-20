@@ -5,12 +5,14 @@
 插件**不做任何调度**（不按积分挑号、不做冷却降级、不跳号），选择哪个账号全部归网关。
 """
 
+import hashlib
 import json
 import os
+import threading
 import time
 
 from upstream import UpstreamError
-from util import first_positive, random_uuid, stable_uuid
+from util import first_positive, random_uuid
 
 # 拉不到上游模型表时的回退清单
 STATIC_MODELS = ["glm-5.2", "glm-5.3"]
@@ -45,6 +47,55 @@ def pick_account(plugin):
     raise UpstreamError(503, "没有可用账号：请先在插件控制台登录或导入 TRAE 账号")
 
 
+def workspace_id_for(account):
+    """按账号派生 workspace_id。
+
+    客户端这里填真实工作区的 6 位短 id；插件没有工作区，用账号身份派生一个固定值，
+    保证同一账号恒定、账号之间互异，且形态与客户端一致。
+    """
+    basis = account.uid or account.device_id or account.machine_id or "anonymous"
+    return hashlib.sha256(("workspace:" + basis).encode("utf-8")).hexdigest()[:6]
+
+
+# 会话复用窗口：同一提问在窗口内的重复视为同一场会话（客户端重试），
+# 超过窗口的重复按官方客户端语义开新会话（用户重新提问 = 新会话）。
+SESSION_REUSE_SECONDS = 120
+
+_session_cache = {}
+_session_lock = threading.Lock()
+
+
+def session_ident(account, seed):
+    """为（账号, 会话种子）分配 conversation/session uuid。
+
+    上游对会话有两条风控规则（均回业务码 4011）：
+      1. 按会话维度限流：同一会话短时间请求过多即被限流；
+      2. 会话与账号绑定：同一场会话被另一个账号使用（如多账号共用同一探测语）
+         会被判为异常，第二个账号立即 4011。
+    官方客户端的语义是：一场会话属于一个账号，重试复用同一会话，重新提问开新会话。
+    插件从请求本身无法区分「重试」与「时隔较久的再次提问」，用「（账号, 种子）为
+    键、复用窗口内同会话、过期新开」近似官方语义——重试仍归入同一场会话，而反复
+    到来的相同提问（如网关诊断对每个密钥发的同一句探测语）各自拿到全新会话。
+    """
+    if not seed:
+        return random_uuid()
+    key = (account.uid or "?", seed)
+    now = time.time()
+    with _session_lock:
+        item = _session_cache.get(key)
+        if item is not None and item[1] > now:
+            _session_cache[key] = (item[0], now + SESSION_REUSE_SECONDS)
+            return item[0]
+        if len(_session_cache) >= 4096:
+            for stale in [k for k, v in _session_cache.items() if v[1] <= now]:
+                _session_cache.pop(stale, None)
+            if len(_session_cache) >= 4096:
+                _session_cache.clear()
+        ident = random_uuid()
+        _session_cache[key] = (ident, now + SESSION_REUSE_SECONDS)
+        return ident
+
+
 def inject_solo_fields(plugin, body, account):
     """注入 llm_utils_chat 的官方客户端必填字段。
 
@@ -56,16 +107,11 @@ def inject_solo_fields(plugin, body, account):
     value = first_positive(body.get("prompt_max_tokens"), body.get("context_length"))
     body["prompt_max_tokens"] = value if value > 0 else 168000
 
-    # 上游按 session_id 归组「一次会话」；每次请求都换新 uuid 会让同一场对话
-    # 在用量明细里裂成多条无标题记录，故按会话内容稳定派生。
-    seed = session_seed(body)
-    if seed:
-        ident = stable_uuid(seed)
-        body["conversation_id"] = ident
-        body["session_id"] = ident
-    else:
-        body["conversation_id"] = random_uuid()
-        body["session_id"] = random_uuid()
+    # 会话标识：按（账号, 种子）在复用窗口内映射到同一场会话，过期后开新会话
+    # ——对齐官方客户端「一场会话属于一个账号、重试同会话、重新提问新会话」的语义。
+    ident = session_ident(account, session_seed(body))
+    body["conversation_id"] = ident
+    body["session_id"] = ident
     body["project_id"] = random_uuid()
 
     user_input = last_user_text(body)
@@ -74,7 +120,7 @@ def inject_solo_fields(plugin, body, account):
     body["user_id"] = account.uid
     body["device_id"] = account.device_id
     body["machine_id"] = account.machine_id
-    body["workspace_id"] = "e04cdd"
+    body["workspace_id"] = workspace_id_for(account)
     body["mode"] = "FunctionCall"
     body["ide_version"] = plugin.eps.ide_version
     body["ide_version_code"] = plugin.eps.ide_version_code

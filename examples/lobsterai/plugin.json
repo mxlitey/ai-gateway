@@ -1,0 +1,10 @@
+{
+  "name": "LobsterAI (有道)",
+  "version": "1.0.0",
+  "description": "把有道龙虾 LobsterAI 账号接进网关：授权登录、多账号、额度查询与 OpenAI 兼容对话转发",
+  "entry": "main.py",
+  "port": 20818,
+  "startup_timeout_ms": 30000,
+  "console": true,
+  "capabilities": ["quota"]
+}

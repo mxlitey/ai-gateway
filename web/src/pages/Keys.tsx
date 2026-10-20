@@ -4,10 +4,17 @@ import { api, type APIKey, type Channel } from '../lib/api'
 import { toast } from '../lib/toast'
 import { Button, Card, Empty, ErrorText, Field, Input, Loading, Modal, Switch } from '../components/ui'
 
+// isPluginChannel 判断渠道是否由插件注册（source 形如 plugin:<插件id>）。
+function isPluginChannel(ch: Channel): boolean {
+  return ch.source.startsWith('plugin:')
+}
+
 export default function Keys() {
   const queryClient = useQueryClient()
   const keys = useQuery({ queryKey: ['apikeys'], queryFn: api.apiKeys })
   const channels = useQuery({ queryKey: ['channels'], queryFn: api.channels })
+  // 插件渠道由插件自动注册，需要知道哪些插件正在运行才能决定是否可选
+  const plugins = useQuery({ queryKey: ['plugins'], queryFn: api.plugins })
 
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
@@ -78,12 +85,20 @@ export default function Keys() {
     setEditChannelIds(key.channel_ids)
   }
 
-  if (keys.isLoading) return <Loading />
+  if (keys.isLoading || channels.isLoading || plugins.isLoading) return <Loading />
   if (keys.isError) return <ErrorText text={(keys.error as Error).message} />
 
   const list = keys.data ?? []
-  const channelList = channels.data ?? []
-  const channelName = (id: string) => channelList.find((c) => c.id === id)?.name ?? id
+  const allChannels = channels.data ?? []
+  // 没有启动的插件不进入可选渠道，避免把密钥绑到实际不存在的上游上
+  const runningPlugins = new Set(
+    (plugins.data ?? []).filter((p) => p.last_status === 'running').map((p) => p.id),
+  )
+  const channelList = allChannels.filter(
+    (ch) => !isPluginChannel(ch) || runningPlugins.has(ch.source.slice('plugin:'.length)),
+  )
+  // 名称解析仍用全量渠道，否则插件停用后已绑定的渠道会显示成裸 id
+  const channelName = (id: string) => allChannels.find((c) => c.id === id)?.name ?? id
 
   return (
     <div className="space-y-4">

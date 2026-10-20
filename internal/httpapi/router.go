@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/czg95/ai-gateway-v2/internal/admin"
+	"github.com/czg95/ai-gateway-v2/internal/mcp"
 	"github.com/czg95/ai-gateway-v2/internal/plugin"
 	"github.com/czg95/ai-gateway-v2/internal/proxy"
 	"github.com/czg95/ai-gateway-v2/web"
@@ -19,6 +20,8 @@ type Deps struct {
 	Admin *admin.API
 	// Host 插件宿主；用于免鉴权的统一登录回调入口（见 /plugin-callback/）。
 	Host *plugin.Host
+	// MCP 聚合入口；为空表示未启用 MCP 代理。
+	MCP *mcp.Handler
 }
 
 // NewRouter 组装完整路由。
@@ -33,6 +36,12 @@ func NewRouter(d Deps) http.Handler {
 	// /v1/* 代理
 	mux.HandleFunc("/v1/", d.Proxy.Handle)
 	mux.HandleFunc("GET /v1", d.Proxy.Handle)
+
+	// /mcp 聚合入口：对外是一个 MCP 服务器，内聚多台上游（含 /mcp/{alias} 单服务器直通）
+	if d.MCP != nil {
+		mux.HandleFunc("/mcp", d.MCP.Handle)
+		mux.HandleFunc("/mcp/", d.MCP.Handle)
+	}
 
 	// 统一登录回调入口：免鉴权（浏览器重定向带不了管理员凭据），
 	// 因此只放行 GET 且只映射到插件 /console/callback/*（见 docs/plugin-spec.md §6.6）。

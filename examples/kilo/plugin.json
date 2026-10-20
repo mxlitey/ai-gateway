@@ -1,0 +1,8 @@
+{
+  "name": "Kilo 免费池",
+  "version": "1.0.0",
+  "description": "把 Kilo AI 公共网关的免密免费模型池接进网关：无需账号、无需 Key，模型清单实时跟随上游",
+  "entry": "main.py",
+  "port": 20812,
+  "startup_timeout_ms": 20000
+}

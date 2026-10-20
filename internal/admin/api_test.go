@@ -110,6 +110,7 @@ func TestDescribeInvalidChatBody(t *testing.T) {
 		{"正常响应", `{"choices":[{"message":{"content":"hi"}}]}`, ""},
 		{"非 JSON", `not-json`, ""},
 		{"内嵌错误", `{"error":{"message":"boom"}}`, "boom"},
+		{"字符串错误", `{"error":"boom"}`, "boom"},
 		{"choices 缺失", `{"id":"x"}`, "choices 字段缺失"},
 		{"choices 非数组", `{"choices":"nope"}`, "choices 字段异常"},
 		{"choices 为空", `{"choices":[]}`, "choices 为空"},

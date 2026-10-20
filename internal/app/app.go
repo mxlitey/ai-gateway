@@ -16,6 +16,7 @@ import (
 	"github.com/czg95/ai-gateway-v2/internal/admin"
 	"github.com/czg95/ai-gateway-v2/internal/config"
 	"github.com/czg95/ai-gateway-v2/internal/httpapi"
+	"github.com/czg95/ai-gateway-v2/internal/mcp"
 	"github.com/czg95/ai-gateway-v2/internal/plugin"
 	"github.com/czg95/ai-gateway-v2/internal/pricing"
 	"github.com/czg95/ai-gateway-v2/internal/proxy"
@@ -141,6 +142,12 @@ func (a *App) Start() error {
 	proxyHandler := proxy.New(st, pricer)
 	// 管理端可查询/重置上游密钥冷却状态
 	api.SetCooler(proxyHandler.Cooler())
+
+	// MCP 聚合：对外一个 MCP 服务器，内聚多台 Streamable HTTP 上游
+	mcpSvc := mcp.NewService(st)
+	mcpSvc.Warmup()
+	mcpHandler := mcp.NewHandler(st, mcpSvc)
+	api.SetMCP(mcpSvc)
 	if a.cfg.AdminPassword != "" {
 		if initialized, err := api.Service().IsInitialized(); err == nil && !initialized {
 			if err := api.Service().Setup(a.cfg.AdminPassword); err != nil {
@@ -151,7 +158,7 @@ func (a *App) Start() error {
 		}
 	}
 
-	router := httpapi.NewRouter(httpapi.Deps{Proxy: proxyHandler, Admin: api, Host: host})
+	router := httpapi.NewRouter(httpapi.Deps{Proxy: proxyHandler, Admin: api, Host: host, MCP: mcpHandler})
 	srv := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 15 * time.Second}
 
 	ctx, cancel := context.WithCancel(context.Background())

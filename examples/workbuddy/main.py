@@ -90,6 +90,8 @@ def forward_chat(plugin, handler, headers):
     want_stream = body.get("stream") is True
     # 上游只接受流式（非流式会返回 code=11101），这里统一改写成流式
     body["stream"] = True
+    # 把最后一问改写成 WorkBuddy 的 <user_query> 形态，历史消息原样转发
+    chat.normalize_last_user_message(body)
 
     try:
         acc = chat.account_for_request(plugin.eps, plugin.store, headers)
@@ -112,7 +114,8 @@ def forward_chat(plugin, handler, headers):
     cfg = upstream.realm_config(plugin.eps, acc.site)
     try:
         response = http_stream(cfg.chat_origin + plugin.eps.chat_completions,
-                               upstream.chat_headers(acc, cfg), payload)
+                               upstream.chat_headers(acc, cfg, chat.conversation_meta(body)),
+                               payload)
     except Exception as exc:
         return "json", console.write_error(502, "请求上游失败: " + str(exc))
 

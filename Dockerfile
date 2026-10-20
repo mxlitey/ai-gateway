@@ -6,7 +6,8 @@
 #         -v ai-gateway-data:/data \
 #         ai-gateway:latest
 #
-# 镜像内置 TRAE 与 WorkBuddy 两个插件（见阶段 3），开箱即用。
+# 镜像内置 TRAE、WorkBuddy、ModelScope、Kilo、Cline、MiniMax Code、Loomy、
+# LobsterAI、Gemini 等插件（见阶段 3），开箱即用。
 # 说明：桌面外壳（cmd/gateway-wails，Wails + WebView2）仅面向 Windows，
 # 带 //go:build windows 标签，不会参与本镜像构建。
 
@@ -61,10 +62,18 @@ RUN set -eux; \
     chown -R gateway:gateway /data /plugins
 COPY --from=go-builder /out/ai-gateway /usr/local/bin/ai-gateway
 
-# 内置 TRAE 与 WorkBuddy 插件：Python 源码直接拷入，无需编译。
-# /plugins 是卷挂载点，卷首次创建时会带着这两个插件一起初始化；用户自己加的插件也放这里。
+# 内置 TRAE / WorkBuddy / ModelScope / Kilo / Cline / MiniMax / Loomy / LobsterAI / Gemini 插件：
+# Python 源码直接拷入，无需编译。
+# /plugins 是卷挂载点，卷首次创建时会带着这些插件一起初始化；用户自己加的插件也放这里。
 COPY --chown=gateway:gateway examples/trae /plugins/trae
 COPY --chown=gateway:gateway examples/workbuddy /plugins/workbuddy
+COPY --chown=gateway:gateway examples/modelscope /plugins/modelscope
+COPY --chown=gateway:gateway examples/kilo /plugins/kilo
+COPY --chown=gateway:gateway examples/cline /plugins/cline
+COPY --chown=gateway:gateway examples/minimax /plugins/minimax
+COPY --chown=gateway:gateway examples/loomy /plugins/loomy
+COPY --chown=gateway:gateway examples/lobsterai /plugins/lobsterai
+COPY --chown=gateway:gateway examples/gemini /plugins/gemini
 
 # 数据与插件目录固定为卷挂载点：换个容器实例也能保留配置、密钥与插件
 ENV AIGW_DATA_DIR=/data \

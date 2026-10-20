@@ -149,6 +149,10 @@ plugins/
 网关只支持 Python 插件：`entry` 必须是插件目录内的 `.py` 脚本。
 
 内置示例：`examples/workbuddy` 演示了如何把第三方账号的模型额度接入网关（导入本机登录态 / OAuth 授权 → 获取上游模型 → 路由暴露）。
+另外还有 `examples/modelscope`（魔搭官方 OAuth + 魔粒每日任务）与 `examples/kilo`（免密免费池，
+清单跟随上游）；以及 Cline / MiniMax Code / Loomy（讯飞）/ LobsterAI（有道）/ Gemini Code Assist
+五个渠道插件。以上插件都只用 Python 标准库，说明见
+[docs/plugins-free-channels.md](docs/plugins-free-channels.md)。
 
 完整开发规范见 [docs/plugin-spec.md](docs/plugin-spec.md)。
 
@@ -191,7 +195,8 @@ ai-gateway-v2/
 │   ├── store/             # SQLite 存储（migrations/ 为版本化建表脚本）
 │   └── version/           # 构建期注入的版本信息
 ├── web/                   # 管理面板前端（React 19 + Vite + Tailwind，embed.go 内嵌产物）
-├── examples/              # 示例插件（hello-py / trae / workbuddy，均为 Python）
+├── examples/              # 示例插件（hello-py / trae / workbuddy / modelscope / kilo /
+│                          #   cline / minimax / loomy / lobsterai / gemini，均为 Python）
 ├── docs/                  # 插件开发规范
 └── build/                 # 一键构建脚本与绿色版模板
 ```

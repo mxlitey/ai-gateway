@@ -14,6 +14,7 @@ import Usage from './pages/Usage'
 import Prices from './pages/Prices'
 import Errors from './pages/Errors'
 import Plugins from './pages/Plugins'
+import Mcp from './pages/Mcp'
 import Settings from './pages/Settings'
 
 export default function App() {
@@ -56,6 +57,8 @@ export default function App() {
           <Route path="/channels" element={<Channels />} />
           <Route path="/routes" element={<ModelRoutes />} />
           <Route path="/keys" element={<Keys />} />
+          {/* /mcp 是 MCP 协议端点，管理页必须用别的路径，否则刷新会被协议处理器拦截 */}
+          <Route path="/mcp-servers" element={<Mcp />} />
           <Route path="/usage" element={<Usage />} />
           <Route path="/prices" element={<Prices />} />
           <Route path="/errors" element={<Errors />} />

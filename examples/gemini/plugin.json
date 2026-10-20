@@ -1,0 +1,10 @@
+{
+  "name": "Gemini Code Assist",
+  "version": "1.0.0",
+  "description": "把 Gemini（Google Code Assist）接进网关：粘贴 refresh_token、多账号、额度查询与 Cloud Code Assist 协议转换",
+  "entry": "main.py",
+  "port": 20819,
+  "startup_timeout_ms": 30000,
+  "console": true,
+  "capabilities": ["quota"]
+}

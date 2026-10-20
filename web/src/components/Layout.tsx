@@ -9,6 +9,7 @@ const navItems = [
   { to: '/channels', label: '渠道管理' },
   { to: '/routes', label: '模型路由' },
   { to: '/keys', label: 'API 密钥' },
+  { to: '/mcp-servers', label: 'MCP 服务器' },
   { to: '/plugins', label: '插件' },
   { to: '/usage', label: '用量' },
   { to: '/prices', label: '价格表' },

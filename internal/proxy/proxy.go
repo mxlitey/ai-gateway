@@ -273,6 +273,12 @@ func (h *Handler) validateUpstreamResult(raw []byte, t routing.Target, publicMod
 	if err := json.Unmarshal(raw, &data); err != nil || data == nil {
 		return "" // 非 JSON，原样透传
 	}
+	// 插件的错误体是 {"error": "文案"}（字符串），上游多为 {"error": {...}}（对象），两者都要认
+	if s, ok := data["error"].(string); ok && s != "" {
+		msg := "HTTP 200 with error: " + s
+		h.logError(t, publicModel, 200, msg)
+		return msg
+	}
 	if e, ok := data["error"].(map[string]any); ok {
 		msg := "HTTP 200 with error: " + errorMessage(e)
 		h.logError(t, publicModel, 200, msg)

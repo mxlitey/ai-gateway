@@ -1,0 +1,10 @@
+{
+  "name": "Loomy (讯飞)",
+  "version": "1.0.0",
+  "description": "把讯飞 Loomy 账号接进网关：两步短信验证码登录、多账号、每日额度领取、积分查询与 OpenAI 兼容对话转发",
+  "entry": "main.py",
+  "port": 20817,
+  "startup_timeout_ms": 30000,
+  "console": true,
+  "capabilities": ["checkin", "quota"]
+}

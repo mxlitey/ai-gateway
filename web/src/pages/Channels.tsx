@@ -58,9 +58,16 @@ const emptyForm: FormState = {
   isPlugin: false,
 }
 
+// isPluginChannel 判断渠道是否由插件注册（source 形如 plugin:<插件id>）。
+function isPluginChannel(ch: Channel): boolean {
+  return ch.source.startsWith('plugin:')
+}
+
 export default function Channels() {
   const queryClient = useQueryClient()
   const channels = useQuery({ queryKey: ['channels'], queryFn: api.channels })
+  // 插件渠道由插件自动注册，需要知道哪些插件正在运行才能决定是否展示
+  const plugins = useQuery({ queryKey: ['plugins'], queryFn: api.plugins })
 
   const [form, setForm] = useState<FormState | null>(null)
   // 翻转卡片：记录当前翻到背面的渠道 id
@@ -192,10 +199,16 @@ export default function Channels() {
     setForm(null)
   }
 
-  if (channels.isLoading) return <Loading />
+  if (channels.isLoading || plugins.isLoading) return <Loading />
   if (channels.isError) return <ErrorText text={(channels.error as Error).message} />
 
-  const list = channels.data ?? []
+  // 没启动的插件不进入渠道；插件渠道（来自运行中的插件）置顶展示
+  const runningPlugins = new Set(
+    (plugins.data ?? []).filter((p) => p.last_status === 'running').map((p) => p.id),
+  )
+  const list = (channels.data ?? [])
+    .filter((ch) => !isPluginChannel(ch) || runningPlugins.has(ch.source.slice('plugin:'.length)))
+    .sort((a, b) => Number(isPluginChannel(b)) - Number(isPluginChannel(a)))
 
   return (
     <div className="space-y-4">
@@ -641,7 +654,7 @@ function ChannelCardHead({ ch, onToggle }: { ch: Channel; onToggle: () => void }
           <span className="truncate text-sm font-semibold text-zinc-800 dark:text-zinc-100">
             {ch.name}
           </span>
-          {ch.source.startsWith('plugin:') ? <Badge tone="info">插件</Badge> : null}
+          {isPluginChannel(ch) ? <Badge tone="info">插件</Badge> : null}
         </div>
         <p
           className="mt-1 line-clamp-2 font-mono text-xs break-all text-zinc-500 dark:text-zinc-400"
@@ -674,7 +687,7 @@ function openEdit(ch: Channel, setForm: (f: FormState) => void) {
     headers: ch.headers.map((h) => ({ name: h.name, value: h.value })),
     keyStrategy: ch.key_strategy || 'rotate',
     enabled: ch.enabled,
-    isPlugin: ch.source.startsWith('plugin:'),
+    isPlugin: isPluginChannel(ch),
   })
 }
 

@@ -410,11 +410,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         try:
-            wrote_any, _, serr, _ = sse.stream_solo(self.wfile, response, model)
-            if serr is not None and not wrote_any:
-                # 尚未写出任何 chunk（响应头已发出，这里只能补一个 SSE 错误事件）
+            _wrote_any, _, serr, _ = sse.stream_solo(self.wfile, response, model)
+            if serr is not None:
                 plugin.note_upstream_error(account, serr)
-            elif serr is None:
+                # 响应头已发出，改不了状态码：把错误补成一个 SSE 事件。
+                # 否则上游出错时调用方只会拿到「空 200」，错误被静默吞掉。
+                evt = json.dumps(
+                    {"error": {"message": serr.msg, "type": "upstream_error", "code": serr.status}},
+                    ensure_ascii=False,
+                )
+                self.wfile.write(("data: " + evt + "\n\ndata: [DONE]\n\n").encode("utf-8"))
+                self.wfile.flush()
+            else:
                 plugin.note_success(account.uid)
         finally:
             response.close()

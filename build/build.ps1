@@ -95,7 +95,7 @@ New-Item -ItemType Directory -Force -Path "dist/plugins", "dist/data" | Out-Null
 
 # 内置插件：插件一律是 Python 源码（同一份源码在 Windows / macOS / Linux 通用），
 # 整目录拷贝即可，不需要任何编译。先删旧目录，避免残留上一次的可执行产物。
-foreach ($name in @("trae", "workbuddy")) {
+foreach ($name in @("trae", "workbuddy", "modelscope", "kilo", "cline", "minimax", "loomy", "lobsterai", "gemini")) {
     if (-not (Test-Path "examples/$name/plugin.json")) { continue }
     $dst = "dist/plugins/$name"
     Remove-Item $dst -Recurse -Force -ErrorAction SilentlyContinue

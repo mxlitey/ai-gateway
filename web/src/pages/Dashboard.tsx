@@ -24,7 +24,10 @@ export default function Dashboard() {
   const channelList = channels.data ?? []
   const keyList = keys.data ?? []
   const errorGroups = errors.data?.channels ?? []
-  const pluginList = plugins.data ?? []
+  // 运行中的插件置顶展示
+  const pluginList = [...(plugins.data ?? [])].sort(
+    (a, b) => Number(b.last_status === 'running') - Number(a.last_status === 'running'),
+  )
 
   const availableChannels = channelList.filter(
     (c) => c.enabled && c.keys.some((k) => k.enabled),

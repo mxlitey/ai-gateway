@@ -87,7 +87,10 @@ export default function Plugins() {
   if (plugins.isLoading) return <Loading />
   if (plugins.isError) return <ErrorText text={(plugins.error as Error).message} />
 
-  const list = plugins.data ?? []
+  // 运行中的插件置顶展示
+  const list = [...(plugins.data ?? [])].sort(
+    (a, b) => Number(b.last_status === 'running') - Number(a.last_status === 'running'),
+  )
 
   return (
     <div className="space-y-4">

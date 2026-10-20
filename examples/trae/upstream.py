@@ -196,10 +196,8 @@ class Upstream:
             "X-OS-Version": self.eps.os_version,
             "X-Device-Brand": self.eps.device_brand,
             "Request-Traffic-Type": "prod",
-            "Package-Type": "stable_cn",
-            "X-Lgw-Req-Sdk-Type": "3",
-            "X-Lscbd-Aid": "787976",
-            "X-Lscbd-Platform": "windows",
+            # X-Ss-Dp 由 TTNet 原生层注入（sscronet.dll），客户端 JS 与 ai-agent 都不发，
+            # 这里保留以模拟原生层的出站形态。
             "X-Ss-Dp": "787976",
         }
         if account.uid:

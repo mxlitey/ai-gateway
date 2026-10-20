@@ -5,6 +5,7 @@
 客户端要流式就照原样透传 SSE，要非流式就在本地把 SSE 聚合成一次响应。
 """
 
+import hashlib
 import json
 import threading
 import time
@@ -15,6 +16,216 @@ from util import as_str, first_non_empty, truncate_runes
 
 class NoAccountError(Exception):
     pass
+
+
+# ---------- 最后一问的标签规范化 ----------
+
+# WorkBuddy 客户端把当次提问包成 <user_query>…</user_query>，隐藏上下文包成
+# <system-reminder data-role="…">…</system-reminder>（见客户端 app.asar）
+TARGET_QUESTION_TAG = "user_query"
+PACKAGING_TAGS = ("system-reminder",)
+# 其它客户端用来包裹提问的标签，统一改写为 user_query
+SOURCE_QUESTION_TAGS = ("user_query", "user_input", "user_message", "user_request", "query")
+
+
+def _lower_ascii(text):
+    """只把 ASCII 大写转小写，保证字节长度不变（与切片下标对齐）。"""
+    return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in text)
+
+
+def _is_tag_end(ch):
+    return ch in (">", " ", "\t", "\n", "\r")
+
+
+def _take_blocks(text, name):
+    """摘出 text 中所有 <name …>…</name> 块，返回 (剩余文本, 块列表)。"""
+    lower = _lower_ascii(text)
+    open_tag = "<" + name
+    close_tag = "</" + name + ">"
+    rest = []
+    blocks = []
+    i = 0
+    while i < len(text):
+        oi = lower.find(open_tag, i)
+        if oi < 0:
+            rest.append(text[i:])
+            break
+        after = oi + len(open_tag)
+        if after < len(text) and not _is_tag_end(lower[after]):
+            rest.append(text[i:after])
+            i = after
+            continue
+        gt = lower.find(">", after)
+        if gt < 0:
+            rest.append(text[i:])
+            break
+        ci = lower.find(close_tag, gt + 1)
+        if ci < 0:
+            rest.append(text[i:])  # 没闭合：其余原样保留
+            break
+        blocks.append(text[oi:ci + len(close_tag)])
+        rest.append(text[i:oi])
+        i = ci + len(close_tag)
+    return "".join(rest), blocks
+
+
+def _unwrap_whole(text):
+    """整段被一对已知提问标签包裹时返回内部文本，否则原样返回。
+
+    只认 SOURCE_QUESTION_TAGS：用户消息本身以 <html> / <div> 开头很常见，
+    按任意同名标签拆会错误吞掉用户粘贴的代码。
+    """
+    if not text.startswith("<"):
+        return text
+    lower = _lower_ascii(text)
+    gt = lower.find(">")
+    if gt < 0:
+        return text
+    name = lower[1:gt].strip()
+    for sep in (" ", "\t", "\r", "\n"):
+        pos = name.find(sep)
+        if pos >= 0:
+            name = name[:pos]
+    if name not in SOURCE_QUESTION_TAGS:
+        return text
+    close_tag = "</" + name + ">"
+    if not lower.endswith(close_tag):
+        return text
+    inner = text[gt + 1: len(text) - len(close_tag)]
+    if close_tag in _lower_ascii(inner):
+        return text  # 内部还有同名闭标签：结构异常，不猜
+    return inner.strip()
+
+
+def format_question(text):
+    """把一段用户输入改写成 WorkBuddy 的形态：上下文块在前，提问包进 <user_query>。
+
+    客户端自己的包装标签（<user_input> 等）会被换成 WorkBuddy 的 <user_query>；
+    无包装的纯文本同样补上这层包装，与官方客户端的出站形态保持一致。
+    """
+    rest = text
+    blocks = []
+    for name in PACKAGING_TAGS:
+        rest, found = _take_blocks(rest, name)
+        blocks.extend(found)
+    inner = _unwrap_whole(rest.strip())
+    if not inner:
+        return text  # 整段都是上下文，没有提问：原样转发
+    wrapped = "<%s>%s</%s>" % (TARGET_QUESTION_TAG, inner, TARGET_QUESTION_TAG)
+    return " ".join(blocks + [wrapped])
+
+
+def normalize_last_user_message(body):
+    """只改写最后一条 user 消息（当次提问），历史消息一律不动。"""
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            message["content"] = format_question(content)
+        elif isinstance(content, list):
+            for part in reversed(content):
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    part["text"] = format_question(part["text"])
+                    break
+        return
+
+
+# ---------- 会话头族 ----------
+
+
+def _message_text(message):
+    """取一条 message 的纯文本 content（兼容字符串与数组两种形态）。"""
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+        return "".join(parts)
+    return ""
+
+
+def _stable_uuid(seed):
+    """由种子确定性派生 8-4-4-4-12 形态的标识（同种子恒等）。"""
+    h = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+    return "%s-%s-%s-%s-%s" % (h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+
+
+def _conversation_id(body):
+    """取会话 ID：客户端自带优先，否则按「首条 user 提问」稳定派生。
+
+    上游按会话归组用量；不派生的话，所有无会话标识的客户端每次请求都会
+    在官网明细里裂成互不相干的一条。只用首条 user 文本（不带 system）：
+    部分客户端每轮都会改写 system 提示，带上它会让同一会话的 ID 逐轮漂移。
+    """
+    meta = body.get("metadata")
+    if isinstance(meta, dict):
+        value = first_non_empty(as_str(meta.get("conversation_id")),
+                                as_str(meta.get("conversationId")))
+        if value:
+            return value
+    value = first_non_empty(as_str(body.get("conversation_id")),
+                            as_str(body.get("conversationId")))
+    if value:
+        return value
+
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        text = _message_text(message)
+        if text:
+            return _stable_uuid("conversation|" + text)
+    return ""
+
+
+def _turn_signature(body):
+    """对话轮签名：最后一条 user 消息的「序号 + 文本」。
+
+    一次用户发送内的多次上游调用（工具调用多轮 / 重试 / 换号）最后一条 user
+    消息恒定，因此共用同一个 X-Conversation-Request-ID；用户发下一条消息即换键。
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        text = _message_text(message)
+        if not text:
+            return ""
+        return "%d:%s" % (index, text)
+    return ""
+
+
+def conversation_meta(body):
+    """生成官方客户端的会话头族元数据（由 chat_headers 写入请求头）。
+
+    对齐官方桌面端的三层标识：会话级（X-Conversation-ID，多轮稳定）、
+    对话轮级（X-Conversation-Request-ID，一次发送内稳定）、消息级（每条独立）。
+    """
+    conversation_id = _conversation_id(body)
+    signature = _turn_signature(body)
+    if signature:
+        seed = "turn|" + conversation_id + "|" + signature
+        turn_id = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+    else:
+        turn_id = ""
+    return {
+        "conversation_id": conversation_id,
+        "conversation_request_id": turn_id,
+    }
 
 
 # 模型思考档位表缓存：同一站点在 TTL 内复用，避免每次转发都多打一次上游

@@ -1,0 +1,10 @@
+{
+  "name": "ModelScope 魔搭",
+  "version": "1.0.0",
+  "description": "把魔搭（ModelScope）官方账号接进网关：OAuth / 粘贴令牌登录、多账号、魔粒额度与每日任务、OpenAI 兼容对话转发",
+  "entry": "main.py",
+  "port": 20810,
+  "startup_timeout_ms": 30000,
+  "console": true,
+  "capabilities": ["checkin", "quota"]
+}

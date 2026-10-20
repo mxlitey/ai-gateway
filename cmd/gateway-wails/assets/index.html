@@ -110,6 +110,8 @@
     gap: 10px;
   }
   .card.grow { flex: 1 1 auto; min-height: 0; }
+  /* 插件卡片限高：插件数量增多时由内部列表滚动，不再把下方日志区域顶掉 */
+  .card.plugins { max-height: 40vh; }
 
   .row { display: flex; align-items: center; gap: 8px; }
   .spacer { flex: 1 1 auto; }
@@ -323,7 +325,7 @@
       </div>
 
       <!-- 插件 -->
-      <div class="card">
+      <div class="card plugins">
         <div class="section-head">
           <span class="section-title">插件</span>
           <span class="count" id="plugCount">0 个</span>
@@ -424,7 +426,12 @@
     }
 
     function renderPlugins(list) {
-      rows = Array.isArray(list) ? list : [];
+      // 运行中的插件置顶展示，其余保持后端返回顺序
+      const all = Array.isArray(list) ? list : [];
+      rows = all
+        .map((p, i) => ({ p, i }))
+        .sort((a, b) => (Number(b.p.status === "运行中") - Number(a.p.status === "运行中")) || (a.i - b.i))
+        .map((x) => x.p);
       if (!rows.some((p) => p.id === selectedId)) selectedId = "";
       btnRemove.disabled = !selectedId;
 

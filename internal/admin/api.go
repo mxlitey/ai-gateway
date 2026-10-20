@@ -16,6 +16,7 @@ import (
 	"github.com/czg95/ai-gateway-v2/internal/channel"
 	"github.com/czg95/ai-gateway-v2/internal/config"
 	"github.com/czg95/ai-gateway-v2/internal/id"
+	"github.com/czg95/ai-gateway-v2/internal/mcp"
 	"github.com/czg95/ai-gateway-v2/internal/model"
 	"github.com/czg95/ai-gateway-v2/internal/netinfo"
 	"github.com/czg95/ai-gateway-v2/internal/penalty"
@@ -35,6 +36,8 @@ type API struct {
 	cfg    *config.Config
 	// cooler 上游密钥冷却器（由 app 层在构造 proxy 后注入），用于查询与手动重置。
 	cooler *penalty.Cooler
+	// mcp MCP 聚合服务（由 app 层注入），用于服务器探测、工具刷新与试调用。
+	mcp *mcp.Service
 }
 
 // NewAPI 创建管理接口处理器。host / pricer 可为 nil；cfg 提供监听地址与数据目录等运行信息。
@@ -194,6 +197,10 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 		a.rescanPlugins(w)
 	case strings.HasPrefix(path, "/plugins/"):
 		a.pluginSubroutes(w, r, path, method)
+
+	// ---- MCP 上游聚合 ----
+	case path == "/mcp" || strings.HasPrefix(path, "/mcp/"):
+		a.mcpSubroutes(w, r, path, method)
 
 	// ---- 用量与费用 ----
 	case path == "/usage/summary" && method == http.MethodGet:
@@ -1215,10 +1222,13 @@ func (a *API) probeUpstream(ch *model.Channel, key, upstreamModel, publicModel s
 		KeyHint:   model.KeyHint(key),
 	}
 
+	// 上游 SOLO 通道只接受流式请求：非流式会被判为异常调用，回业务码 4011（插件把它
+	// 翻译成 429「触发上游限流」）。诊断必须与真实客户端一致地发流式，否则永远误报。
 	payload, _ := json.Marshal(map[string]any{
 		"model":      upstreamModel,
 		"messages":   []any{map[string]any{"role": "user", "content": "say ok"}},
 		"max_tokens": 3,
+		"stream":     true,
 	})
 	testURL := channel.BaseURL(ch) + channel.ChatPath(ch)
 
@@ -1261,13 +1271,17 @@ func (a *API) probeUpstream(ch *model.Channel, key, upstreamModel, publicModel s
 		res.RateHeaders = rate
 	}
 
-	// 与真实转发同一判定标准：200 也可能是「内容为错误」的假成功
+	// 与真实转发同一判定标准：只有 HTTP 200 才可能是「内容为错误」的假成功；
+	// 非 2xx 已由状态码本身表达错误，不能再被 body 校验覆盖成 200。
 	failMsg := ""
-	if invalid := describeInvalidChatBody(raw); invalid != "" {
-		res.Error = invalid
-		failMsg = invalid
-		a.logDiagnoseError(ch, key, publicModel, 200, "HTTP 200 with error: "+invalid)
-	} else if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode == http.StatusOK {
+		if invalid := describeInvalidChatBody(raw); invalid != "" {
+			res.Error = invalid
+			failMsg = invalid
+			a.logDiagnoseError(ch, key, publicModel, resp.StatusCode, "HTTP 200 with error: "+invalid)
+		}
+	} else {
+		res.Error = truncateStr(string(raw), 300)
 		failMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateStr(string(raw), 200))
 		a.logDiagnoseError(ch, key, publicModel, resp.StatusCode, failMsg)
 	}
@@ -1968,17 +1982,44 @@ func normalizeModelMap(in map[string]string) map[string]string {
 
 // describeInvalidChatBody 与真实转发同一判定标准，返回失败原因（正常返回空串）。
 func describeInvalidChatBody(raw []byte) string {
+	text := strings.TrimSpace(string(raw))
+	if text == "" {
+		return "响应体为空"
+	}
+
+	// 诊断请求是流式的，响应为 SSE：逐事件检查是否夹带了错误
+	if strings.HasPrefix(text, "data:") {
+		events := 0
+		for _, line := range strings.Split(text, "\n") {
+			payload, ok := strings.CutPrefix(strings.TrimSpace(line), "data:")
+			if !ok {
+				continue
+			}
+			payload = strings.TrimSpace(payload)
+			if payload == "" || payload == "[DONE]" {
+				continue
+			}
+			var ev map[string]any
+			if err := json.Unmarshal([]byte(payload), &ev); err != nil || ev == nil {
+				continue
+			}
+			if msg := errorFromObject(ev); msg != "" {
+				return msg
+			}
+			events++
+		}
+		if events == 0 {
+			return "上游未返回流式内容"
+		}
+		return ""
+	}
+
 	var data map[string]any
 	if err := json.Unmarshal(raw, &data); err != nil || data == nil {
 		return ""
 	}
-	if e, ok := data["error"].(map[string]any); ok {
-		for _, k := range []string{"message", "code", "type"} {
-			if s, ok := e[k].(string); ok && s != "" {
-				return s
-			}
-		}
-		return "upstream error"
+	if msg := errorFromObject(data); msg != "" {
+		return msg
 	}
 	choices, ok := data["choices"]
 	if !ok {
@@ -1990,6 +2031,23 @@ func describeInvalidChatBody(raw []byte) string {
 	}
 	if len(arr) == 0 {
 		return "choices 为空"
+	}
+	return ""
+}
+
+// errorFromObject 从响应对象里提取错误信息：插件的错误体是 {"error": "文案"}（字符串），
+// 上游多为 {"error": {...}}（对象），两者都要认。
+func errorFromObject(data map[string]any) string {
+	if s, ok := data["error"].(string); ok && s != "" {
+		return s
+	}
+	if e, ok := data["error"].(map[string]any); ok {
+		for _, k := range []string{"message", "code", "type"} {
+			if s, ok := e[k].(string); ok && s != "" {
+				return s
+			}
+		}
+		return "upstream error"
 	}
 	return ""
 }

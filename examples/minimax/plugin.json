@@ -1,0 +1,10 @@
+{
+  "name": "MiniMax Code",
+  "version": "1.0.0",
+  "description": "把 MiniMax Code 账号接进网关：OAuth 设备码登录、多账号、签到积分、Anthropic Messages 协议转换",
+  "entry": "main.py",
+  "port": 20816,
+  "startup_timeout_ms": 30000,
+  "console": true,
+  "capabilities": ["checkin", "quota"]
+}

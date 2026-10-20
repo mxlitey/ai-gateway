@@ -206,6 +206,136 @@ type UsageSummary struct {
 	ByDay []UsageBucket `json:"by_day"`
 }
 
+// MCPKey 一个 MCP 上游服务器下的密钥。
+//
+// 与渠道密钥的区别：MCP 服务器通常直接接受一个 Token，因此这里额外支持
+// 「每日调用次数上限」，用于给不同密钥分配不同的用量额度
+//（-1 表示不限，0 表示不允许调用，正数为上限）。
+type MCPKey struct {
+	Key   string `json:"key"`
+	Label string `json:"label,omitempty"`
+	// Enabled 是否参与选号。
+	Enabled bool `json:"enabled"`
+	// DailyLimit 该密钥每日成功调用次数上限：-1 不限，0 不允许调用，正数为上限。
+	DailyLimit int `json:"daily_limit"`
+}
+
+// MCPServer 一个聚合的上游 MCP 服务器（Streamable HTTP）。
+type MCPServer struct {
+	ID string `json:"id"`
+	// Name 展示名，同时也是默认工具命名空间前缀。
+	Name string `json:"name"`
+	// Alias 工具命名空间前缀（对外工具名为 alias__tool）；留空时由 Name 推导。
+	Alias string `json:"alias"`
+	// URL Streamable HTTP 端点（MCP 客户端视角的服务地址）。
+	URL     string   `json:"url"`
+	Headers []Header `json:"headers"`
+	Keys    []MCPKey `json:"keys"`
+	// KeyStrategy 多密钥选用策略，见 KeyStrategy* 常量。
+	KeyStrategy string `json:"key_strategy"`
+	// DailyLimit 整台服务器每日成功调用上限：-1 不限，0 不允许调用，正数为上限。
+	DailyLimit int `json:"daily_limit"`
+	// ToolLimits 工具级每日成功调用上限（上游工具名 -> 上限），用于不同工具分配不同配额；
+	// -1 或未列出的工具表示不限，0 表示该工具不允许调用。
+	ToolLimits map[string]int `json:"tool_limits"`
+	// TimeoutMS 单次工具调用超时（毫秒）。
+	TimeoutMS int    `json:"timeout_ms"`
+	Enabled   bool   `json:"enabled"`
+	Source    string `json:"source"`
+	SortOrder int64  `json:"sort_order"`
+	CreatedAt int64  `json:"created_at"`
+
+	// 以下为运行时派生字段，不落库。
+	ToolCount       int    `json:"tool_count"`
+	LastStatus      string `json:"last_status"`
+	LastError       string `json:"last_error"`
+	DailyCalls      int64  `json:"daily_calls"`
+	DailyLimitTotal int64  `json:"daily_limit_total"`
+	// KeyDailyCalls 各密钥当天的成功调用次数（key_hint -> 次数），面板展示用。
+	KeyDailyCalls map[string]int64 `json:"key_daily_calls"`
+	// ToolDailyCalls 各工具当天的成功调用次数（上游工具名 -> 次数），面板展示用。
+	ToolDailyCalls map[string]int64 `json:"tool_daily_calls"`
+}
+
+// IsManual 判断服务器是否由用户手工添加（非插件注册）。
+func (s *MCPServer) IsManual() bool { return s.Source == "" || s.Source == "manual" }
+
+// EnabledKeys 返回已启用的密钥值。
+func (s *MCPServer) EnabledKeys() []string {
+	out := make([]string, 0, len(s.Keys))
+	for _, k := range s.Keys {
+		if k.Enabled && strings.TrimSpace(k.Key) != "" {
+			out = append(out, k.Key)
+		}
+	}
+	return out
+}
+
+// MCPTool 一条缓存的工具定义。
+type MCPTool struct {
+	ServerID    string `json:"server_id"`
+	Name        string `json:"name"`
+	ExposedName string `json:"exposed_name"`
+	// Raw 上游返回的原始工具对象（已包含 name / description / inputSchema 等字段）。
+	Raw       string `json:"-"`
+	UpdatedAt int64  `json:"updated_at"`
+}
+
+// MCPCallLog 一次工具调用的结果。
+type MCPCallLog struct {
+	ID         int64  `json:"id"`
+	CreatedAt  int64  `json:"created_at"`
+	ServerID   string `json:"server_id"`
+	ServerName string `json:"server_name"`
+	ServerURL  string `json:"server_url"`
+	Tool       string `json:"tool"`
+	KeyHint    string `json:"key_hint"`
+	Success    bool   `json:"success"`
+	HTTPStatus int    `json:"http_status"`
+	Attempts   int    `json:"attempts"`
+	DurationMS int64  `json:"duration_ms"`
+	Error      string `json:"error"`
+}
+
+// MCPUsageBucket 按服务器 / 工具分组的调用统计。
+type MCPUsageBucket struct {
+	Key      string `json:"key"`
+	Calls    int64  `json:"calls"`
+	Success  int64  `json:"success"`
+	Failures int64  `json:"failures"`
+}
+
+// MCPKeyUsage 单个密钥的调用统计。
+//
+// 密钥以脱敏值（KeyHint）为标识，同一台服务器内唯一；Label / DailyLimit /
+// Enabled 来自当前配置，用于把统计结果直接展示成「这把我们用了多少」。
+type MCPKeyUsage struct {
+	ServerID   string `json:"server_id"`
+	ServerName string `json:"server_name"`
+	KeyHint    string `json:"key_hint"`
+	Label      string `json:"label"`
+	Calls      int64  `json:"calls"`
+	Success    int64  `json:"success"`
+	Failures   int64  `json:"failures"`
+	DailyLimit int    `json:"daily_limit"`
+	Enabled    bool   `json:"enabled"`
+	// Unlimited 该密钥没有单独的每日上限（是否受服务器级上限约束由前端另行提示）。
+	Unlimited bool `json:"unlimited"`
+}
+
+// MCPUsageSummary 时间区间内的 MCP 调用汇总。
+type MCPUsageSummary struct {
+	From     int64            `json:"from"`
+	To       int64            `json:"to"`
+	Calls    int64            `json:"calls"`
+	Success  int64            `json:"success"`
+	Failures int64            `json:"failures"`
+	ByServer []MCPUsageBucket `json:"by_server"`
+	ByTool   []MCPUsageBucket `json:"by_tool"`
+	ByKey    []MCPKeyUsage    `json:"by_key"`
+	ByDay    []MCPUsageBucket `json:"by_day"`
+}
+
 // Plugin 插件实例。
 type Plugin struct {
 	ID          string `json:"id"`

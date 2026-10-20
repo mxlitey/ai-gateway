@@ -1,0 +1,10 @@
+{
+  "name": "Cline",
+  "version": "1.0.0",
+  "description": "把 Cline 账号接进网关：WorkOS 设备码登录、多账号、余额查询与 OpenAI 兼容对话转发",
+  "entry": "main.py",
+  "port": 20815,
+  "startup_timeout_ms": 30000,
+  "console": true,
+  "capabilities": ["quota"]
+}

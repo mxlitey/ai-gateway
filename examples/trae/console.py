@@ -105,21 +105,22 @@ def perform_checkin(plugin, account_id):
         plugin.note_upstream_error(work, as_upstream_error(err))
         raise err
     if state.unavailable:
-        raise UpstreamError(403, "该账号未开放签到服务（GET/POST 两种形态均返回 code 1001）", code=1001)
+        raise UpstreamError(403, "该账号未开放签到服务（上游返回 code 1001）", code=1001)
 
     checked_in = state.checked_in
     msg = "今天已经签到过了"
     if not checked_in:
         if not state.enable:
             raise UpstreamError(502, "该账号当前不可签到（上游未开放签到）")
-        result, cerr = plugin.upstream.checkin_claim_with_retry(work)
+        # 签到失败直接如实返回错误，不做任何自动重试
+        result, cerr = plugin.upstream.checkin_claim(work)
         if cerr is not None:
             plugin.note_upstream_error(work, as_upstream_error(cerr))
             raise cerr
         if result.unavailable:
-            raise UpstreamError(403, "该账号未开放签到服务（GET/POST 两种形态均返回 code 1001）", code=1001)
+            raise UpstreamError(403, "该账号未开放签到服务（上游返回 code 1001）", code=1001)
         checked_in = True
-        # 上游对「今天已签到」也用成功码返回 → 按幂等成功处理
+        # 上游对「今天已签到」也用成功码/9095 返回 → 按幂等成功处理
         if result.already:
             msg = "今日已签到"
         elif result.message:

@@ -1,10 +1,15 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type KeyCooldown, type UsageBucket } from '../lib/api'
+import { api, type Channel, type KeyCooldown, type UsageBucket } from '../lib/api'
 import { Badge, Card, Empty, ErrorText, Loading } from '../components/ui'
 import { toast } from '../lib/toast'
 import { fmtDate } from '../components/DatePicker'
+
+// isPluginChannel 判断渠道是否由插件注册（source 形如 plugin:<插件id>）。
+function isPluginChannel(ch: Channel): boolean {
+  return ch.source.startsWith('plugin:')
+}
 
 export default function Dashboard() {
   // 仪表盘统计固定为当天
@@ -19,9 +24,15 @@ export default function Dashboard() {
     queryFn: () => api.usageSummary({ days: 1, date }),
   })
 
-  if (channels.isLoading || keys.isLoading) return <Loading />
+  if (channels.isLoading || keys.isLoading || plugins.isLoading) return <Loading />
 
-  const channelList = channels.data ?? []
+  // 没启动的插件不进入渠道统计：插件渠道随插件注册/停用，未运行时不算真实渠道
+  const runningPluginIDs = new Set(
+    (plugins.data ?? []).filter((p) => p.last_status === 'running').map((p) => p.id),
+  )
+  const channelList = (channels.data ?? []).filter(
+    (c) => !isPluginChannel(c) || runningPluginIDs.has(c.source.slice('plugin:'.length)),
+  )
   const keyList = keys.data ?? []
   const errorGroups = errors.data?.channels ?? []
   // 运行中的插件置顶展示

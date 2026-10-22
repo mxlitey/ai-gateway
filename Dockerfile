@@ -1,10 +1,10 @@
 # AI Gateway 多阶段构建：产出无界面（headless）的 Linux 镜像，供 Docker 部署。
 #
-# 构建：docker build -t ai-gateway:latest .
+# 构建：docker build -t ai-gateway:v2.0.0 -t ai-gateway:latest .
 # 运行：docker run -d --name ai-gateway -p 8787:8787 \
 #         -e AIGW_ADMIN_PASSWORD=your-password \
 #         -v ai-gateway-data:/data \
-#         ai-gateway:latest
+#         ai-gateway:v2.0.0
 #
 # 镜像内置 TRAE、WorkBuddy、ModelScope、Kilo、Cline、MiniMax Code、Loomy、
 # LobsterAI、Gemini 等插件（见阶段 3），开箱即用。

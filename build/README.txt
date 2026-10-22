@@ -3,7 +3,7 @@ AI Gateway 绿色版
 
 启动方式
 --------
-双击 ai-gateway.exe：打开桌面窗口，没有黑窗口
+双击 ai-gateway-v<版本号>.exe（如 ai-gateway-v1.1.0.exe）：打开桌面窗口，没有黑窗口
   - 设置运行端口（改完点「启动 / 重启」生效）
   - 启动 / 停止网关
   - 查看插件列表、添加插件（选目录）、删除插件、重新扫描
@@ -52,7 +52,7 @@ ModelScope 魔搭（端口 20810）
      （令牌页：https://modelscope.cn/my/myaccesstoken）
   3. 想吃每日魔粒：该账号需要 Web 会话 Cookie。
      OAuth 登录未必能采到 Cookie，可用「补充 Web 会话 Cookie」粘贴一次浏览器 Cookie；
-     不贴也能正常对话，签到会如实提示「没有 Web 会话 Cookie」
+     不贴也能正常对话，签到会如实报错「没有 Web 会话 Cookie」
   4. 到「渠道管理」编辑 ModelScope 渠道 →「获取上游模型」→ 勾选要用的模型
 
 Kilo 免费池（端口 20812）

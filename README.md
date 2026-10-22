@@ -32,7 +32,7 @@ AI Gateway 是一个运行在你自己电脑上的 API 网关。它把散落在�
 
 ### 下载运行（推荐）
 
-从 [Releases](../../releases) 下载绿色压缩包，解压后**双击 `ai-gateway.exe`**：
+从 [Releases](../../releases) 下载绿色压缩包，解压后**双击 `ai-gateway-v<版本号>.exe`**（如 `ai-gateway-v1.1.0.exe`）：
 
 1. 桌面窗口一打开就自动启动网关（默认端口 `8787`）；数据目录 `data/` 与插件目录 `plugins/` 就在 exe 同级
 2. 窗口里可改端口后点「启动 / 重启」，用「访问范围」在「仅本机 / 局域网」间切换，还能添加/移除/重扫插件、查看实时日志
@@ -132,7 +132,7 @@ Claude 协议同理：把 `baseURL` 指向 `http://127.0.0.1:8787`，密钥放�
 
 插件端口由插件自己写在 `plugin.json` 的 `port` 里（插件只监听这一个端口，不再监听额外端口）；网关启动前会确认它没被其他程序占用，被占用时在面板上明确提示。插件登录所需的本机 OAuth 回调页由网关统一入口 `/plugin-callback/<插件id>/...` 托管，详情见 [插件开发规范](docs/plugin-spec.md)。
 
-> 绿色版 `ai-gateway.exe` 与直接运行后端略有差异：数据/插件目录固定为 exe 同级的 `data/`、`plugins/`，且默认不自动打开浏览器；端口与访问范围会持久化到数据库，下次启动沿用。上表默认值适用于以命令行直接运行后端时。
+> 绿色版 `ai-gateway-v<版本号>.exe` 与直接运行后端略有差异：数据/插件目录固定为 exe 同级的 `data/`、`plugins/`，且默认不自动打开浏览器；端口与访问范围会持久化到数据库，下次启动沿用。上表默认值适用于以命令行直接运行后端时。
 
 ## 🔌 插件系统
 
@@ -164,13 +164,13 @@ plugins/
 pwsh -File build/build.ps1 -Version 0.1.0
 ```
 
-脚本会依次：构建前端（`web/`，产物内嵌进 Go 二进制）→ `go mod tidy` → 编译 `dist/ai-gateway.exe` → 组装绿色版目录（含内置示例插件）。
+脚本会依次：构建前端（`web/`，产物内嵌进 Go 二进制）→ `go mod tidy` → 编译 `dist/ai-gateway-v<版本号>.exe` → 组装绿色版目录（含内置示例插件）。
 
 开发模式单独构建后端：
 
 ```powershell
 $env:CGO_ENABLED = "0"
-go build -o dist/ai-gateway.exe ./cmd/gateway-wails
+go build -o dist/ai-gateway-v0.1.0.exe ./cmd/gateway-wails
 ```
 
 ## 📁 项目结构

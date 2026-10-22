@@ -20,6 +20,12 @@ from util import (
 # 上游在「今天已签到」时也用成功码返回；按幂等语义当成功处理。
 _CHECKED_IN_RE = re.compile(r"已签到|已经签到|already", re.IGNORECASE)
 
+# 设备维度「今日已签到」的业务码：语义等同幂等成功，不作为失败展示。
+_CODE_ALREADY_CHECKED_IN = 9095
+
+# 签到类接口（status / claim）的请求体，与官方客户端逐字对齐。
+_REQ_SOURCE_BODY = b'{"req_source":1}'
+
 # 权益包 product_type 官方枚举（见 www.trae.cn 前端 ProductType）：
 #   0 Free / 1 Pro / 2 Package / 3 PromoCode / 4 ProPlus / 5 ProPlusPack /
 #   6 Ultra / 7 PayGo / 8 Lite / 9 SoloInvite / 100 CNExpress
@@ -79,8 +85,8 @@ def classify_code(code):
     if code == 4011:
         return UpstreamError(429, "触发上游限流，请稍后重试", disable=False, code=4011)
     if code == 9074:
-        # 签到高峰的容量限制：属可重试的临时错误
-        return UpstreamError(502, "上游繁忙（签到人数过多），请稍后重试", disable=False, code=9074)
+        # 签到高峰的容量限制：上游临时拒绝，直接如实返回，不自动重试
+        return UpstreamError(502, "上游繁忙（当前参与用户太多），请稍后手动重试", disable=False, code=9074)
     if code == 4001:
         # 参数无效：模型不存在 / 版本不匹配 —— 换谁都一样，不切号
         return UpstreamError(400, "模型不可用，请更换模型", disable=False, code=4001)
@@ -151,11 +157,6 @@ def as_upstream_error(err):
     return UpstreamError(502, util.truncate_runes(str(err), 80))
 
 
-def is_retryable_upstream(err):
-    """是否属于「重试可能成功」的上游错误（当前只有签到容量限制 9074）。"""
-    return isinstance(err, UpstreamError) and err.code == 9074
-
-
 class Upstream:
     """上游 HTTP 客户端。api 用于短 JSON 请求（带总超时），stream 用于流式对话。"""
 
@@ -219,16 +220,16 @@ class Upstream:
             "X-Request-Id": "req_" + random_hex(16),
         }
 
-    def ug_headers(self, account, bearer):
+    def ug_headers(self, account):
         """签到 / 积分（api.trae.cn）所需的头。
 
-        两种凭证形态并存：**查签到状态用 Bearer，签到领取与积分查询用 Cloud-IDE-JWT**。
+        与官方客户端一致：统一用 Cloud-IDE-JWT 凭证。
         """
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
             "User-Agent": self.client_ua(),
-            "Authorization": ("Bearer " if bearer else "Cloud-IDE-JWT ") + account.access_token,
+            "Authorization": "Cloud-IDE-JWT " + account.access_token,
             "X-User-Region": "CN",
             "X-App-Type": "trae",
             "Origin": self.eps.console_host,
@@ -364,23 +365,12 @@ class Upstream:
     def checkin_status(self, account):
         """查询签到状态。
 
-        主路径是 GET + ?did=<deviceId> + Bearer，旧口径（POST 空体 + Cloud-IDE-JWT）仅作兜底。
+        对齐官方客户端：POST + Cloud-IDE-JWT + {"req_source":1}。
+        （GET ?did=<deviceId> + Bearer 的旧口径实测恒定返回 code 1001，已移除。）
         注意：签到语境下的 code 1001 表示「签到服务未对该账号开放」，不是登录态失效。
         """
-        from urllib.parse import quote
-
-        state = CheckinState()
-        if account.device_id:
-            url = self.eps.ug_host + self.eps.ep_checkin_status + "?did=" + quote(account.device_id, safe="")
-            try:
-                state, err = self._parse_checkin_status(url, "GET", self.ug_headers(account, True), None)
-                # 只有「拿到真实状态」才直接采信；若被判成 1001，必须继续走 POST 兜底
-                if err is None and not state.unavailable:
-                    return state
-            except Exception:
-                pass
         url = self.eps.ug_host + self.eps.ep_checkin_status
-        return self._parse_checkin_status(url, "POST", self.ug_headers(account, False), b"{}")
+        return self._parse_checkin_status(url, "POST", self.ug_headers(account), _REQ_SOURCE_BODY)
 
     def _parse_checkin_status(self, url, method, headers, body):
         state = CheckinState()
@@ -414,11 +404,11 @@ class Upstream:
         return state, None
 
     def checkin_claim(self, account):
-        """执行签到。请求体是空对象 {}（现行口径）。"""
+        """执行签到。请求体与官方客户端一致（{"req_source":1}），不做任何重试。"""
         out = CheckinClaimResult()
         url = self.eps.ug_host + self.eps.ep_checkin_claim
         try:
-            data = self.do_json("POST", url, self.ug_headers(account, False), b"{}")
+            data = self.do_json("POST", url, self.ug_headers(account), _REQ_SOURCE_BODY)
         except UpstreamError as err:
             if err.code == 1001:
                 out.unavailable = True
@@ -437,6 +427,10 @@ class Upstream:
         if code == 1001:
             out.unavailable = True
             return out, None
+        # 9095：该设备今日已签到，属幂等成功
+        if code == _CODE_ALREADY_CHECKED_IN:
+            out.already = True
+            return out, None
         if code in (0, 200):
             out.already = bool(_CHECKED_IN_RE.search(out.message))
             return out, None
@@ -445,31 +439,6 @@ class Upstream:
             return out, mapped
         msg = out.message or "签到失败"
         return out, UpstreamError(502, util.truncate_runes(msg, 100), code=code)
-
-    def checkin_claim_with_retry(self, account):
-        """执行签到；遇到上游容量类错误（9074）时退避重试。
-
-        9074 是上游对该账号的签到限流（实测同 IP 同时刻另一个账号可正常领取，
-        换 deviceId / machineId / 刷新 token 均无效），短间隔重试基本不会成功，
-        因此只做少量退避，避免把面板请求拖到几十秒。
-        """
-        attempts = 3
-        out = CheckinClaimResult()
-        last = None
-        for i in range(attempts):
-            out, last = self.checkin_claim(account)
-            if last is None:
-                return out, None
-            if not is_retryable_upstream(last) or i == attempts - 1:
-                break
-            time.sleep(3 * (i + 1))  # 3s / 6s
-        if isinstance(last, UpstreamError) and is_retryable_upstream(last):
-            return out, UpstreamError(
-                last.status,
-                "上游拒绝签到（业务码 %d）：该账号被上游限流，与设备/网络无关，请稍后重试或改用其他账号" % last.code,
-                code=last.code,
-            )
-        return out, last
 
     # ---------- 额度 ----------
 
@@ -482,7 +451,7 @@ class Upstream:
         """
         url = self.eps.ug_host + self.eps.ep_ent_usage
         try:
-            data = self.do_json("POST", url, self.ug_headers(account, False), b"{}")
+            data = self.do_json("POST", url, self.ug_headers(account), b"{}")
         except UpstreamError as err:
             # pay/ug 域对部分账号（scope 限制）整体拒绝并返回 code 1001：
             # 这是「积分服务不开放」，不是凭证失效。

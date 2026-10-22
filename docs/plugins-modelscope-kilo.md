@@ -72,7 +72,7 @@ OAuth 2.0 + OIDC 与站点 openapi，没有客户端指纹闸门，因此最适�
 3. **补充 Web 会话 Cookie**（fields 类）— 给已有账号补 Cookie，用于每日登录奖励与点赞。
 
 > Cookie 与令牌是**两套凭据、各管一段**：令牌负责推理，Cookie 负责 daily_active 与点赞。
-> 只粘令牌时对话完全可用，签到会如实提示「没有 Web 会话 Cookie」，不会假装成功。
+> 只粘令牌时对话完全可用，签到会如实报错「没有 Web 会话 Cookie」，不会假装成功。
 
 ### 2.4 错误语义（对应 plugin-spec §5.2）
 
@@ -112,7 +112,7 @@ OAuth 2.0 + OIDC 与站点 openapi，没有客户端指纹闸门，因此最适�
 | 流式对话 | `text/event-stream` 逐块透传，最后一帧含 usage |
 | 非流式聚合工具调用 | `tool_calls` 分片正确拼接，`finish_reason=tool_calls` |
 | 签到（有 Cookie） | `登录奖励已领 · 点赞 2 次 +4 魔粒 · …` |
-| 签到（无 Cookie） | `200` + 如实说明「无 Web 会话 Cookie」，不伪造成功 |
+| 签到（无 Cookie） | `400` + 明确错误「没有 Web 会话 Cookie」，不伪造成功 |
 | 签到重复调用 | 相同的幂等结果（宿主每小时会调） |
 | 额度刷新 | 魔粒 `1280.5`，签到状态同步 |
 | 网关 `fetch-models` | 正确拉到 mock 的模型清单 |

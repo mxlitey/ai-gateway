@@ -143,11 +143,11 @@ def handle_checkin(plugin, account_id):
         return ue.status, {"error": truncate_runes(ue.msg, 120)}
 
     if not (account.cookie or "").strip():
-        # 没有 Web 会话：登录奖励与点赞都做不了。如实说明，不伪造成功。
+        # 没有 Web 会话：登录奖励与点赞都做不了，直接按失败返回，不伪造成功
         message = ("该账号没有 Web 会话 Cookie，无法领取每日登录奖励与点赞；"
                    "请在「补充 Web 会话 Cookie」里粘贴浏览器 Cookie，或改用 OAuth 授权登录")
         plugin.store.update_state(account_id, lambda st: setattr(st, "last_error", message[:100]))
-        return 200, {"message": message, "account": account_view(plugin.store.get(account_id))}
+        return 400, {"error": truncate_runes(message, 120)}
 
     try:
         state = plugin.upstream.checkin_state(account)
@@ -161,7 +161,7 @@ def handle_checkin(plugin, account_id):
         message = ("Web 会话 Cookie 已失效，无法领取每日登录奖励与点赞；"
                    "请在「补充 Web 会话 Cookie」里更新，或重新 OAuth 授权")
         plugin.store.update_state(account_id, lambda st: setattr(st, "last_error", message[:100]))
-        return 200, {"message": message, "account": account_view(plugin.store.get(account_id))}
+        return 400, {"error": truncate_runes(message, 120)}
 
     # 点赞：先重读规则拿最新余量（上面的触碰可能刚解锁登录奖励）
     liked = 0

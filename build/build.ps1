@@ -1,6 +1,6 @@
 # AI Gateway 绿色版一键构建
 # 用法：pwsh -File build/build.ps1 -Version 0.1.0
-#       加 -Docker 同时构建 Linux 镜像并导出 dist/ai-gateway-<版本>-docker.tar
+#       加 -Docker 同时构建 Linux 镜像并导出 dist/ai-gateway-v<版本>-docker.tar
 param(
     [string]$Version = "dev",
     # 额外构建 Docker 镜像（debian:bookworm-slim，内置 trae / workbuddy 插件）
@@ -67,7 +67,8 @@ $ldflags = "-s -w " +
     "-X $module/internal/version.Commit=$commit " +
     "-X $module/internal/version.BuildTime=$buildTime"
 
-# 只产出桌面窗口版（ai-gateway.exe）
+# 只产出桌面窗口版（ai-gateway-v<版本>.exe）
+$exe = "dist/ai-gateway-v$Version.exe"
 Write-Host "  生成桌面端 bindings ..." -ForegroundColor Cyan
 $wails3 = Join-Path (go env GOPATH) "bin\wails3.exe"
 if (Test-Path $wails3) {
@@ -85,8 +86,10 @@ if (Test-Path $wails3) {
 } else {
     Write-Host "  未找到 wails3，跳过 bindings/syso 生成（沿用已提交的产物）" -ForegroundColor Yellow
 }
-go build -trimpath -ldflags "$ldflags -H=windowsgui" -o dist/ai-gateway.exe ./cmd/gateway-wails
-Remove-Item "dist/ai-gateway.exe~" -Force -ErrorAction SilentlyContinue
+go build -trimpath -ldflags "$ldflags -H=windowsgui" -o $exe ./cmd/gateway-wails
+Remove-Item "$exe~" -Force -ErrorAction SilentlyContinue
+# 清理旧的无版本号产物，避免与新版命名混淆
+Remove-Item "dist/ai-gateway.exe" -Force -ErrorAction SilentlyContinue
 
 # ---- 4. 组装绿色版 ----
 Write-Host "[4/$totalSteps] 组装绿色版 ..." -ForegroundColor Cyan
@@ -110,7 +113,9 @@ if ($Docker) {
     Require-Command "docker" "请安装并启动 Docker Desktop"
 
     # 镜像内嵌前端产物与 Go 二进制都在 Dockerfile 里自己构建，这里只需传版本号与 apt 源
-    $buildArgs = @("build", "--progress=plain", "-t", "ai-gateway:latest",
+    # 同时打版本标签与 latest，Docker 侧版本号和 Windows 产物保持一致
+    $image = "ai-gateway:v$Version"
+    $buildArgs = @("build", "--progress=plain", "-t", $image, "-t", "ai-gateway:latest",
                    "--build-arg", "VERSION=$Version",
                    "--build-arg", "APT_MIRROR=$AptMirror", ".")
     & docker @buildArgs
@@ -120,9 +125,9 @@ if ($Docker) {
     }
 
     # 导出为离线可分发的 tar；用 -o 而不是 >，避免 PowerShell 按 UTF-16 写坏文件
-    $tar = "dist/ai-gateway-$Version-docker.tar"
+    $tar = "dist/ai-gateway-v$Version-docker.tar"
     Write-Host "  导出镜像 -> $tar ..." -ForegroundColor Cyan
-    & docker save "ai-gateway:latest" -o $tar
+    & docker save $image -o $tar
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[错误] docker save 失败" -ForegroundColor Red
         exit 1
@@ -132,10 +137,10 @@ if ($Docker) {
 }
 
 Write-Host ""
-Write-Host "构建完成: dist/ai-gateway.exe ($Version)" -ForegroundColor Green
-Write-Host "双击 dist/ai-gateway.exe 即可启动并打开管理面板" -ForegroundColor Green
+Write-Host "构建完成: $exe ($Version)" -ForegroundColor Green
+Write-Host "双击 $exe 即可启动并打开管理面板" -ForegroundColor Green
 if ($Docker) {
-    Write-Host "Docker 镜像: ai-gateway:latest，已导出到 dist/ai-gateway-$Version-docker.tar" -ForegroundColor Green
-    Write-Host "  目标机器导入: docker load -i ai-gateway-$Version-docker.tar" -ForegroundColor Green
+    Write-Host "Docker 镜像: $image（同时标记 ai-gateway:latest），已导出到 $tar" -ForegroundColor Green
+    Write-Host "  目标机器导入: docker load -i ai-gateway-v$Version-docker.tar" -ForegroundColor Green
     Write-Host "  首次启动前清空旧插件卷: docker volume rm ai-gateway-plugins -f" -ForegroundColor Yellow
 }

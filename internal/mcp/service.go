@@ -194,7 +194,7 @@ func toolKey(serverID, tool string) string {
 	return serverID + "\x01" + tool
 }
 
-// ToolUsed 返回某工具当天的成功调用次数。
+// ToolUsed 返回某工具当天的计费调用次数。
 func (q *quota) ToolUsed(serverID, tool string) int64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -202,7 +202,7 @@ func (q *quota) ToolUsed(serverID, tool string) int64 {
 	return q.counts[toolKey(serverID, tool)]
 }
 
-// IncrTool 记录一次工具成功调用。
+// IncrTool 记录一次工具计费调用。
 func (q *quota) IncrTool(serverID, tool string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -210,7 +210,7 @@ func (q *quota) IncrTool(serverID, tool string) {
 	q.counts[toolKey(serverID, tool)]++
 }
 
-// Used 返回某密钥当天的成功调用次数。
+// Used 返回某密钥当天的计费调用次数。
 func (q *quota) Used(serverID, keyHint string) int64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -218,7 +218,7 @@ func (q *quota) Used(serverID, keyHint string) int64 {
 	return q.counts[serverID+"\x00"+keyHint]
 }
 
-// Incr 记录一次成功调用。
+// Incr 记录一次计费调用。
 func (q *quota) Incr(serverID, keyHint string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -226,7 +226,7 @@ func (q *quota) Incr(serverID, keyHint string) {
 	q.counts[serverID+"\x00"+keyHint]++
 }
 
-// DailyTotal 返回某服务器当天的成功调用总数。
+// DailyTotal 返回某服务器当天的计费调用总数。
 func (q *quota) DailyTotal(serverID string) int64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -241,7 +241,7 @@ func (q *quota) DailyTotal(serverID string) int64 {
 	return n
 }
 
-// Snapshot 返回某服务器当天各密钥的成功调用次数（key_hint -> 次数）。
+// Snapshot 返回某服务器当天各密钥的计费调用次数（key_hint -> 次数）。
 func (q *quota) Snapshot(serverID string) map[string]int64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -256,7 +256,7 @@ func (q *quota) Snapshot(serverID string) map[string]int64 {
 	return out
 }
 
-// ToolSnapshot 返回某服务器当天各工具的成功调用次数（工具名 -> 次数）。
+// ToolSnapshot 返回某服务器当天各工具的计费调用次数（工具名 -> 次数）。
 func (q *quota) ToolSnapshot(serverID string) map[string]int64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()

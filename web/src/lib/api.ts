@@ -343,7 +343,7 @@ export type ChannelInput = {
   enabled: boolean
 }
 
-/** 一个 MCP 上游服务器下的密钥；daily_limit 为该密钥每日成功调用上限，-1 表示不限、0 表示不允许调用。 */
+/** 一个 MCP 上游服务器下的密钥；daily_limit 为该密钥每日计费调用上限，-1 表示不限、0 表示不允许调用。 */
 export type MCPKey = {
   key: string
   label?: string
@@ -360,10 +360,14 @@ export type MCPServer = {
   headers: HeaderItem[]
   keys: MCPKey[]
   key_strategy: string
-  /** 整台服务器每日成功调用上限，-1 表示不限、0 表示不允许调用 */
+  /** 整台服务器每日计费调用上限，-1 表示不限、0 表示不允许调用 */
   daily_limit: number
-  /** 工具级每日成功调用上限（上游工具名 -> 上限），-1 或未列出的工具表示不限、0 表示该工具不允许调用 */
+  /** 工具级每日计费调用上限（上游工具名 -> 上限），-1 或未列出的工具表示不限、0 表示该工具不允许调用 */
   tool_limits: Record<string, number>
+  /** 计费口径：success 成功即计费；marker 响应含 billable_marker 才计费（与上游控制台对齐） */
+  billable_mode: string
+  /** 计费标记：billable_mode 为 marker 时生效 */
+  billable_marker: string
   timeout_ms: number
   enabled: boolean
   source: string
@@ -375,11 +379,11 @@ export type MCPServer = {
   last_status: string
   last_error: string
   daily_calls: number
-  /** 各密钥当天的成功调用次数（key_hint -> 次数） */
+  /** 各密钥当天的计费调用次数（key_hint -> 次数） */
   key_daily_calls: Record<string, number>
   /** 各密钥每日上限之和（0 表示没有任何密钥设了上限） */
   daily_limit_total: number
-  /** 各工具当天的成功调用次数（上游工具名 -> 次数） */
+  /** 各工具当天的计费调用次数（上游工具名 -> 次数） */
   tool_daily_calls: Record<string, number>
 }
 
@@ -399,6 +403,7 @@ export type MCPCallLog = {
   tool: string
   key_hint: string
   success: boolean
+  billable: boolean
   http_status: number
   attempts: number
   duration_ms: number
@@ -433,6 +438,8 @@ export type MCPUsageSummary = {
   calls: number
   success: number
   failures: number
+  /** 计入上游计费的调用次数（marker 口径下可能小于 success） */
+  billable: number
   by_server: MCPUsageBucket[]
   by_tool: MCPUsageBucket[]
   /** 按密钥维度（服务器 + 脱敏密钥）的调用次数 */
@@ -450,6 +457,8 @@ export type MCPServerInput = {
   daily_limit: number
   /** 工具级每日上限（上游工具名 -> 上限），未列出的工具不受限制 */
   tool_limits: Record<string, number>
+  billable_mode: string
+  billable_marker: string
   timeout_ms: number
   enabled: boolean
 }

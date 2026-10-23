@@ -41,6 +41,9 @@ type FormState = {
   // 整台服务器日上限不再在界面上提供，仅原样携带编辑前的值，避免保存时被清掉
   dailyLimit: string
   toolLimits: ToolLimitRow[]
+  // 计费口径：success 成功即计费；marker 仅响应含标记时计费
+  billableMode: string
+  billableMarker: string
   timeoutMS: string
   enabled: boolean
 }
@@ -48,6 +51,19 @@ type FormState = {
 const KEY_STRATEGIES = [
   { value: 'rotate', label: '轮询', desc: '按顺序轮换首选密钥（K1→K2→K3…），把调用均衡分摊到各密钥' },
   { value: 'ordered', label: '故障转移', desc: '按配置顺序依次尝试，前一个失败才用下一个' },
+] as const
+
+const BILLABLE_MODES = [
+  {
+    value: 'success',
+    label: '成功即计费',
+    desc: '每次成功的工具调用都计入次数，适用于大多数 MCP 服务',
+  },
+  {
+    value: 'marker',
+    label: '按响应标记计费',
+    desc: '仅当上游响应包含标记时才计入次数，用于「未触发上游计费就不该占配额」的服务',
+  },
 ] as const
 
 const emptyForm: FormState = {
@@ -60,6 +76,8 @@ const emptyForm: FormState = {
   keyStrategy: 'rotate',
   dailyLimit: '',
   toolLimits: [],
+  billableMode: 'success',
+  billableMarker: '',
   timeoutMS: '',
   enabled: true,
 }
@@ -129,6 +147,8 @@ export default function Mcp() {
             .filter(([tool, n]) => tool !== '' && n >= 0),
         ),
         timeout_ms: Number(state.timeoutMS) || 0,
+        billable_mode: state.billableMode,
+        billable_marker: state.billableMarker.trim(),
         enabled: state.enabled,
       }
       return state.id ? api.updateMCPServer(state.id, body) : api.createMCPServer(body)
@@ -196,6 +216,8 @@ export default function Mcp() {
         tool,
         limit: String(n),
       })),
+      billableMode: s.billable_mode || 'success',
+      billableMarker: s.billable_marker ?? '',
       timeoutMS: s.timeout_ms > 0 ? String(s.timeout_ms) : '',
       enabled: s.enabled,
     })
@@ -267,8 +289,8 @@ export default function Mcp() {
                               {enabledKeys} / {s.keys.length}
                             </span>
                           </span>
-                          <span>
-                            次数{' '}
+                          <span title="与上游控制台的计费次数对齐：默认按成功调用计，也可配置为响应含标记才计">
+                            计费次数{' '}
                             <span className="font-mono text-zinc-700 dark:text-zinc-200">
                               {limitedUsed} / {s.daily_limit_total > 0 ? s.daily_limit_total : '不限'}
                             </span>
@@ -454,7 +476,7 @@ export default function Mcp() {
                       setForm({ ...form, keys })
                     }}
                     placeholder="日上限"
-                    title="该密钥每日成功调用上限：留空或 -1 表示不限，0 表示不允许调用"
+                    title="该密钥每日计费调用上限：留空或 -1 表示不限，0 表示不允许调用"
                   />
                   <IconButton
                     className="flex-none"
@@ -468,9 +490,37 @@ export default function Mcp() {
                 </div>
               ))}
               <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                日上限按「成功调用」计数，每天 0 点重置；留空或 -1 表示不限，0 表示不允许调用。
+                日上限按「计费调用」计数（默认成功即计费，可改按响应标记），每天 0 点重置；留空或 -1
+                表示不限，0 表示不允许调用。
               </p>
             </div>
+
+            <Field
+              label="计费口径"
+              hint="决定哪些调用计入「次数」与日上限；选「按响应标记计费」后需填写标记串"
+            >
+              <Segmented
+                value={form.billableMode}
+                options={BILLABLE_MODES.map((m) => ({ value: m.value, label: m.label }))}
+                onChange={(v) => setForm({ ...form, billableMode: v })}
+              />
+              <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
+                {BILLABLE_MODES.find((m) => m.value === form.billableMode)?.desc}
+              </span>
+            </Field>
+
+            {form.billableMode === 'marker' ? (
+              <Field
+                label="计费标记"
+                hint="上游响应正文包含该字符串时才算一次；留空会退化为「成功即计费」"
+              >
+                <Input
+                  value={form.billableMarker}
+                  onChange={(e) => setForm({ ...form, billableMarker: e.target.value })}
+                  placeholder="details:"
+                />
+              </Field>
+            ) : null}
 
             <Field label="单次调用超时（毫秒）" hint="留空使用默认 120000">
               <Input
@@ -615,7 +665,7 @@ function ToolLimitsField({
                 value={row.limit}
                 onChange={(e) => update(row.tool, e.target.value)}
                 placeholder="不限"
-                title="该工具每日成功调用上限：留空或 -1 表示不限，0 表示不允许调用"
+                title="该工具每日计费调用上限：留空或 -1 表示不限，0 表示不允许调用"
               />
             </div>
           ))}
@@ -723,7 +773,7 @@ function KeyPie({ s }: { s: MCPServer }) {
       {open ? (
         <div className="absolute right-full bottom-0 z-10 mr-2 w-max rounded-lg border border-zinc-200 bg-white px-2.5 py-2 text-[11px] leading-relaxed shadow-lg dark:border-zinc-700 dark:bg-zinc-800">
           <p className="text-zinc-500 dark:text-zinc-400">
-            今日调用{' '}
+            今日计费调用{' '}
             <span className="font-mono text-zinc-700 dark:text-zinc-200">
               {totalUsed} / {totalLimit}
             </span>

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,9 +15,10 @@ import (
 // errQuotaExhausted 配额用尽的固定文案，handler 据此映射错误码。
 const errQuotaExhausted = "今日调用次数已达上限"
 
-// callTool 按密钥策略选号并调用上游工具，成功即记录配额与用量。
+// callTool 按密钥策略选号并调用上游工具，成功且计费时记录配额与用量。
 //
 // 一次调用链只写一条用量日志：attempts 记录实际试过的密钥数。
+// 是否计费由服务器的计费口径决定（见 isBillable），默认成功即计费。
 func (svc *Service) callTool(ctx context.Context, srv *model.MCPServer, r *http.Request, params map[string]any) (json.RawMessage, error) {
 	toolName, _ := params["name"].(string)
 	start := time.Now()
@@ -25,7 +27,7 @@ func (svc *Service) callTool(ctx context.Context, srv *model.MCPServer, r *http.
 	toolLimit, hasToolLimit := srv.ToolLimits[toolName]
 	toolLimited := hasToolLimit && toolLimit >= 0
 	if toolLimited && svc.quota.ToolUsed(srv.ID, toolName) >= int64(toolLimit) {
-		svc.logCall(srv, toolName, "", false, 0, 0, time.Since(start), errQuotaExhausted)
+		svc.logCall(srv, toolName, "", false, false, 0, 0, time.Since(start), errQuotaExhausted)
 		return nil, &upstreamError{Message: errQuotaExhausted}
 	}
 
@@ -59,24 +61,44 @@ func (svc *Service) callTool(ctx context.Context, srv *model.MCPServer, r *http.
 					svc.client.dropSession(srv.ID, key)
 				}
 				if !ue.Retryable {
-					svc.logCall(srv, toolName, key, false, ue.Status, attempts, time.Since(start), ue.Message)
+					svc.logCall(srv, toolName, key, false, false, ue.Status, attempts, time.Since(start), ue.Message)
 					return nil, ue
 				}
 			}
 			continue
 		}
 
-		svc.quota.Incr(srv.ID, model.KeyHint(key))
-		svc.quota.IncrTool(srv.ID, toolName)
-		svc.logCall(srv, toolName, key, true, http.StatusOK, attempts, time.Since(start), "")
+		// 计费口径与上游对齐：marker 模式下未命中标记的调用上游不计费，
+		// 网关也不占配额、不计入「次数」，否则两边数字会长期对不上。
+		billable := isBillable(srv, raw)
+		if billable {
+			svc.quota.Incr(srv.ID, model.KeyHint(key))
+			svc.quota.IncrTool(srv.ID, toolName)
+		}
+		svc.logCall(srv, toolName, key, true, billable, http.StatusOK, attempts, time.Since(start), "")
 		return raw, nil
 	}
 
-	svc.logCall(srv, toolName, "", false, 0, attempts, time.Since(start), lastErr)
+	svc.logCall(srv, toolName, "", false, false, 0, attempts, time.Since(start), lastErr)
 	if lastErr == "" {
 		lastErr = "上游不可用"
 	}
 	return nil, &upstreamError{Message: lastErr}
+}
+
+// isBillable 判断一次成功调用是否计入计费次数。
+//
+// success 模式：成功即计费。marker 模式：响应正文包含标记串才计费，
+// 用于上游「模型自行判定无需检索、不产生计费」的场景；标记留空时退化为成功即计费。
+func isBillable(srv *model.MCPServer, raw json.RawMessage) bool {
+	if model.NormalizeBillableMode(srv.BillableMode) != model.MCPBillableMarker {
+		return true
+	}
+	marker := strings.TrimSpace(srv.BillableMarker)
+	if marker == "" {
+		return true
+	}
+	return bytes.Contains(raw, []byte(marker))
 }
 
 // quotaLeft 判断某密钥是否还有今日配额。
@@ -127,7 +149,7 @@ func (svc *Service) nextRotation(serverID string) uint64 {
 }
 
 // logCall 异步写入一条调用日志，失败不影响主流程。
-func (svc *Service) logCall(srv *model.MCPServer, tool, key string, success bool, status int, attempts int, d time.Duration, errMsg string) {
+func (svc *Service) logCall(srv *model.MCPServer, tool, key string, success, billable bool, status int, attempts int, d time.Duration, errMsg string) {
 	if svc.store == nil {
 		return
 	}
@@ -138,6 +160,7 @@ func (svc *Service) logCall(srv *model.MCPServer, tool, key string, success bool
 		ServerURL:  srv.URL,
 		Tool:       tool,
 		Success:    success,
+		Billable:   billable,
 		HTTPStatus: status,
 		Attempts:   attempts,
 		DurationMS: d.Milliseconds(),
@@ -154,17 +177,17 @@ func (svc *Service) logCall(srv *model.MCPServer, tool, key string, success bool
 	}()
 }
 
-// DailyCalls 返回某服务器当天的成功调用总数（面板展示用）。
+// DailyCalls 返回某服务器当天的计费调用总数（面板展示用）。
 func (svc *Service) DailyCalls(serverID string) int64 {
 	return svc.quota.DailyTotal(serverID)
 }
 
-// DailyCallsByKey 返回某服务器当天各密钥的成功调用次数（key_hint -> 次数）。
+// DailyCallsByKey 返回某服务器当天各密钥的计费调用次数（key_hint -> 次数）。
 func (svc *Service) DailyCallsByKey(serverID string) map[string]int64 {
 	return svc.quota.Snapshot(serverID)
 }
 
-// DailyCallsByTool 返回某服务器当天各工具的成功调用次数（工具名 -> 次数）。
+// DailyCallsByTool 返回某服务器当天各工具的计费调用次数（工具名 -> 次数）。
 func (svc *Service) DailyCallsByTool(serverID string) map[string]int64 {
 	return svc.quota.ToolSnapshot(serverID)
 }

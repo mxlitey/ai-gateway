@@ -49,11 +49,12 @@ _STOP = threading.Event()
 
 
 class Plugin:
-    def __init__(self, eps, store, data_dir, config_path=""):
+    def __init__(self, eps, store, data_dir, config_path="", dump_dir=""):
         self.eps = eps
         self.store = store
         self.data_dir = data_dir
         self.config_path = config_path
+        self.dump_dir = dump_dir
         self.oauth = console.OAuthManager(self)
         self._log_lock = threading.Lock()
 
@@ -80,6 +81,7 @@ def forward_chat(plugin, handler, headers):
     或 "stream"（payload 是上游响应对象，由调用方边收边写）。
     """
     raw = handler.read_body()
+    chat.dump_request(plugin, headers, raw)
     try:
         body = json.loads(raw.decode("utf-8"))
     except Exception:
@@ -90,8 +92,8 @@ def forward_chat(plugin, handler, headers):
     want_stream = body.get("stream") is True
     # 上游只接受流式（非流式会返回 code=11101），这里统一改写成流式
     body["stream"] = True
-    # 把最后一问改写成 WorkBuddy 的 <user_query> 形态，历史消息原样转发
-    chat.normalize_last_user_message(body)
+    # 把所有 user 消息统一改写成 WorkBuddy 的 <user_query> 形态（含历史）
+    chat.normalize_user_messages(body)
 
     try:
         acc = chat.account_for_request(plugin.eps, plugin.store, headers)
@@ -112,9 +114,11 @@ def forward_chat(plugin, handler, headers):
         return "json", console.write_error(500, "构造上游请求失败")
 
     cfg = upstream.realm_config(plugin.eps, acc.site)
+    # 会话头族以客户端发来的为准（会话中途换到本插件时才能与官方归组一致）
+    meta = chat.conversation_meta(body, headers)
     try:
         response = http_stream(cfg.chat_origin + plugin.eps.chat_completions,
-                               upstream.chat_headers(acc, cfg, chat.conversation_meta(body)),
+                               upstream.chat_headers(acc, cfg, meta),
                                payload)
     except Exception as exc:
         return "json", console.write_error(502, "请求上游失败: " + str(exc))
@@ -309,15 +313,21 @@ def run_serve(args):
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--data", default="")
     parser.add_argument("--config", default="")
+    parser.add_argument("--dump", default="")
     opts = parser.parse_args(args)
 
     port = opts.port or env_int("AI_GATEWAY_PLUGIN_PORT", 8399)
     data_dir = opts.data or default_data_dir()
     config_path = opts.config or default_config_path()
+    dump_dir = (opts.dump or os.environ.get("WORKBUDDY_DUMP_DIR") or "").strip()
+    if dump_dir:
+        os.makedirs(dump_dir, mode=0o755, exist_ok=True)
 
     eps = load_endpoints(config_path)
     store = AccountStore(data_dir)
-    plugin = Plugin(eps, store, data_dir, config_path)
+    plugin = Plugin(eps, store, data_dir, config_path, dump_dir)
+    if dump_dir:
+        plugin.log("已开启请求体 dump：%s" % dump_dir)
 
     Handler.plugin = plugin
     server = PluginServer(("127.0.0.1", port), Handler)

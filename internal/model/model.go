@@ -134,32 +134,32 @@ type ErrorLog struct {
 // RequestLog 一次 /v1 调用的最终结果（含用量与估算费用）。
 // 同一次请求的多目标故障转移只落一条记录，attempts 表示尝试过的目标数。
 type RequestLog struct {
-	ID              int64   `json:"id"`
-	CreatedAt       int64   `json:"created_at"`
-	APIKeyID        string  `json:"api_key_id"`
-	APIKeyName      string  `json:"api_key_name"`
-	ChannelID       string  `json:"channel_id"`
-	ChannelName     string  `json:"channel_name"`
-	Endpoint        string  `json:"endpoint"`
-	Stream          bool    `json:"stream"`
-	Model           string  `json:"model"`
-	UpstreamModel   string  `json:"upstream_model"`
-	UpstreamKeyHint string  `json:"upstream_key_hint"`
-	Status          int     `json:"status"`
-	Success         bool    `json:"success"`
-	Attempts        int     `json:"attempts"`
-	DurationMS      int64   `json:"duration_ms"`
-	PromptTokens    int     `json:"prompt_tokens"`
-	CompletionTokens int    `json:"completion_tokens"`
-	TotalTokens     int     `json:"total_tokens"`
-	CachedTokens    int     `json:"cached_tokens"`
-	ReasoningTokens int     `json:"reasoning_tokens"`
-	CostPromptUSD   float64 `json:"cost_prompt_usd"`
+	ID                int64   `json:"id"`
+	CreatedAt         int64   `json:"created_at"`
+	APIKeyID          string  `json:"api_key_id"`
+	APIKeyName        string  `json:"api_key_name"`
+	ChannelID         string  `json:"channel_id"`
+	ChannelName       string  `json:"channel_name"`
+	Endpoint          string  `json:"endpoint"`
+	Stream            bool    `json:"stream"`
+	Model             string  `json:"model"`
+	UpstreamModel     string  `json:"upstream_model"`
+	UpstreamKeyHint   string  `json:"upstream_key_hint"`
+	Status            int     `json:"status"`
+	Success           bool    `json:"success"`
+	Attempts          int     `json:"attempts"`
+	DurationMS        int64   `json:"duration_ms"`
+	PromptTokens      int     `json:"prompt_tokens"`
+	CompletionTokens  int     `json:"completion_tokens"`
+	TotalTokens       int     `json:"total_tokens"`
+	CachedTokens      int     `json:"cached_tokens"`
+	ReasoningTokens   int     `json:"reasoning_tokens"`
+	CostPromptUSD     float64 `json:"cost_prompt_usd"`
 	CostCompletionUSD float64 `json:"cost_completion_usd"`
-	CostUSD         float64 `json:"cost_usd"`
-	PriceModel      string  `json:"price_model"`
-	PriceSource     string  `json:"price_source"`
-	Error           string  `json:"error"`
+	CostUSD           float64 `json:"cost_usd"`
+	PriceModel        string  `json:"price_model"`
+	PriceSource       string  `json:"price_source"`
+	Error             string  `json:"error"`
 }
 
 // ModelPrice 模型价格条目，价格为「美元 / 百万 token」。
@@ -210,13 +210,13 @@ type UsageSummary struct {
 //
 // 与渠道密钥的区别：MCP 服务器通常直接接受一个 Token，因此这里额外支持
 // 「每日调用次数上限」，用于给不同密钥分配不同的用量额度
-//（-1 表示不限，0 表示不允许调用，正数为上限）。
+// （-1 表示不限，0 表示不允许调用，正数为上限）。
 type MCPKey struct {
 	Key   string `json:"key"`
 	Label string `json:"label,omitempty"`
 	// Enabled 是否参与选号。
 	Enabled bool `json:"enabled"`
-	// DailyLimit 该密钥每日成功调用次数上限：-1 不限，0 不允许调用，正数为上限。
+	// DailyLimit 该密钥每日计费调用次数上限：-1 不限，0 不允许调用，正数为上限。
 	DailyLimit int `json:"daily_limit"`
 }
 
@@ -233,11 +233,16 @@ type MCPServer struct {
 	Keys    []MCPKey `json:"keys"`
 	// KeyStrategy 多密钥选用策略，见 KeyStrategy* 常量。
 	KeyStrategy string `json:"key_strategy"`
-	// DailyLimit 整台服务器每日成功调用上限：-1 不限，0 不允许调用，正数为上限。
+	// DailyLimit 整台服务器每日计费调用上限：-1 不限，0 不允许调用，正数为上限。
 	DailyLimit int `json:"daily_limit"`
-	// ToolLimits 工具级每日成功调用上限（上游工具名 -> 上限），用于不同工具分配不同配额；
+	// ToolLimits 工具级每日计费调用上限（上游工具名 -> 上限），用于不同工具分配不同配额；
 	// -1 或未列出的工具表示不限，0 表示该工具不允许调用。
 	ToolLimits map[string]int `json:"tool_limits"`
+	// BillableMode 计费口径：success 表示成功调用即计费；marker 表示响应含 BillableMarker 才计费。
+	// 后者用于上游「判定无需联网就直接作答、不产生计费」的场景（如百度 AI 搜索）。
+	BillableMode string `json:"billable_mode"`
+	// BillableMarker 计费标记：marker 模式下响应文本包含它才算一次计费调用。
+	BillableMarker string `json:"billable_marker"`
 	// TimeoutMS 单次工具调用超时（毫秒）。
 	TimeoutMS int    `json:"timeout_ms"`
 	Enabled   bool   `json:"enabled"`
@@ -251,9 +256,9 @@ type MCPServer struct {
 	LastError       string `json:"last_error"`
 	DailyCalls      int64  `json:"daily_calls"`
 	DailyLimitTotal int64  `json:"daily_limit_total"`
-	// KeyDailyCalls 各密钥当天的成功调用次数（key_hint -> 次数），面板展示用。
+	// KeyDailyCalls 各密钥当天的计费调用次数（key_hint -> 次数），面板展示用。
 	KeyDailyCalls map[string]int64 `json:"key_daily_calls"`
-	// ToolDailyCalls 各工具当天的成功调用次数（上游工具名 -> 次数），面板展示用。
+	// ToolDailyCalls 各工具当天的计费调用次数（上游工具名 -> 次数），面板展示用。
 	ToolDailyCalls map[string]int64 `json:"tool_daily_calls"`
 }
 
@@ -281,6 +286,22 @@ type MCPTool struct {
 	UpdatedAt int64  `json:"updated_at"`
 }
 
+// MCP 计费口径：决定一次成功调用是否计入配额与「调用次数」。
+const (
+	// MCPBillableSuccess 成功调用即计费（默认）。
+	MCPBillableSuccess = "success"
+	// MCPBillableMarker 仅当响应文本包含标记串时计费。
+	MCPBillableMarker = "marker"
+)
+
+// NormalizeBillableMode 归一化计费口径，未识别值回退为「成功即计费」。
+func NormalizeBillableMode(s string) string {
+	if strings.TrimSpace(s) == MCPBillableMarker {
+		return MCPBillableMarker
+	}
+	return MCPBillableSuccess
+}
+
 // MCPCallLog 一次工具调用的结果。
 type MCPCallLog struct {
 	ID         int64  `json:"id"`
@@ -291,6 +312,8 @@ type MCPCallLog struct {
 	Tool       string `json:"tool"`
 	KeyHint    string `json:"key_hint"`
 	Success    bool   `json:"success"`
+	// Billable 本次调用是否计入计费次数（marker 模式下未触发上游计费时为 false）。
+	Billable   bool   `json:"billable"`
 	HTTPStatus int    `json:"http_status"`
 	Attempts   int    `json:"attempts"`
 	DurationMS int64  `json:"duration_ms"`
@@ -325,11 +348,13 @@ type MCPKeyUsage struct {
 
 // MCPUsageSummary 时间区间内的 MCP 调用汇总。
 type MCPUsageSummary struct {
-	From     int64            `json:"from"`
-	To       int64            `json:"to"`
-	Calls    int64            `json:"calls"`
-	Success  int64            `json:"success"`
-	Failures int64            `json:"failures"`
+	From     int64 `json:"from"`
+	To       int64 `json:"to"`
+	Calls    int64 `json:"calls"`
+	Success  int64 `json:"success"`
+	Failures int64 `json:"failures"`
+	// Billable 计入上游计费的调用次数（marker 口径下可能小于 Success）。
+	Billable int64            `json:"billable"`
 	ByServer []MCPUsageBucket `json:"by_server"`
 	ByTool   []MCPUsageBucket `json:"by_tool"`
 	ByKey    []MCPKeyUsage    `json:"by_key"`

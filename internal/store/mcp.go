@@ -10,7 +10,7 @@ import (
 
 // ---------- MCP 上游服务器 ----------
 
-const mcpServerCols = `id, name, alias, url, headers, keys, key_strategy, daily_limit, tool_limits, timeout_ms, enabled, source, sort_order, created_at`
+const mcpServerCols = `id, name, alias, url, headers, keys, key_strategy, daily_limit, tool_limits, billable_mode, billable_marker, timeout_ms, enabled, source, sort_order, created_at`
 
 func scanMCPServer(sc scanner) (*model.MCPServer, error) {
 	s := &model.MCPServer{
@@ -22,12 +22,14 @@ func scanMCPServer(sc scanner) (*model.MCPServer, error) {
 	var enabled int
 	if err := sc.Scan(
 		&s.ID, &s.Name, &s.Alias, &s.URL, &headersS, &keysS,
-		&s.KeyStrategy, &s.DailyLimit, &toolLimitsS, &s.TimeoutMS, &enabled, &s.Source, &s.SortOrder, &s.CreatedAt,
+		&s.KeyStrategy, &s.DailyLimit, &toolLimitsS, &s.BillableMode, &s.BillableMarker,
+		&s.TimeoutMS, &enabled, &s.Source, &s.SortOrder, &s.CreatedAt,
 	); err != nil {
 		return nil, err
 	}
 	s.Enabled = enabled != 0
 	s.KeyStrategy = model.NormalizeKeyStrategy(s.KeyStrategy)
+	s.BillableMode = model.NormalizeBillableMode(s.BillableMode)
 	if err := decodeJSON(headersS, &s.Headers); err != nil {
 		return nil, err
 	}
@@ -109,11 +111,13 @@ func (s *Store) CreateMCPServer(srv *model.MCPServer) error {
 	}
 	_, err = s.db.Exec(
 		`INSERT INTO mcp_servers
-		 (id, name, alias, url, headers, keys, key_strategy, daily_limit, tool_limits, timeout_ms, enabled, source, sort_order, created_at)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 (id, name, alias, url, headers, keys, key_strategy, daily_limit, tool_limits,
+		  billable_mode, billable_marker, timeout_ms, enabled, source, sort_order, created_at)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		srv.ID, srv.Name, srv.Alias, srv.URL, headers, keys,
-		model.NormalizeKeyStrategy(srv.KeyStrategy), srv.DailyLimit, toolLimits, srv.TimeoutMS,
-		boolToInt(srv.Enabled), srv.Source, srv.SortOrder, srv.CreatedAt,
+		model.NormalizeKeyStrategy(srv.KeyStrategy), srv.DailyLimit, toolLimits,
+		model.NormalizeBillableMode(srv.BillableMode), strings.TrimSpace(srv.BillableMarker),
+		srv.TimeoutMS, boolToInt(srv.Enabled), srv.Source, srv.SortOrder, srv.CreatedAt,
 	)
 	return err
 }
@@ -135,10 +139,12 @@ func (s *Store) UpdateMCPServer(srv *model.MCPServer) error {
 	_, err = s.db.Exec(
 		`UPDATE mcp_servers SET
 		   name = ?, alias = ?, url = ?, headers = ?, keys = ?, key_strategy = ?,
-		   daily_limit = ?, tool_limits = ?, timeout_ms = ?, enabled = ?
+		   daily_limit = ?, tool_limits = ?, billable_mode = ?, billable_marker = ?,
+		   timeout_ms = ?, enabled = ?
 		 WHERE id = ?`,
 		srv.Name, srv.Alias, srv.URL, headers, keys, model.NormalizeKeyStrategy(srv.KeyStrategy),
-		srv.DailyLimit, toolLimits, srv.TimeoutMS, boolToInt(srv.Enabled), srv.ID,
+		srv.DailyLimit, toolLimits, model.NormalizeBillableMode(srv.BillableMode),
+		strings.TrimSpace(srv.BillableMarker), srv.TimeoutMS, boolToInt(srv.Enabled), srv.ID,
 	)
 	return err
 }
@@ -259,10 +265,11 @@ func (s *Store) InsertMCPCallLog(l *model.MCPCallLog) error {
 	}
 	res, err := s.db.Exec(
 		`INSERT INTO mcp_call_logs
-		 (created_at, server_id, server_name, server_url, tool, key_hint, success, http_status, attempts, duration_ms, error)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		 (created_at, server_id, server_name, server_url, tool, key_hint, success, billable, http_status, attempts, duration_ms, error)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		l.CreatedAt, l.ServerID, l.ServerName, l.ServerURL, l.Tool, l.KeyHint,
-		boolToInt(l.Success), l.HTTPStatus, l.Attempts, l.DurationMS, truncateForDB(l.Error, 2000),
+		boolToInt(l.Success), boolToInt(l.Billable), l.HTTPStatus, l.Attempts, l.DurationMS,
+		truncateForDB(l.Error, 2000),
 	)
 	if err != nil {
 		return err
@@ -273,12 +280,13 @@ func (s *Store) InsertMCPCallLog(l *model.MCPCallLog) error {
 	return nil
 }
 
-// MCPDailyCallCounts 统计某服务器自 sinceMs 起各密钥的成功调用次数（key_hint -> 次数）。
+// MCPDailyCallCounts 统计某服务器自 sinceMs 起各密钥的计费调用次数（key_hint -> 次数）。
+// 只统计 billable 的调用，与上游控制台的计费口径保持一致。
 // 返回 map 的 "" 键为没有记录密钥提示的历史调用，调用方只看具体密钥即可。
 func (s *Store) MCPDailyCallCounts(serverID string, sinceMs int64) (map[string]int64, error) {
 	rows, err := s.db.Query(
 		`SELECT key_hint, COUNT(1) FROM mcp_call_logs
-		 WHERE server_id = ? AND success = 1 AND created_at >= ?
+		 WHERE server_id = ? AND billable = 1 AND created_at >= ?
 		 GROUP BY key_hint`,
 		serverID, sinceMs,
 	)
@@ -299,11 +307,11 @@ func (s *Store) MCPDailyCallCounts(serverID string, sinceMs int64) (map[string]i
 	return out, rows.Err()
 }
 
-// MCPDailyToolCallCounts 统计某服务器自 sinceMs 起各工具的成功调用次数（工具名 -> 次数）。
+// MCPDailyToolCallCounts 统计某服务器自 sinceMs 起各工具的计费调用次数（工具名 -> 次数）。
 func (s *Store) MCPDailyToolCallCounts(serverID string, sinceMs int64) (map[string]int64, error) {
 	rows, err := s.db.Query(
 		`SELECT tool, COUNT(1) FROM mcp_call_logs
-		 WHERE server_id = ? AND success = 1 AND created_at >= ?
+		 WHERE server_id = ? AND billable = 1 AND created_at >= ?
 		 GROUP BY tool`,
 		serverID, sinceMs,
 	)
@@ -362,7 +370,7 @@ func (s *Store) ListMCPCallLogs(f MCPCallLogFilter) ([]model.MCPCallLog, error) 
 
 	rows, err := s.db.Query(
 		`SELECT id, created_at, server_id, server_name, server_url, tool, key_hint,
-		        success, http_status, attempts, duration_ms, error
+		        success, billable, http_status, attempts, duration_ms, error
 		 FROM mcp_call_logs`+where+` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
 		args...,
 	)
@@ -374,14 +382,15 @@ func (s *Store) ListMCPCallLogs(f MCPCallLogFilter) ([]model.MCPCallLog, error) 
 	out := []model.MCPCallLog{}
 	for rows.Next() {
 		var l model.MCPCallLog
-		var success int
+		var success, billable int
 		if err := rows.Scan(
 			&l.ID, &l.CreatedAt, &l.ServerID, &l.ServerName, &l.ServerURL, &l.Tool, &l.KeyHint,
-			&success, &l.HTTPStatus, &l.Attempts, &l.DurationMS, &l.Error,
+			&success, &billable, &l.HTTPStatus, &l.Attempts, &l.DurationMS, &l.Error,
 		); err != nil {
 			return nil, err
 		}
 		l.Success = success != 0
+		l.Billable = billable != 0
 		out = append(out, l)
 	}
 	return out, rows.Err()
@@ -402,9 +411,10 @@ func (s *Store) MCPUsageSummary(fromMs, toMs int64) (*model.MCPUsageSummary, err
 	args := []any{fromMs, toMs}
 
 	if err := s.db.QueryRow(
-		`SELECT COUNT(1), COALESCE(SUM(success), 0) FROM mcp_call_logs WHERE `+where,
+		`SELECT COUNT(1), COALESCE(SUM(success), 0), COALESCE(SUM(billable), 0)
+		 FROM mcp_call_logs WHERE `+where,
 		args...,
-	).Scan(&sum.Calls, &sum.Success); err != nil {
+	).Scan(&sum.Calls, &sum.Success, &sum.Billable); err != nil {
 		return nil, err
 	}
 	sum.Failures = sum.Calls - sum.Success
@@ -452,16 +462,16 @@ func (s *Store) MCPUsageSummary(fromMs, toMs int64) (*model.MCPUsageSummary, err
 	return sum, nil
 }
 
-// mcpKeyUsage 按「服务器 + 密钥」维度汇总调用次数，并补上当前的配置信息。
+// mcpKeyUsage 按「服务器 + 密钥」维度汇总计费调用次数，并补上当前的配置信息。
 //
 // 失败的调用不记录密钥（一次调用链可能试过多把密钥，无法归因到某一把），
-// 所以这里只统计成功调用；配置里存在但本期没被用到的密钥也会列出（次数 0），
+// 所以这里只统计成功且计费的调用；配置里存在但本期没被用到的密钥也会列出（次数 0），
 // 便于看出「哪把密钥一直没轮到」。已从配置里删除的密钥只保留其历史统计。
 func (s *Store) mcpKeyUsage(where string, args []any) ([]model.MCPKeyUsage, error) {
 	rows, err := s.db.Query(
 		`SELECT server_id, server_name, key_hint, COUNT(1)
 		 FROM mcp_call_logs
-		 WHERE `+where+` AND success = 1 AND key_hint <> ''
+		 WHERE `+where+` AND billable = 1 AND key_hint <> ''
 		 GROUP BY server_id, key_hint ORDER BY 4 DESC`,
 		args...,
 	)

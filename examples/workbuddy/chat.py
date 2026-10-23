@@ -7,6 +7,7 @@
 
 import hashlib
 import json
+import os
 import threading
 import time
 
@@ -102,36 +103,95 @@ def format_question(text):
 
     客户端自己的包装标签（<user_input> 等）会被换成 WorkBuddy 的 <user_query>；
     无包装的纯文本同样补上这层包装，与官方客户端的出站形态保持一致。
+    标签出现在段中间（后面还跟着 <advisor_tool_policy> 之类的内容）时，
+    也只替换标签本身，不把后面的内容一起吞进 <user_query>。
     """
     rest = text
     blocks = []
     for name in PACKAGING_TAGS:
         rest, found = _take_blocks(rest, name)
         blocks.extend(found)
-    inner = _unwrap_whole(rest.strip())
+
+    questions = []
+    for name in SOURCE_QUESTION_TAGS:
+        rest, found = _take_blocks(rest, name)
+        for block in found:
+            inner = _unwrap_whole(block)
+            if inner:
+                questions.append("<%s>%s</%s>" % (TARGET_QUESTION_TAG, inner, TARGET_QUESTION_TAG))
+
+    leftover = rest.strip()
+    if questions:
+        return " ".join(blocks + questions + ([leftover] if leftover else []))
+
+    inner = _unwrap_whole(leftover)
     if not inner:
         return text  # 整段都是上下文，没有提问：原样转发
     wrapped = "<%s>%s</%s>" % (TARGET_QUESTION_TAG, inner, TARGET_QUESTION_TAG)
     return " ".join(blocks + [wrapped])
 
 
-def normalize_last_user_message(body):
-    """只改写最后一条 user 消息（当次提问），历史消息一律不动。"""
+def _is_text_part(part):
+    return (isinstance(part, dict) and part.get("type", "text") == "text"
+            and isinstance(part.get("text"), str))
+
+
+def _has_question(text):
+    """这一段是否真的含提问（format_question 能改动它即是有提问）。"""
+    return format_question(text) != text
+
+
+def _question_part_index(parts):
+    """从后往前找第一个含真实提问的 text part。
+
+    Trae 等客户端在会话中途会把多条 <system-reminder> 拆成独立 text part，
+    提问被挤到中间；只看最后一段会踩空（那一段纯上下文，改写后原样返回）。
+    """
+    for index in range(len(parts) - 1, -1, -1):
+        part = parts[index]
+        if not _is_text_part(part):
+            continue
+        if _has_question(part["text"]):
+            return index
+    return -1
+
+
+def _normalize_parts(parts):
+    """改写含提问的那一段，并把它前面的纯上下文段并入同一段（对齐官方形态）。"""
+    index = _question_part_index(parts)
+    if index < 0:
+        return
+    contexts = []
+    rebuilt = []
+    for i, part in enumerate(parts):
+        if i == index:
+            part["text"] = format_question("".join(contexts) + part["text"])
+            rebuilt.append(part)
+        elif i < index and _is_text_part(part):
+            contexts.append(part["text"])
+        else:
+            rebuilt.append(part)
+    parts[:] = rebuilt
+
+
+def normalize_user_messages(body):
+    """规范化所有 user 消息：上下文块提到前面，提问统一包成 <user_query>。
+
+    历史消息也要清洗：客户端只在首轮把提问当作「最后一条」送来，之后每轮都把
+    它当成历史，仍带着 <user_input> 等标签；不清洗的话这些标签会随每次请求
+    反复上送，在官网明细里显示为未清理的原始标签。
+    """
     messages = body.get("messages")
     if not isinstance(messages, list):
         return
-    for message in reversed(messages):
+    for message in messages:
         if not isinstance(message, dict) or message.get("role") != "user":
             continue
         content = message.get("content")
         if isinstance(content, str):
             message["content"] = format_question(content)
         elif isinstance(content, list):
-            for part in reversed(content):
-                if isinstance(part, dict) and isinstance(part.get("text"), str):
-                    part["text"] = format_question(part["text"])
-                    break
-        return
+            _normalize_parts(content)
 
 
 # ---------- 会话头族 ----------
@@ -209,22 +269,37 @@ def _turn_signature(body):
     return ""
 
 
-def conversation_meta(body):
+def _header_value(headers, name):
+    """大小写不敏感地取一个请求头值（客户端发来的头大小写不统一）。"""
+    if not isinstance(headers, dict):
+        return ""
+    target = name.lower()
+    for key, value in headers.items():
+        if isinstance(key, str) and key.lower() == target:
+            return as_str(value).strip()
+    return ""
+
+
+def conversation_meta(body, headers=None):
     """生成官方客户端的会话头族元数据（由 chat_headers 写入请求头）。
 
     对齐官方桌面端的三层标识：会话级（X-Conversation-ID，多轮稳定）、
     对话轮级（X-Conversation-Request-ID，一次发送内稳定）、消息级（每条独立）。
+
+    客户端自己发了这套头就原样沿用：会话中途换到本插件时，上游看到的层级
+    才与官方客户端一致（否则同一场会话会被当成新会话重新归组）。
     """
-    conversation_id = _conversation_id(body)
-    signature = _turn_signature(body)
-    if signature:
-        seed = "turn|" + conversation_id + "|" + signature
-        turn_id = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
-    else:
-        turn_id = ""
+    conversation_id = _header_value(headers, "X-Conversation-ID") or _conversation_id(body)
+    turn_id = _header_value(headers, "X-Conversation-Request-ID")
+    if not turn_id:
+        signature = _turn_signature(body)
+        if signature:
+            seed = "turn|" + conversation_id + "|" + signature
+            turn_id = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
     return {
         "conversation_id": conversation_id,
         "conversation_request_id": turn_id,
+        "message_id": _header_value(headers, "X-Conversation-Message-ID"),
     }
 
 
@@ -436,3 +511,39 @@ def model_list_payload(ids):
         if mid:
             data.append({"id": mid, "object": "model", "owned_by": "workbuddy"})
     return {"object": "list", "data": data}
+
+
+# ---------- 请求 dump（诊断用） ----------
+
+
+def dump_request(plugin, headers, raw):
+    """把一次 /v1/chat/completions 的请求头与原始请求体全量写入 dumpDir。
+
+    官方客户端的会话头族（X-Conversation-ID / X-Conversation-Request-ID）会随
+    透传头一起进来，用它对照插件派生出的会话标识，可排查「官网明细里对话没聚合」
+    与「提问标签没清理」两类问题。
+    """
+    if not plugin.dump_dir or not raw:
+        return
+    try:
+        body = json.loads(raw.decode("utf-8", "replace") or "{}")
+    except Exception:
+        body = {"_raw": raw.decode("utf-8", "replace")}
+    try:
+        out = json.dumps({"headers": headers, "body": body},
+                         ensure_ascii=False).encode("utf-8")
+    except Exception as exc:
+        plugin.log("dump 请求失败（序列化）：%s" % exc)
+        return
+    now = time.time()
+    name = "%s_%06d.json" % (time.strftime("%Y%m%d-%H%M%S", time.localtime(now)),
+                             int((now % 1) * 1_000_000))
+    path = os.path.join(plugin.dump_dir, name)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(out)
+    except OSError as exc:
+        plugin.log("dump 请求失败：%s" % exc)
+        return
+    plugin.log("已 dump 请求：%s（%d 字节）" % (path, len(out)))

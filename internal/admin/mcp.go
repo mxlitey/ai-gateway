@@ -21,16 +21,19 @@ func (a *API) SetMCP(svc *mcp.Service) { a.mcp = svc }
 
 // mcpInput 新增 / 编辑 MCP 服务器的入参。
 type mcpInput struct {
-	Name        string             `json:"name"`
-	Alias       string             `json:"alias"`
-	URL         string             `json:"url"`
-	Headers     []model.Header     `json:"headers"`
-	Keys        []model.MCPKey     `json:"keys"`
-	KeyStrategy string             `json:"key_strategy"`
-	DailyLimit  int                `json:"daily_limit"`
-	ToolLimits  map[string]int     `json:"tool_limits"`
-	TimeoutMS   int                `json:"timeout_ms"`
-	Enabled     *bool              `json:"enabled"`
+	Name        string         `json:"name"`
+	Alias       string         `json:"alias"`
+	URL         string         `json:"url"`
+	Headers     []model.Header `json:"headers"`
+	Keys        []model.MCPKey `json:"keys"`
+	KeyStrategy string         `json:"key_strategy"`
+	DailyLimit  int            `json:"daily_limit"`
+	ToolLimits  map[string]int `json:"tool_limits"`
+	// BillableMode / BillableMarker 决定哪些调用计入次数，用于与上游控制台对齐。
+	BillableMode   string `json:"billable_mode"`
+	BillableMarker string `json:"billable_marker"`
+	TimeoutMS      int    `json:"timeout_ms"`
+	Enabled        *bool  `json:"enabled"`
 }
 
 // mcpSubroutes 分发 /admin/api/mcp/* 下的请求。
@@ -149,21 +152,24 @@ func (a *API) createMCPServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	billableMode, billableMarker := sanitizeBillable(in.BillableMode, in.BillableMarker)
 	srv := &model.MCPServer{
-		ID:          id.UUID(),
-		Name:        name,
-		Alias:       alias,
-		URL:         url,
-		Headers:     channel.NormalizeHeaders(in.Headers),
-		Keys:        sanitizeMCPKeys(in.Keys),
-		KeyStrategy: model.NormalizeKeyStrategy(in.KeyStrategy),
-		DailyLimit:  clampLimit(in.DailyLimit),
-		ToolLimits:  sanitizeToolLimits(in.ToolLimits),
-		TimeoutMS:   normalizeTimeout(in.TimeoutMS),
-		Enabled:     in.Enabled == nil || *in.Enabled,
-		Source:      "manual",
-		SortOrder:   order,
-		CreatedAt:   time.Now().UnixMilli(),
+		ID:             id.UUID(),
+		Name:           name,
+		Alias:          alias,
+		URL:            url,
+		Headers:        channel.NormalizeHeaders(in.Headers),
+		Keys:           sanitizeMCPKeys(in.Keys),
+		KeyStrategy:    model.NormalizeKeyStrategy(in.KeyStrategy),
+		DailyLimit:     clampLimit(in.DailyLimit),
+		ToolLimits:     sanitizeToolLimits(in.ToolLimits),
+		BillableMode:   billableMode,
+		BillableMarker: billableMarker,
+		TimeoutMS:      normalizeTimeout(in.TimeoutMS),
+		Enabled:        in.Enabled == nil || *in.Enabled,
+		Source:         "manual",
+		SortOrder:      order,
+		CreatedAt:      time.Now().UnixMilli(),
 	}
 	if err := a.store.CreateMCPServer(srv); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
@@ -216,6 +222,7 @@ func (a *API) updateMCPServer(w http.ResponseWriter, r *http.Request, serverID s
 	}
 	next.DailyLimit = clampLimit(in.DailyLimit)
 	next.ToolLimits = sanitizeToolLimits(in.ToolLimits)
+	next.BillableMode, next.BillableMarker = sanitizeBillable(in.BillableMode, in.BillableMarker)
 	next.TimeoutMS = normalizeTimeout(in.TimeoutMS)
 	if in.Enabled != nil {
 		next.Enabled = *in.Enabled
@@ -571,6 +578,17 @@ func sanitizeToolLimits(in map[string]int) map[string]int {
 		}
 	}
 	return out
+}
+
+// sanitizeBillable 归一化计费口径；marker 模式缺少标记时退化为「成功即计费」，
+// 避免配了个永远不计费的服务器。
+func sanitizeBillable(mode, marker string) (string, string) {
+	m := model.NormalizeBillableMode(mode)
+	s := strings.TrimSpace(marker)
+	if m == model.MCPBillableMarker && s == "" {
+		return model.MCPBillableSuccess, ""
+	}
+	return m, s
 }
 
 // normalizeTimeout 单次调用超时：默认 120s，上限 30 分钟。

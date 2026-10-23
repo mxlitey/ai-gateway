@@ -49,12 +49,11 @@ _STOP = threading.Event()
 
 
 class Plugin:
-    def __init__(self, eps, store, data_dir, config_path="", dump_dir=""):
+    def __init__(self, eps, store, data_dir, config_path=""):
         self.eps = eps
         self.store = store
         self.data_dir = data_dir
         self.config_path = config_path
-        self.dump_dir = dump_dir
         self.oauth = console.OAuthManager(self)
         self._log_lock = threading.Lock()
 
@@ -81,7 +80,6 @@ def forward_chat(plugin, handler, headers):
     或 "stream"（payload 是上游响应对象，由调用方边收边写）。
     """
     raw = handler.read_body()
-    chat.dump_request(plugin, headers, raw)
     try:
         body = json.loads(raw.decode("utf-8"))
     except Exception:
@@ -313,21 +311,15 @@ def run_serve(args):
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--data", default="")
     parser.add_argument("--config", default="")
-    parser.add_argument("--dump", default="")
     opts = parser.parse_args(args)
 
     port = opts.port or env_int("AI_GATEWAY_PLUGIN_PORT", 8399)
     data_dir = opts.data or default_data_dir()
     config_path = opts.config or default_config_path()
-    dump_dir = (opts.dump or os.environ.get("WORKBUDDY_DUMP_DIR") or "").strip()
-    if dump_dir:
-        os.makedirs(dump_dir, mode=0o755, exist_ok=True)
 
     eps = load_endpoints(config_path)
     store = AccountStore(data_dir)
-    plugin = Plugin(eps, store, data_dir, config_path, dump_dir)
-    if dump_dir:
-        plugin.log("已开启请求体 dump：%s" % dump_dir)
+    plugin = Plugin(eps, store, data_dir, config_path)
 
     Handler.plugin = plugin
     server = PluginServer(("127.0.0.1", port), Handler)

@@ -1,18 +1,21 @@
 # AI Gateway 多阶段构建：产出无界面（headless）的 Linux 镜像，供 Docker 部署。
 #
-# 构建：docker build -t ai-gateway:v2.0.0 -t ai-gateway:latest .
+# 构建（单架构）：docker buildx build --platform linux/amd64 -t ai-gateway:v1.2.0-amd64 --load .
+# 双架构（amd64 + arm64，需 buildx 与 QEMU）：
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     --build-arg VERSION=1.2.0 -t ai-gateway:v1.2.0 .
 # 运行：docker run -d --name ai-gateway -p 8787:8787 \
 #         -e AIGW_ADMIN_PASSWORD=your-password \
 #         -v ai-gateway-data:/data \
-#         ai-gateway:v2.0.0
+#         ai-gateway:v1.2.0
 #
 # 镜像内置 TRAE、WorkBuddy、ModelScope、Kilo、Cline、MiniMax Code、Loomy、
 # LobsterAI、Gemini 等插件（见阶段 3），开箱即用。
 # 说明：桌面外壳（cmd/gateway-wails，Wails + WebView2）仅面向 Windows，
 # 带 //go:build windows 标签，不会参与本镜像构建。
 
-# ---- 阶段 1：构建前端静态资源 ----
-FROM node:22-alpine AS web-builder
+# ---- 阶段 1：构建前端静态资源（在构建机架构上跑，arm64 时不走 QEMU）----
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web-builder
 WORKDIR /src/web
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci 2>/dev/null || npm install
@@ -20,11 +23,11 @@ COPY web/ ./
 RUN npm run build
 
 # ---- 阶段 2：编译 Go 二进制（内嵌前端产物）----
-FROM golang:1.26-alpine AS go-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS go-builder
 WORKDIR /src
-# 纯 Go 依赖（modernc sqlite），无需 CGO
+# 纯 Go 依赖（modernc sqlite），无需 CGO；用构建机架构编译，靠 GOARCH 交叉出目标架构二进制
 ENV CGO_ENABLED=0 GOOS=linux
-# 国内网络访问 proxy.golang.org 通常不通，默认走镜像；构建时可覆盖
+ARG TARGETARCH=amd64
 ARG GOPROXY=https://goproxy.cn,direct
 ENV GOPROXY=${GOPROXY}
 ARG VERSION=dev
@@ -33,14 +36,17 @@ RUN go mod download
 COPY . .
 # 用阶段 1 的产物覆盖 web/dist，供 //go:embed 内嵌
 COPY --from=web-builder /src/web/dist ./web/dist
-RUN go build -trimpath -ldflags "-s -w -X github.com/czg95/ai-gateway-v2/internal/version.Version=${VERSION}" \
+RUN GOARCH=${TARGETARCH} go build -trimpath \
+      -ldflags "-s -w -X github.com/czg95/ai-gateway-v2/internal/version.Version=${VERSION}" \
       -o /out/ai-gateway ./cmd/gateway
 
 # ---- 阶段 3：精简运行时 ----
-FROM debian:bookworm-slim
+# python:3.11-slim 已自带 python3 / pip（多架构镜像直接拉取），
+# 省掉在 QEMU 下 apt 安装 python3-pip 的数分钟开销。
+FROM python:3.11-slim-bookworm
 # 插件一律是 Python 程序，宿主用 Python 解释器拉起入口脚本，镜像内必须有 python3；
-# python3-pip 用于安装插件在 plugin.json 里声明的 requirements；
-# 另需基础 CA 证书与 tzdata 供上游 HTTPS / 本地时间使用。
+# pip 用于安装插件在 plugin.json 里声明的 requirements；
+# 另需 tzdata 供本地时间使用（CA 证书该基础镜像已包含）。
 #
 # deb.debian.org 在国内经常连不上（构建会卡几分钟后失败），默认换成国内镜像；
 # 需要官方源或别的镜像时用 --build-arg APT_MIRROR=deb.debian.org 覆盖，留空则不改。
@@ -54,8 +60,7 @@ RUN set -eux; \
         fi; \
     fi; \
     apt-get -o Acquire::Retries=3 update; \
-    apt-get install -y --no-install-recommends \
-        ca-certificates tzdata python3 python3-pip; \
+    apt-get install -y --no-install-recommends tzdata; \
     rm -rf /var/lib/apt/lists/*; \
     useradd --create-home --uid 10001 gateway; \
     mkdir -p /data /plugins; \

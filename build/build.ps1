@@ -1,10 +1,13 @@
 # AI Gateway 绿色版一键构建
-# 用法：pwsh -File build/build.ps1 -Version 0.1.0
-#       加 -Docker 同时构建 Linux 镜像并导出 dist/ai-gateway-v<版本>-docker.tar
+# 用法：pwsh -File build/build.ps1 -Version 1.2.0
+#       加 -Docker 同时构建 Linux 镜像（默认 amd64 + arm64 双架构），
+#       导出 dist/ai-gateway-v<版本>-docker-amd64.tar 与 -arm64.tar
 param(
     [string]$Version = "dev",
-    # 额外构建 Docker 镜像（debian:bookworm-slim，内置 trae / workbuddy 插件）
+    # 额外构建 Docker 镜像（debian:bookworm-slim，内置 trae / workbuddy 等 9 个插件）
     [switch]$Docker,
+    # Docker 目标架构；只想构建单架构时传 -DockerPlatforms linux/amd64
+    [string[]]$DockerPlatforms = @("linux/amd64", "linux/arm64"),
     # apt 镜像站，国内默认阿里云；传空串则用 debian 官方源
     [string]$AptMirror = "mirrors.aliyun.com"
 )
@@ -109,38 +112,62 @@ foreach ($name in @("trae", "workbuddy", "modelscope", "kilo", "cline", "minimax
 
 # ---- 5. Docker 镜像（可选）----
 if ($Docker) {
-    Write-Host "[5/$totalSteps] 构建 Docker 镜像 ..." -ForegroundColor Cyan
+    Write-Host "[5/$totalSteps] 构建 Docker 镜像（$($DockerPlatforms -join ' / ')）..." -ForegroundColor Cyan
     Require-Command "docker" "请安装并启动 Docker Desktop"
 
-    # 镜像内嵌前端产物与 Go 二进制都在 Dockerfile 里自己构建，这里只需传版本号与 apt 源
-    # 同时打版本标签与 latest，Docker 侧版本号和 Windows 产物保持一致
-    $image = "ai-gateway:v$Version"
-    $buildArgs = @("build", "--progress=plain", "-t", $image, "-t", "ai-gateway:latest",
-                   "--build-arg", "VERSION=$Version",
-                   "--build-arg", "APT_MIRROR=$AptMirror", ".")
-    & docker @buildArgs
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[错误] Docker 镜像构建失败" -ForegroundColor Red
-        exit 1
-    }
+    # 镜像内嵌前端产物与 Go 二进制都在 Dockerfile 里自己构建，这里只需传版本号与 apt 源。
+    # 每个架构单独 buildx --load 并导出独立 tar，目标机器 docker load 后即可运行。
+    $tars = @()
+    foreach ($platform in $DockerPlatforms) {
+        $arch = switch -Regex ($platform) {
+            "amd64" { "amd64" }
+            "arm64" { "arm64" }
+            "arm/v7" { "armv7" }
+            default { ($platform -replace "^linux/", "") -replace "[/.]", "-" }
+        }
+        $image = "ai-gateway:v$Version-$arch"
+        $tags = @("-t", $image)
+        # amd64 额外打 latest，方便本机 docker run / compose 直接使用
+        if ($arch -eq "amd64") { $tags += @("-t", "ai-gateway:latest") }
 
-    # 导出为离线可分发的 tar；用 -o 而不是 >，避免 PowerShell 按 UTF-16 写坏文件
-    $tar = "dist/ai-gateway-v$Version-docker.tar"
-    Write-Host "  导出镜像 -> $tar ..." -ForegroundColor Cyan
-    & docker save $image -o $tar
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[错误] docker save 失败" -ForegroundColor Red
-        exit 1
+        Write-Host "  构建 $platform -> $image ..." -ForegroundColor Cyan
+        $buildArgs = @("buildx", "build", "--platform", $platform, "--progress=plain") +
+                     $tags +
+                     @("--build-arg", "VERSION=$Version",
+                       # 显式传目标架构：部分 buildx 驱动不会自动注入 TARGETARCH，
+                       # 漏传会把 arm64 镜像里的 Go 二进制编成 amd64（启动即 exec format error）
+                       "--build-arg", "TARGETARCH=$arch",
+                       "--build-arg", "APT_MIRROR=$AptMirror", "--load", ".")
+        & docker @buildArgs
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[错误] Docker 镜像构建失败（$platform）" -ForegroundColor Red
+            if ($platform -match "arm64|arm/") {
+                Write-Host "  arm 架构需要 QEMU 模拟，可先执行：" -ForegroundColor Yellow
+                Write-Host "  docker run --privileged --rm tonistiigi/binfmt --install arm64" -ForegroundColor Yellow
+            }
+            exit 1
+        }
+
+        # 导出为离线可分发的 tar；用 -o 而不是 >，避免 PowerShell 按 UTF-16 写坏文件
+        $tar = "dist/ai-gateway-v$Version-docker-$arch.tar"
+        Write-Host "  导出镜像 -> $tar ..." -ForegroundColor Cyan
+        & docker save $image -o $tar
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "[错误] docker save 失败（$platform）" -ForegroundColor Red
+            exit 1
+        }
+        $sizeMB = [math]::Round((Get-Item $tar).Length / 1MB, 1)
+        Write-Host "  已导出: $tar ($sizeMB MB)" -ForegroundColor Green
+        $tars += $tar
     }
-    $sizeMB = [math]::Round((Get-Item $tar).Length / 1MB, 1)
-    Write-Host "  已导出: $tar ($sizeMB MB)" -ForegroundColor Green
 }
 
 Write-Host ""
 Write-Host "构建完成: $exe ($Version)" -ForegroundColor Green
 Write-Host "双击 $exe 即可启动并打开管理面板" -ForegroundColor Green
 if ($Docker) {
-    Write-Host "Docker 镜像: $image（同时标记 ai-gateway:latest），已导出到 $tar" -ForegroundColor Green
-    Write-Host "  目标机器导入: docker load -i ai-gateway-v$Version-docker.tar" -ForegroundColor Green
+    Write-Host "Docker 镜像（$($DockerPlatforms -join ' / ')）已导出：" -ForegroundColor Green
+    foreach ($t in $tars) { Write-Host "  $t" -ForegroundColor Green }
+    Write-Host "  目标机器导入: docker load -i <对应架构的 tar>" -ForegroundColor Green
     Write-Host "  首次启动前清空旧插件卷: docker volume rm ai-gateway-plugins -f" -ForegroundColor Yellow
 }

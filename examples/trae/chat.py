@@ -7,7 +7,6 @@
 
 import hashlib
 import json
-import os
 import threading
 import time
 
@@ -355,25 +354,3 @@ def normalize_tools(body):
         body.pop("tools", None)
 
 
-def dump_request(plugin, headers, raw):
-    """把一次 /v1/chat/completions 的请求头与原始请求体全量写入 dumpDir（诊断用）。"""
-    if not plugin.dump_dir or not raw:
-        return
-    rec = {"headers": headers, "body": json.loads(raw.decode("utf-8", "replace") or "{}")}
-    try:
-        out = json.dumps(rec, ensure_ascii=False).encode("utf-8")
-    except Exception as exc:
-        plugin.log("dump 请求失败（序列化）：%s" % exc)
-        return
-    now = time.time()
-    name = "%s_%06d.json" % (time.strftime("%Y%m%d-%H%M%S", time.localtime(now)),
-                             int((now % 1) * 1_000_000))
-    path = os.path.join(plugin.dump_dir, name)
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(out)
-    except OSError as exc:
-        plugin.log("dump 请求失败：%s" % exc)
-        return
-    plugin.log("已 dump 请求：%s（%d 字节）" % (path, len(out)))

@@ -33,11 +33,13 @@ func (h *Handler) handleClaude(w http.ResponseWriter, r *http.Request, claudeBod
 	targets, err := h.balancer.SelectTarget(modelName, allowed)
 	if err != nil {
 		slog.Error("选择目标失败", "err", err)
+		h.logGatewayError(modelName, http.StatusInternalServerError, "选择渠道失败: "+err.Error())
 		rec.Finish(http.StatusInternalServerError, "select target failed: "+err.Error())
 		claudeError(w, http.StatusInternalServerError, "Internal Server Error")
 		return
 	}
 	if len(targets) == 0 {
+		h.logGatewayError(modelName, http.StatusServiceUnavailable, "没有可用渠道（渠道被停用、密钥全在冷却中或该模型未映射）")
 		rec.Finish(http.StatusServiceUnavailable, "No available channel for model: "+modelName)
 		claudeError(w, http.StatusServiceUnavailable, "No available channel for model: "+modelName)
 		return

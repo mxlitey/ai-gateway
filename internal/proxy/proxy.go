@@ -4,6 +4,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -90,6 +91,7 @@ func (h *Handler) Cooler() *penalty.Cooler { return h.cooler }
 func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	apiKey, errMsg := h.VerifyAPIKey(r)
 	if apiKey == nil {
+		h.logGatewayError("", http.StatusUnauthorized, "鉴权失败: "+errMsg)
 		jsonError(w, http.StatusUnauthorized, errMsg, "invalid_request_error")
 		return
 	}
@@ -109,7 +111,9 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	body, err := decodeJSONObject(r)
 	if err != nil {
-		jsonError(w, http.StatusBadRequest, "Invalid JSON body", "invalid_request_error")
+		msg := "Invalid JSON body: " + err.Error()
+		h.logGatewayError("", http.StatusBadRequest, msg+"（来自 "+r.RemoteAddr+"）")
+		jsonError(w, http.StatusBadRequest, msg, "invalid_request_error")
 		return
 	}
 
@@ -307,11 +311,13 @@ func (h *Handler) handleOpenAI(w http.ResponseWriter, r *http.Request, body map[
 	targets, err := h.balancer.SelectTarget(modelName, allowed)
 	if err != nil {
 		slog.Error("选择目标失败", "err", err)
+		h.logGatewayError(modelName, http.StatusInternalServerError, "选择渠道失败: "+err.Error())
 		rec.Finish(http.StatusInternalServerError, "select target failed: "+err.Error())
 		jsonError(w, http.StatusInternalServerError, "Internal Server Error", "server_error")
 		return
 	}
 	if len(targets) == 0 {
+		h.logGatewayError(modelName, http.StatusServiceUnavailable, "没有可用渠道（渠道被停用、密钥全在冷却中或该模型未映射）")
 		rec.Finish(http.StatusServiceUnavailable, "No available channel for model: "+modelName)
 		jsonError(w, http.StatusServiceUnavailable, "No available channel for model: "+modelName, "server_error")
 		return
@@ -494,6 +500,27 @@ func (h *Handler) handleModels(w http.ResponseWriter, allowed []string) {
 
 // ---------- 错误日志 ----------
 
+// logGatewayError 记录发生在转发之前的网关级拒绝（鉴权失败、请求体非法、无可用渠道等）。
+// 这类错误没有具体的上游目标，单独以「（网关）」条目落到错误日志，
+// 否则请求失败后无法在面板与数据库里查到任何痕迹，只能靠实时日志猜。
+func (h *Handler) logGatewayError(publicModel string, status int, message string) {
+	slog.Warn("[proxy] 请求被拒绝", "status", status, "model", publicModel, "reason", message)
+	if h.store == nil {
+		return
+	}
+	e := &model.ErrorLog{
+		ChannelName: "（网关）",
+		Model:       publicModel,
+		Status:      status,
+		Message:     truncate(message, 2000),
+	}
+	go func() {
+		if err := h.store.InsertErrorLog(e); err != nil {
+			slog.Error("[errorlog] 写入失败", "err", err)
+		}
+	}()
+}
+
 func (h *Handler) logError(t routing.Target, publicModel string, status int, message string) {
 	ch := t.Channel
 	e := &model.ErrorLog{
@@ -516,11 +543,43 @@ func (h *Handler) logError(t routing.Target, publicModel string, status int, mes
 
 // ---------- 工具 ----------
 
+// maxRequestBody 是允许的最大请求体（解压后）。智能体类客户端会把整段会话历史、
+// 文件内容甚至截图一起发过来，32MB 在长会话 / 多模态场景下不够用。
+const maxRequestBody = 128 << 20
+
+// decodeJSONObject 读取并解析请求体，支持 gzip 压缩的请求（部分客户端会压缩大请求体）。
 func decodeJSONObject(r *http.Request) (map[string]any, error) {
 	defer func() { _ = r.Body.Close() }()
-	dec := json.NewDecoder(io.LimitReader(r.Body, 32<<20))
+
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
+	if err != nil {
+		return nil, fmt.Errorf("读取请求体失败: %w", err)
+	}
+	if len(raw) > maxRequestBody {
+		return nil, fmt.Errorf("请求体过大（超过 %d MB）", maxRequestBody>>20)
+	}
+
+	switch enc := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding"))); enc {
+	case "", "identity":
+	case "gzip":
+		zr, zerr := gzip.NewReader(bytes.NewReader(raw))
+		if zerr != nil {
+			return nil, fmt.Errorf("gzip 解压失败: %w", zerr)
+		}
+		defer zr.Close()
+		raw, err = io.ReadAll(io.LimitReader(zr, maxRequestBody+1))
+		if err != nil {
+			return nil, fmt.Errorf("gzip 解压失败: %w", err)
+		}
+		if len(raw) > maxRequestBody {
+			return nil, fmt.Errorf("解压后请求体过大（超过 %d MB）", maxRequestBody>>20)
+		}
+	default:
+		return nil, fmt.Errorf("不支持的 Content-Encoding: %s", enc)
+	}
+
 	var out map[string]any
-	if err := dec.Decode(&out); err != nil {
+	if err := json.Unmarshal(raw, &out); err != nil {
 		return nil, err
 	}
 	if out == nil {

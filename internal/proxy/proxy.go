@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -392,13 +393,22 @@ func (h *Handler) openaiUpstreamResponse(up *http.Response, t routing.Target, up
 
 	upstreamIsSSE := isStream && strings.Contains(ct, "text/event-stream")
 	if upstreamIsSSE {
+		// 先看一眼首包：上游可能用 200 + SSE 把错误当事件发出来，
+		// 不探测就会把错误透传给客户端、白白跳过故障转移。
+		br := bufio.NewReaderSize(up.Body, 32*1024)
+		prefix, failure := peekSSEFailure(br)
+		if failure != "" {
+			h.logError(t, t.PublicModel, 200, "HTTP 200 stream error: "+failure)
+			return nil, true, failure
+		}
+
 		headers.Set("Content-Type", "text/event-stream")
 		headers.Set("Cache-Control", "no-cache")
 		headers.Set("Connection", "keep-alive")
 		// 禁用中间代理缓冲，确保实时转发
 		headers.Set("X-Accel-Buffering", "no")
 
-		stream := RewriteSSE(up.Body, "chatcmpl-"+id.Hex(12), func(msg string) {
+		stream := RewriteSSE(replayAfterPeek(prefix, br, up.Body), "chatcmpl-"+id.Hex(12), func(msg string) {
 			h.logError(t, t.PublicModel, 200, "HTTP 200 stream error: "+msg)
 		}, rec.ObserveEvent, rec.Commit)
 		return &http.Response{StatusCode: up.StatusCode, Header: headers, Body: stream}, false, ""

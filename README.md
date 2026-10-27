@@ -35,7 +35,7 @@ AI Gateway 是一个运行在你自己电脑（或自己的服务器）上的 AP
 
 ### 方式一：桌面版（Windows，推荐）
 
-从 [Releases](../../releases) 下载绿色压缩包，解压后**双击 `ai-gateway-v<版本号>.exe`**（如 `ai-gateway-v1.2.0.exe`）：
+从 [Releases](../../releases) 下载绿色压缩包，解压后**双击 `ai-gateway-v<版本号>.exe`**（如 `ai-gateway-v1.2.1.exe`）：
 
 1. 桌面窗口一打开就自动启动网关（默认端口 `8787`）；数据目录 `data/` 与插件目录 `plugins/` 就在 exe 同级
 2. 窗口里可改端口后点「启动 / 重启」，用「访问范围」在「仅本机 / 局域网」间切换，还能添加/移除/重扫插件、查看实时日志
@@ -212,11 +212,11 @@ plugins/
 依赖 [Go 1.26+](https://go.dev/dl/) 与 [Node.js 20+](https://nodejs.org/)（Windows，PowerShell）：
 
 ```powershell
-pwsh -File build/build.ps1 -Version 1.2.0
+pwsh -File build/build.ps1 -Version 1.2.1
 # 同时构建 Linux 镜像（默认 amd64 + arm64 双架构）
-pwsh -File build/build.ps1 -Version 1.2.0 -Docker
+pwsh -File build/build.ps1 -Version 1.2.1 -Docker
 # 只构建单架构时显式指定
-pwsh -File build/build.ps1 -Version 1.2.0 -Docker -DockerPlatforms linux/amd64
+pwsh -File build/build.ps1 -Version 1.2.1 -Docker -DockerPlatforms linux/amd64
 ```
 
 脚本会依次：构建前端（`web/`，产物经 `//go:embed` 内嵌进二进制）→ 生成 Wails bindings / 图标资源 → `go mod tidy` → 编译 `dist/ai-gateway-v<版本号>.exe` → 组装绿色版目录（含内置示例插件）→（可选）用 `docker buildx` 逐架构构建并导出 `dist/ai-gateway-v<版本号>-docker-amd64.tar` / `-arm64.tar`。构建 arm64 需要 buildx 与 QEMU 模拟（Docker Desktop 默认已启用；Linux 上执行 `docker run --privileged --rm tonistiigi/binfmt --install arm64`）。

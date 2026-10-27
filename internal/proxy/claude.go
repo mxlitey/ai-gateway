@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bufio"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -89,6 +90,14 @@ func (h *Handler) claudeUpstreamResponse(up *http.Response, t routing.Target, mo
 
 	upstreamIsSSE := isStream && strings.Contains(ct, "text/event-stream")
 	if upstreamIsSSE {
+		// 同 OpenAI 路径：先探测首包，避免 200+SSE 里的错误绕过故障转移
+		br := bufio.NewReaderSize(up.Body, 32*1024)
+		prefix, failure := peekSSEFailure(br)
+		if failure != "" {
+			h.logError(t, modelName, http.StatusOK, "HTTP 200 stream error: "+failure)
+			return nil, true, failure
+		}
+
 		headers := http.Header{}
 		headers.Set("Content-Type", "text/event-stream")
 		headers.Set("Cache-Control", "no-cache")
@@ -96,7 +105,7 @@ func (h *Handler) claudeUpstreamResponse(up *http.Response, t routing.Target, mo
 		headers.Set("X-Accel-Buffering", "no")
 		headers.Set("Access-Control-Allow-Origin", "*")
 
-		stream := claudeapi.StreamOpenAIToClaude(up.Body, modelName, rec.ObserveEvent, rec.Commit)
+		stream := claudeapi.StreamOpenAIToClaude(replayAfterPeek(prefix, br, up.Body), modelName, rec.ObserveEvent, rec.Commit)
 		return &http.Response{StatusCode: http.StatusOK, Header: headers, Body: stream}, false, ""
 	}
 

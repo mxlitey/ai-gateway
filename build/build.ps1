@@ -1,5 +1,5 @@
 # AI Gateway 绿色版一键构建
-# 用法：pwsh -File build/build.ps1 -Version 1.2.0
+# 用法：pwsh -File build/build.ps1 -Version 1.2.1
 #       加 -Docker 同时构建 Linux 镜像（默认 amd64 + arm64 双架构），
 #       导出 dist/ai-gateway-v<版本>-docker-amd64.tar 与 -arm64.tar
 param(

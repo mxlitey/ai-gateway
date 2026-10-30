@@ -63,8 +63,8 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends tzdata; \
     rm -rf /var/lib/apt/lists/*; \
     useradd --create-home --uid 10001 gateway; \
-    mkdir -p /data /plugins; \
-    chown -R gateway:gateway /data /plugins
+    mkdir -p /data /plugins /mcp; \
+    chown -R gateway:gateway /data /plugins /mcp
 COPY --from=go-builder /out/ai-gateway /usr/local/bin/ai-gateway
 
 # 内置 TRAE / WorkBuddy / ModelScope / Kilo / Cline / MiniMax / Loomy / LobsterAI / Gemini 插件：
@@ -80,12 +80,16 @@ COPY --chown=gateway:gateway examples/loomy /plugins/loomy
 COPY --chown=gateway:gateway examples/lobsterai /plugins/lobsterai
 COPY --chown=gateway:gateway examples/gemini /plugins/gemini
 
+# 本地 MCP 服务器：启动时自动扫描 /mcp 下含 mcp.json 的子目录，拉起 Python 进程。
+COPY --chown=gateway:gateway examples/mcp/local-demo /mcp/local-demo
+
 # 数据与插件目录固定为卷挂载点：换个容器实例也能保留配置、密钥与插件
 ENV AIGW_DATA_DIR=/data \
     AIGW_PLUGINS_DIR=/plugins \
+    AIGW_MCP_DIR=/mcp \
     AIGW_HOST=0.0.0.0 \
     AIGW_PORT=8787
-VOLUME ["/data", "/plugins"]
+VOLUME ["/data", "/plugins", "/mcp"]
 
 USER gateway
 EXPOSE 8787

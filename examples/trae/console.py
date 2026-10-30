@@ -13,8 +13,11 @@
 """
 
 from chat import STATIC_MODELS, account_for_request
-from upstream import UpstreamError, as_upstream_error
-from util import clamp_bytes, now_millis, sanitize_error, truncate_runes
+from upstream import (
+    _CODE_ALREADY_CHECKED_IN, _CODE_TOKEN_DEAD, CheckinState, UpstreamError,
+    as_upstream_error,
+)
+from util import clamp_bytes, new_checkin_device_id, now_millis, sanitize_error, truncate_runes
 
 LOGIN_METHODS = [{
     "id": "web",
@@ -89,7 +92,23 @@ def handle_checkin(plugin, account_id):
 
 
 def perform_checkin(plugin, account_id):
-    """对一个账号执行签到（幂等：已签则只回报状态）并刷新额度快照。"""
+    """对一个账号执行签到（幂等：已签则只回报状态）并刷新额度快照。
+
+    一轮的节奏（这是本模块的安全边界，别顺手简化）：
+
+        status 1 发 → （未签时）claim 1 发 → 同设备号回查 1 发 = 常态 3 发
+
+    **device_id 每轮新生成、三发之间保持不变**：复用上一轮的号是风控画像里的
+    可疑项；而回查必须用同一个号问「今天这个设备签过没有」，换号回查等于自证失败。
+
+    两个判定都不能省：
+
+      1. claim 回的 `code:0` 是**假成功**——当日已签过的账号对任何 device_id 都
+         回 0。真到没到账只能看同设备号回查后 `checked_in` / `did_checked_in`
+         有没有翻转；没翻转就如实报失败，绝不亮绿。
+      2. 撞 `1001`（服务端作废了这张 JWT，本地到期时间看不出来）时**强制换发
+         新令牌后重放一轮**，封顶两轮。不换发的话这个账号会天天签到失败。
+    """
     account = plugin.store.get(account_id)
     if account is None:
         raise UpstreamError(404, "账号不存在")
@@ -100,33 +119,17 @@ def perform_checkin(plugin, account_id):
         plugin.note_upstream_error(work, as_upstream_error(exc))
         raise
 
-    state, err = plugin.upstream.checkin_status(work)
-    if err is not None:
-        plugin.note_upstream_error(work, as_upstream_error(err))
-        raise err
-    if state.unavailable:
-        raise UpstreamError(403, "该账号未开放签到服务（上游返回 code 1001）", code=1001)
+    state, msg, reauth = _checkin_round(plugin, work)
+    if reauth:
+        try:
+            plugin.upstream.force_refresh_token(work, plugin.store)
+        except Exception as exc:
+            # 连 refreshToken 都换不出新令牌：这才是真的「要重新登录」。
+            raise UpstreamError(401, "登录态已被上游作废，换发新令牌也失败（%s），请重新登录"
+                                % as_upstream_error(exc).msg, disable=True)
+        state, msg, _ = _checkin_round(plugin, work)
 
-    checked_in = state.checked_in
-    msg = "今天已经签到过了"
-    if not checked_in:
-        if not state.enable:
-            raise UpstreamError(502, "该账号当前不可签到（上游未开放签到）")
-        # 签到失败直接如实返回错误，不做任何自动重试
-        result, cerr = plugin.upstream.checkin_claim(work)
-        if cerr is not None:
-            plugin.note_upstream_error(work, as_upstream_error(cerr))
-            raise cerr
-        if result.unavailable:
-            raise UpstreamError(403, "该账号未开放签到服务（上游返回 code 1001）", code=1001)
-        checked_in = True
-        # 上游对「今天已签到」也用成功码/9095 返回 → 按幂等成功处理
-        if result.already:
-            msg = "今日已签到"
-        elif result.message:
-            msg = "签到成功：" + result.message
-        else:
-            msg = "签到成功"
+    checked_in = state.done_today()
 
     def mutate(st):
         st.checked_in_today = checked_in
@@ -150,6 +153,69 @@ def perform_checkin(plugin, account_id):
     return updated, msg
 
 
+def _checkin_round(plugin, account):
+    """跑一轮 status → claim → 回查，返回 (最终状态, 文案, 是否需要换发令牌)。
+
+    「需要换发令牌重放」用第三个返回值往上传（不抛错，因为它是可恢复的）；
+    其余失败照常抛 UpstreamError，由 handle_checkin 映射成面板上的错误 toast。
+    """
+    device_id = new_checkin_device_id()
+    state, err = plugin.upstream.checkin_status(account, device_id)
+    if err is not None:
+        raise err
+    if state.code == _CODE_TOKEN_DEAD:
+        return CheckinState(), "", True
+    if state.code not in (0, 200):
+        # status 自己回了非零码：原样报成拒绝，不许退化成「活动没开」
+        raise UpstreamError(502, "签到状态查询失败（上游返回 code %d%s）"
+                            % (state.code, ("：" + state.message) if state.message else ""),
+                            code=state.code)
+    if state.done_today():
+        return state, _already_msg(state), False
+    if not state.enable:
+        raise UpstreamError(403, "该账号当前没有可领取的签到活动（上游未开放这一档）")
+
+    claim, cerr = plugin.upstream.checkin_claim(account, device_id)
+    if cerr is not None:
+        raise cerr
+    if claim.needs_reauth:
+        return CheckinState(), "", True
+    if claim.code not in (0, 200) and claim.code != _CODE_ALREADY_CHECKED_IN:
+        # 9095（该设备今日已签）在 claim 里已折成 already，走到这里都是真拒绝
+        reason = claim.message or "上游未给文案"
+        raise UpstreamError(502, "官方拒绝本次签到（%s）：%s" % (claim.code, reason),
+                            code=claim.code)
+
+    # 同设备号回查：claim 的 code:0 不能当成功，必须看到状态翻转
+    after, aerr = plugin.upstream.checkin_status(account, device_id)
+    if aerr is not None or not after.done_today():
+        raise UpstreamError(
+            502, "签到接口返回成功但同设备号回查未确认（服务端静默拒签），"
+                 "当日不再自动重试，可稍后手动再签一次")
+    return after, _claimed_msg(after, claim), False
+
+
+def _already_msg(state):
+    total = state.credits_earned_today
+    if total > 0:
+        return "今日已签到（官方报出当日奖励 %s 积分）" % _num(total)
+    return "今日已签到"
+
+
+def _claimed_msg(state, claim):
+    total = state.credits_earned_today
+    if total > 0:
+        return "签到成功（官方报出当日奖励 %s 积分；到账看额度列）" % _num(total)
+    return "签到成功（上游未给出奖励数额）" + (("：" + claim.message) if claim.message else "")
+
+
+def _num(value):
+    """奖励数额文案：整数不带小数点。"""
+    if float(value) == int(value):
+        return str(int(value))
+    return "%.2f" % float(value)
+
+
 def handle_quota(plugin, account_id):
     """刷新额度：只在被调用时向上游查询并更新快照（不做定时轮询）。"""
     account = plugin.store.get(account_id)
@@ -161,41 +227,38 @@ def handle_quota(plugin, account_id):
     except Exception as exc:
         ue = as_upstream_error(exc)
         return ue.status, {"error": ue.msg}
-    _, err = plugin.upstream.checkin_status(work)
-    if err is not None:
-        plugin.note_upstream_error(work, as_upstream_error(err))
-        ue = as_upstream_error(err)
-        return ue.status, {"error": ue.msg}
     updated, note = refresh_quota_snapshot(plugin, account_id)
     return 200, {"message": "额度已刷新" + note, "account": account_view(updated)}
 
 
 def refresh_quota_snapshot(plugin, account_id):
-    """刷新一个账号的额度与签到状态快照。返回 (Account, note)。"""
+    """刷新一个账号的额度与签到状态快照。返回 (Account, note)。
+
+    签到状态只是面板上的读数，因此这里**不换号、不重放**：换发令牌重放留给
+    显式签到。回查用的设备号在这里无所谓（只读 checked_in 这类账号维度字段），
+    但仍按规范发一个一次性的 16 位数字号，避免复用旧号落进风控画像。
+    """
     account = plugin.store.get(account_id)
     if account is None:
         return None, "账号不存在"
-    state, err = plugin.upstream.checkin_status(account)
-    unavailable = ""
+    state, err = plugin.upstream.checkin_status(account, new_checkin_device_id())
     if err is not None:
         plugin.note_upstream_error(account, as_upstream_error(err))
         return plugin.store.get(account_id), ""
-    if state.unavailable:
-        unavailable = "（签到服务未对该账号开放）"
 
     try:
         credits, plan = plugin.upstream.ent_usage_info(account)
     except Exception as exc:
         # 额度查询失败：保留既有快照，只更新签到状态，并如实说明
         def mutate(st):
-            st.checked_in_today = state.checked_in
+            st.checked_in_today = state.done_today()
             st.streak_days = state.streak_days
 
         updated = plugin.store.update_state(account_id, mutate)
-        return updated, unavailable + "（额度查询失败：" + as_upstream_error(exc).msg + "）"
+        return updated, "（额度查询失败：" + as_upstream_error(exc).msg + "）"
 
     def mutate(st):
-        st.checked_in_today = state.checked_in
+        st.checked_in_today = state.done_today()
         st.streak_days = state.streak_days
         st.credits = credits
         if plan:
@@ -204,7 +267,7 @@ def refresh_quota_snapshot(plugin, account_id):
         st.last_error = ""
 
     updated = plugin.store.update_state(account_id, mutate)
-    return updated, unavailable
+    return updated, ""
 
 
 def handle_login_start(plugin, method, headers):

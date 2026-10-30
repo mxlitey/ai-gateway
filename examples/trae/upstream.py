@@ -8,6 +8,7 @@
 
 import json
 import re
+import secrets
 import time
 from urllib.parse import urlencode
 
@@ -23,8 +24,18 @@ _CHECKED_IN_RE = re.compile(r"已签到|已经签到|already", re.IGNORECASE)
 # 设备维度「今日已签到」的业务码：语义等同幂等成功，不作为失败展示。
 _CODE_ALREADY_CHECKED_IN = 9095
 
-# 签到类接口（status / claim）的请求体，与官方客户端逐字对齐。
-_REQ_SOURCE_BODY = b'{"req_source":1}'
+# 签到高峰的容量限制：上游临时拒绝，如实回报、**不换鉴权方案重试**。
+_CODE_BUSY = 9074
+
+# 服务端已作废这张 JWT（本地 expiredAt 看不出来）：处置是强制换发新令牌后重放一轮。
+_CODE_TOKEN_DEAD = 1001
+
+# 签到类接口（status / claim）的请求体：**恒为空对象**。
+# 空体撞过 9074，说明「req_source 谱系错配」这条解释不成立，故不再发它。
+_CHECKIN_BODY = b"{}"
+
+# 签到类接口超时。这一族没有流式，默认 60 秒会把一次批量签到拖成整页转圈。
+_CHECKIN_TIMEOUT = 20
 
 # 权益包 product_type 官方枚举（见 www.trae.cn 前端 ProductType）：
 #   0 Free / 1 Pro / 2 Package / 3 PromoCode / 4 ProPlus / 5 ProPlusPack /
@@ -148,6 +159,41 @@ def is_code(err, code):
     return isinstance(err, UpstreamError) and err.code == code
 
 
+def _is_unauth_payload(payload):
+    """这份响应是不是「服务端把这张 JWT 作废了」。
+
+    判据两条并列（业务码、文案），因为 1001 有时**不带文案**：只认码会在文案
+    到位时漏判，只认文案也会在文案缺失时整条失效。文案两种写法都要认 —— 上游
+    与各参考实现各自转述过 `not able to authenticate` / `unable to authenticate`。
+    """
+    if not isinstance(payload, dict):
+        return False
+    if number_field(payload, "code") == _CODE_TOKEN_DEAD:
+        return True
+    message = first_non_empty(as_str(payload.get("msg")), as_str(payload.get("message")))
+    message = message.lower()
+    return "not able to authenticate" in message or "unable to authenticate" in message
+
+
+def _uuid_v4():
+    """uuid-v4 形状的请求标识（8-4-4-4-12，含版本位与变体位）。"""
+    raw = bytearray(secrets.token_bytes(16))
+    raw[6] = (raw[6] & 0x0F) | 0x40
+    raw[8] = (raw[8] & 0x3F) | 0x80
+    h = raw.hex()
+    return "%s-%s-%s-%s-%s" % (h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+
+
+def _tt_trace_id(request_id):
+    """X-TT-Trace-Id：抓包格式 00-<32hex>-<16hex>-01。
+
+    第二段取自 request id 去横线后的前 16 位 —— 上游按它把同一请求的两条
+    日志串起来，这条关系是抓包实证的，不是随便拼的第二段随机数。
+    """
+    taken = request_id.replace("-", "")[:16] or "0" * 16
+    return "00-" + secrets.token_bytes(16).hex() + "-" + taken + "-01"
+
+
 def as_upstream_error(err):
     """把任意错误规整为 UpstreamError（非本类型时按 502 处理）。"""
     if err is None:
@@ -220,23 +266,42 @@ class Upstream:
             "X-Request-Id": "req_" + random_hex(16),
         }
 
-    def ug_headers(self, account):
+    def ug_headers(self, account, device_id="", scheme="jwt"):
         """签到 / 积分（api.trae.cn）所需的头。
 
-        与官方客户端一致：统一用 Cloud-IDE-JWT 凭证。
+        ug 族走的是**另一套画像**（对齐官方 VSCode 插件进程）：VSCode UA、
+        Package-Type、X-Lgw-Req-Sdk-Type、Sec-Fetch-*，且**不带**对话那套
+        X-Uid / X-Machine-Id / X-Cloudide-Token。把对话头照搬过来，上游不报
+        404，而是回 401 + code 1001「not able to authenticate you」—— 看起来
+        像登录态失效，实际是画像不匹配。
+
+        device_id 由调用方给出（签到要求 16 位纯数字、每轮新生成、三发不变）。
+        scheme 只影响 Authorization 一个头：Cloud-IDE-JWT 优先，Bearer 兜底。
         """
+        request_id = _uuid_v4()
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": self.client_ua(),
-            "Authorization": "Cloud-IDE-JWT " + account.access_token,
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN",
+            "User-Agent": self.eps.ug_user_agent,
             "X-User-Region": "CN",
-            "X-App-Type": "trae",
-            "Origin": self.eps.console_host,
-            "Referer": self.eps.console_host + "/",
+            "Package-Type": self.eps.ug_package_type,
+            "X-Lgw-Req-Sdk-Type": "3",
+            "X-Market-Client-Id": self.eps.ug_market_client_id,
+            "X-Device-Brand": self.eps.device_brand,
+            "X-Device-Type": "windows",
+            "X-OS-Version": self.eps.os_version,
+            "App-Version": self.eps.ide_version,
+            "X-Request-Id": request_id,
+            "X-TT-Trace-Id": _tt_trace_id(request_id),
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "no-cors",
+            "Sec-Fetch-Site": "none",
+            "Authorization": ("Bearer " if scheme == "bearer" else "Cloud-IDE-JWT ")
+            + account.access_token,
         }
-        if account.device_id:
-            headers["X-Device-Id"] = account.device_id
+        if device_id:
+            headers["X-Device-Id"] = device_id
         return headers
 
     def oauth_headers(self):
@@ -306,6 +371,20 @@ class Upstream:
         except Exception:
             pass
 
+    def force_refresh_token(self, account, store):
+        """无视本地到期时间强制换发（1001 之后救一次用的就是这条）。
+
+        `ensure_token` 是按本地 `expires_at` 判临期的，而 1001 的意义恰恰是
+        「服务端已经把这张 JWT 作废，本地那张表看不出来」。换发失败才算真失效。
+        """
+        if not (account.refresh_token or "").strip():
+            raise UpstreamError(401, "账号缺少 refreshToken，请重新登录", disable=True)
+        self.refresh_token(account)
+        try:
+            store.save_auth(account.to_auth())
+        except Exception:
+            pass
+
     def get_user_info(self, account):
         """查询账号资料（登录后补 uid / 昵称 / 企业 id）。"""
         host = (account.api_host or "").strip() or self.eps.oauth_host
@@ -362,83 +441,85 @@ class Upstream:
 
     # ---------- 签到 ----------
 
-    def checkin_status(self, account):
-        """查询签到状态。
+    def checkin_status(self, account, device_id):
+        """查询签到状态（一轮签到的第一发与回查都用它）。
 
-        对齐官方客户端：POST + Cloud-IDE-JWT + {"req_source":1}。
-        （GET ?did=<deviceId> + Bearer 的旧口径实测恒定返回 code 1001，已移除。）
-        注意：签到语境下的 code 1001 表示「签到服务未对该账号开放」，不是登录态失效。
+        要点（都是实测踩出来的）：
+          - 请求体恒 `{}`；空体撞 9074 时就已排除「req_source 谱系错配」这一解释；
+          - `enable` 是「活动是否对该账号开放」，缺字段一律按 False（宁可少签一次，
+            也不多打一发去撞风控）；
+          - `did_checked_in` 是**设备维度**、`checked_in` 是**账号维度**，任一为真
+            即「今天这个账号算签过」。
         """
-        url = self.eps.ug_host + self.eps.ep_checkin_status
-        return self._parse_checkin_status(url, "POST", self.ug_headers(account), _REQ_SOURCE_BODY)
-
-    def _parse_checkin_status(self, url, method, headers, body):
         state = CheckinState()
-        try:
-            data = self.do_json(method, url, headers, body)
-        except UpstreamError as err:
-            if err.code == 1001:
-                state.unavailable = True
-                return state, None
+        payload, err = self._checkin_round_trip(account, self.eps.ep_checkin_status, device_id)
+        if err is not None:
             return state, err
-        try:
-            resp = json.loads(data.decode("utf-8"))
-        except Exception:
-            resp = {}
-        if not isinstance(resp, dict):
-            resp = {}
-        code = number_field(resp, "code")
-        # 上游既用 code 0 也用 code 200 表示成功
-        if code not in (0, 200):
-            if code == 1001:
-                state.unavailable = True
-                return state, None
-            mapped = classify_code(code)
-            if mapped is not None:
-                return state, mapped
-            return state, UpstreamError(502, "签到状态查询失败", code=code)
-        state.checked_in = bool(resp.get("checked_in")) or bool(resp.get("checkedIn"))
-        state.enable = bool(resp.get("enable"))
-        state.streak_days = number_field(resp, "consecutive_days")
-        state.credits_earned_today = to_float(resp.get("credits_earned_today"))
+        _fill_checkin_state(state, payload)
         return state, None
 
-    def checkin_claim(self, account):
-        """执行签到。请求体与官方客户端一致（{"req_source":1}），不做任何重试。"""
+    def checkin_claim(self, account, device_id):
+        """执行签到。只回报业务码与文案，**是否真到账必须靠同设备号回查**。
+
+        当日已签过的账号对任何 device_id 的 claim 都回 code:0（上游的假成功），
+        所以这里不把 code:0 当成功，判定交给调用方用回查结果做。
+        """
         out = CheckinClaimResult()
-        url = self.eps.ug_host + self.eps.ep_checkin_claim
-        try:
-            data = self.do_json("POST", url, self.ug_headers(account), _REQ_SOURCE_BODY)
-        except UpstreamError as err:
-            if err.code == 1001:
-                out.unavailable = True
-                return out, None
+        payload, err = self._checkin_round_trip(account, self.eps.ep_checkin_claim, device_id)
+        if err is not None:
             return out, err
-        try:
-            resp = json.loads(data.decode("utf-8"))
-        except Exception:
-            resp = {}
-        if not isinstance(resp, dict):
-            resp = {}
-        code = number_field(resp, "code")
-        out.message = (as_str(resp.get("message")) or "").strip()
-        if not out.message:
-            out.message = (as_str(resp.get("msg")) or "").strip()
-        if code == 1001:
-            out.unavailable = True
+        out.code = number_field(payload, "code")
+        out.message = first_non_empty(as_str(payload.get("message")), as_str(payload.get("msg"))).strip()
+        if out.code == _CODE_TOKEN_DEAD:
+            out.needs_reauth = True
             return out, None
         # 9095：该设备今日已签到，属幂等成功
-        if code == _CODE_ALREADY_CHECKED_IN:
+        if out.code == _CODE_ALREADY_CHECKED_IN:
             out.already = True
             return out, None
-        if code in (0, 200):
+        if out.code in (0, 200):
             out.already = bool(_CHECKED_IN_RE.search(out.message))
             return out, None
-        mapped = classify_code(code)
+        mapped = classify_code(out.code)
         if mapped is not None:
             return out, mapped
-        msg = out.message or "签到失败"
-        return out, UpstreamError(502, util.truncate_runes(msg, 100), code=code)
+        return out, UpstreamError(502, util.truncate_runes(out.message or "签到失败", 100),
+                                  code=out.code)
+
+    def _checkin_round_trip(self, account, endpoint, device_id):
+        """一发「鉴权方案」的往返，返回 (响应体, 错误)。
+
+        方案顺序 Cloud-IDE-JWT → Bearer，但只在**可能是方案不匹配**的非零码上
+        降级。9074（繁忙）与 1001（令牌被作废）都不是方案的问题：换 Bearer 只会
+        多花一次配额，还正好踩在「9074 之后再查 status 会加重限流」那条实测上。
+
+        HTTP 层 401 + 1001 不在这里报错：它和业务码 1001 是同一件事（服务端作废
+        了这张 JWT），要交给驱动去换发重放。若在这一层就按「登录态失效」抛错，
+        账号会被硬禁用，而换发往往就能救回来。
+        """
+        url = self.eps.ug_host + endpoint
+        last = {}
+        for scheme in ("jwt", "bearer"):
+            headers = self.ug_headers(account, device_id, scheme)
+            try:
+                status, raw = util_http_request("POST", url, headers, _CHECKIN_BODY,
+                                                timeout=_CHECKIN_TIMEOUT)
+            except Exception as exc:
+                return last, UpstreamError(502, "签到请求失败：%s" % util.truncate_runes(str(exc), 80))
+            text = raw.decode("utf-8", "replace")
+            try:
+                payload = json.loads(text)
+            except Exception:
+                payload = {}
+            last = payload if isinstance(payload, dict) else {}
+            code = number_field(last, "code")
+            if status >= 400:
+                if code == _CODE_TOKEN_DEAD or _is_unauth_payload(last):
+                    return last, None
+                return last, classify_upstream(status, text)
+            if code in (0, 200, _CODE_BUSY, _CODE_TOKEN_DEAD):
+                return last, None
+        return last, None
 
     # ---------- 额度 ----------
 
@@ -450,8 +531,9 @@ class Upstream:
         套餐名按 product_type 取「当前生效包」里的最高档位（含免费包，它没有 credits_limit）。
         """
         url = self.eps.ug_host + self.eps.ep_ent_usage
+        # 额度只读，用账号自己落盘的 device_id（这条链不参与签到的「每轮新号」规则）
         try:
-            data = self.do_json("POST", url, self.ug_headers(account), b"{}")
+            data = self.do_json("POST", url, self.ug_headers(account, account.device_id), b"{}")
         except UpstreamError as err:
             # pay/ug 域对部分账号（scope 限制）整体拒绝并返回 code 1001：
             # 这是「积分服务不开放」，不是凭证失效。
@@ -536,23 +618,46 @@ class Upstream:
 
 
 class CheckinState:
-    __slots__ = ("checked_in", "enable", "unavailable", "streak_days", "credits_earned_today")
+    __slots__ = ("checked_in", "did_checked_in", "enable", "streak_days",
+                 "credits_earned_today", "code", "message")
 
     def __init__(self):
         self.checked_in = False
+        self.did_checked_in = False
         self.enable = False
-        self.unavailable = False
         self.streak_days = 0
         self.credits_earned_today = 0.0
+        self.code = 0
+        self.message = ""
+
+    def done_today(self):
+        """今天是否已经算签过：账号维度或设备维度任一为真。"""
+        return self.checked_in or self.did_checked_in
 
 
 class CheckinClaimResult:
-    __slots__ = ("already", "unavailable", "message")
+    __slots__ = ("already", "needs_reauth", "code", "message")
 
     def __init__(self):
         self.already = False
-        self.unavailable = False
+        self.needs_reauth = False
+        self.code = 0
         self.message = ""
+
+
+def _fill_checkin_state(state, payload):
+    """把 status 响应体填进 CheckinState（缺字段一律按 False / 0 收，不猜）。"""
+    if not isinstance(payload, dict):
+        return
+    state.checked_in = bool(payload.get("checked_in") or payload.get("checkedIn"))
+    state.did_checked_in = bool(payload.get("did_checked_in") or payload.get("didCheckedIn"))
+    state.enable = bool(payload.get("enable"))
+    state.streak_days = number_field(payload, "consecutive_days")
+    state.credits_earned_today = to_float(
+        payload.get("credits", payload.get("credits_earned_today")))
+    state.code = number_field(payload, "code")
+    state.message = first_non_empty(as_str(payload.get("message")),
+                                    as_str(payload.get("msg"))).strip()
 
 
 # ---------- 登录 URL 与回调解析 ----------

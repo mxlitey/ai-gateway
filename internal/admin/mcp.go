@@ -405,14 +405,15 @@ func (a *API) callMCPTool(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, result)
 }
 
-// mcpUsageSummary 调用次数统计（按服务器 / 工具 / 日期）。
+// mcpUsageSummary 调用次数统计（按服务器 / 工具 / 日期）；可按服务器、工具与上游密钥筛选。
 func (a *API) mcpUsageSummary(w http.ResponseWriter, r *http.Request) {
 	from, to, err := parseRangeParams(r)
 	if err != nil {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	sum, err := a.store.MCPUsageSummary(from, to)
+	q := r.URL.Query()
+	sum, err := a.store.MCPUsageSummary(from, to, q.Get("server_name"), q.Get("tool"), q.Get("key_hint"))
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -431,13 +432,14 @@ func (a *API) mcpCallLogs(w http.ResponseWriter, r *http.Request) {
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
 	f := store.MCPCallLogFilter{
-		FromMs:   from,
-		ToMs:     to,
-		ServerID: q.Get("server_id"),
-		Tool:     q.Get("tool"),
-		OnlyFail: q.Get("only_fail") == "1",
-		Limit:    limit,
-		Offset:   offset,
+		FromMs:     from,
+		ToMs:       to,
+		ServerName: q.Get("server_name"),
+		Tool:       q.Get("tool"),
+		KeyHint:    q.Get("key_hint"),
+		OnlyFail:   q.Get("only_fail") == "1",
+		Limit:      limit,
+		Offset:     offset,
 	}
 
 	items, err := a.store.ListMCPCallLogs(f)
@@ -565,7 +567,10 @@ func clampLimit(n int) int {
 	return n
 }
 
-// sanitizeToolLimits 清理工具级每日上限：丢弃空工具名；-1（不限）与「未配置」等价，不落库。
+// sanitizeToolLimits 清理工具级每日上限：丢弃空工具名。
+//
+// -1 需要落库：它表示该工具完全不限、且不校验上游密钥剩余次数，
+// 与「未配置」（留空，仍需校验密钥次数）是两种不同语义，不能等价。
 func sanitizeToolLimits(in map[string]int) map[string]int {
 	out := map[string]int{}
 	for tool, n := range in {
@@ -573,9 +578,7 @@ func sanitizeToolLimits(in map[string]int) map[string]int {
 		if name == "" {
 			continue
 		}
-		if v := clampLimit(n); v >= 0 {
-			out[name] = v
-		}
+		out[name] = clampLimit(n)
 	}
 	return out
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api,
@@ -7,6 +7,7 @@ import {
   type MCPTool,
 } from '../lib/api'
 import { toast } from '../lib/toast'
+import RangePicker, { type RangeValue } from '../components/RangePicker'
 import {
   Badge,
   Button,
@@ -140,11 +141,12 @@ export default function Mcp() {
           .filter((k) => k.key !== ''),
         key_strategy: state.keyStrategy,
         daily_limit: limitValue(state.dailyLimit),
-        // 工具上限：留空即「不限」，负数项由后端丢弃
+        // 工具上限：留空不提交（= 不单独限量但仍校验密钥次数），-1 原样提交（= 完全不限）
         tool_limits: Object.fromEntries(
           state.toolLimits
+            .filter((t) => t.tool !== '' && t.limit.trim() !== '' && Number.isFinite(Number(t.limit)))
             .map((t) => [t.tool, limitValue(t.limit)] as const)
-            .filter(([tool, n]) => tool !== '' && n >= 0),
+            .filter(([, n]) => n >= -1),
         ),
         timeout_ms: Number(state.timeoutMS) || 0,
         billable_mode: state.billableMode,
@@ -365,6 +367,8 @@ export default function Mcp() {
           </div>
         )}
       </Card>
+
+      <McpUsageCard />
 
       <ClientAccessCard />
 
@@ -618,7 +622,8 @@ function ToolLimitsField({
   )
   const rows = names.map((name) => {
     const hit = form.toolLimits.find((t) => t.tool === name)
-    return { tool: name, limit: hit?.limit ?? '' }
+    // 未设置时默认 0：该工具不单独限量，共享上游密钥的剩余次数
+    return { tool: name, limit: hit?.limit ?? '0' }
   })
 
   const update = (tool: string, limit: string) => {
@@ -639,7 +644,7 @@ function ToolLimitsField({
   return (
     <Field
       label="工具日上限"
-      hint="不同工具可分配不同配额；留空或 -1 表示该工具不限，0 表示不允许调用。按上游工具名匹配。"
+      hint="按上游工具名匹配，上限按每条上游密钥独立计算。不填时默认 0（显示为「共享」）：该工具不单独限量，共享上游密钥的剩余次数，用完即不能调用；-1（显示为「不限」）：完全不限，也不校验密钥次数；正数：该工具每条密钥的每日上限。"
     >
       {tools.isLoading ? (
         <Loading />
@@ -660,12 +665,14 @@ function ToolLimitsField({
               <Input
                 className="flex-none"
                 style={{ width: '5.5rem' }}
-                type="number"
-                min={-1}
-                value={row.limit}
+                // 用 text 而非 number：number 输入框会把中间的「-」丢掉，导致 -1 无法键入
+                type="text"
+                inputMode="numeric"
+                // 0 与 -1 不显示数字，只显示灰色说明文字：共享 / 不限
+                value={row.limit === '' || row.limit === '0' || row.limit === '-1' ? '' : row.limit}
                 onChange={(e) => update(row.tool, e.target.value)}
-                placeholder="不限"
-                title="该工具每日计费调用上限：留空或 -1 表示不限，0 表示不允许调用"
+                placeholder={row.limit === '-1' ? '不限' : '共享'}
+                title="不填或 0：不单独限量，共享上游密钥的剩余次数（用完即不能调用）；-1：完全不限，不校验密钥次数；正数：该工具每条密钥的每日上限"
               />
             </div>
           ))}
@@ -799,6 +806,244 @@ function KeyPie({ s }: { s: MCPServer }) {
 
 const PIE_COLORS = ['#007aff', '#34c759', '#ff9500', '#af52de', '#ff3b30', '#5ac8fa', '#ffcc00']
 
+const PAGE_SIZE = 50
+const DAY = 24 * 60 * 60 * 1000
+
+// 筛选下拉框样式（与「用量」页保持一致）
+const selectClass =
+  'rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none focus:border-emerald-500 max-md:py-2.5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100'
+
+// McpUsageCard 用量明细：与「用量」页的调用明细一致，顶部按服务器（对应渠道）、
+// 工具（对应模型）、上游密钥与日期范围筛选，日期只按天选。
+function McpUsageCard() {
+  const [range, setRange] = useState<RangeValue>(() => dayRange(Date.now()))
+  const [serverFilter, setServerFilter] = useState('')
+  const [toolFilter, setToolFilter] = useState('')
+  const [keyFilter, setKeyFilter] = useState('')
+  const [offset, setOffset] = useState(0)
+
+  // 服务器 / 工具 / 密钥下拉都只列本期有调用记录的值（与「用量」页一致），没有用量的不出现
+  const summary = useQuery({
+    queryKey: ['mcp-usage-summary', range.from, range.to, serverFilter, toolFilter, keyFilter],
+    queryFn: () =>
+      api.mcpUsageSummary({
+        from: range.from,
+        to: range.to,
+        server_name: serverFilter || undefined,
+        tool: toolFilter || undefined,
+        key_hint: keyFilter || undefined,
+      }),
+  })
+  const logs = useQuery({
+    queryKey: ['mcp-usage-logs', range.from, range.to, serverFilter, toolFilter, keyFilter, offset],
+    queryFn: () =>
+      api.mcpCallLogs({
+        from: range.from,
+        to: range.to,
+        server_name: serverFilter || undefined,
+        tool: toolFilter || undefined,
+        key_hint: keyFilter || undefined,
+        limit: PAGE_SIZE,
+        offset,
+      }),
+  })
+
+  const serverOptions = useMemo(
+    () => (summary.data?.by_server ?? []).map((b) => b.key).filter(Boolean),
+    [summary.data],
+  )
+
+  // 密钥下拉按服务器过滤（后端已按服务器名筛选 by_key），同一 hint 只保留一项
+  const keyOptions = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const k of summary.data?.by_key ?? []) {
+      if (!k.key_hint || !k.server_name) continue
+      if (serverFilter && k.server_name !== serverFilter) continue
+      if (k.calls <= 0 || map.has(k.key_hint)) continue
+      map.set(k.key_hint, k.label ? `${k.label}（${k.key_hint}）` : k.key_hint)
+    }
+    return Array.from(map, ([hint, label]) => ({ hint, label }))
+  }, [summary.data, serverFilter])
+
+  const items = logs.data?.items ?? []
+  const total = logs.data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const page = Math.floor(offset / PAGE_SIZE) + 1
+
+  const refresh = () => {
+    summary.refetch()
+    logs.refetch()
+  }
+
+  return (
+    <Card title="用量明细">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <select
+          value={serverFilter}
+          onChange={(e) => {
+            setServerFilter(e.target.value)
+            // 工具 / 密钥下拉按服务器过滤，换服务器后原先选中的值可能已不在列表中，一并清空
+            setToolFilter('')
+            setKeyFilter('')
+            setOffset(0)
+          }}
+          className={`${selectClass} w-full sm:w-40`}
+        >
+          <option value="">全部服务器</option>
+          {serverOptions.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <select
+          value={toolFilter}
+          onChange={(e) => {
+            setToolFilter(e.target.value)
+            // 换工具后原先选中的密钥可能已不在列表中，一并清空
+            setKeyFilter('')
+            setOffset(0)
+          }}
+          className={`${selectClass} w-full sm:w-48`}
+        >
+          <option value="">全部工具</option>
+          {(summary.data?.by_tool ?? []).map((b) => (
+            <option key={b.key || '(未记录工具)'} value={b.key}>
+              {b.key || '(未记录工具)'}
+            </option>
+          ))}
+        </select>
+        <select
+          value={keyFilter}
+          onChange={(e) => {
+            setKeyFilter(e.target.value)
+            setOffset(0)
+          }}
+          className={`${selectClass} w-full sm:w-44`}
+        >
+          <option value="">全部上游密钥</option>
+          {keyOptions.map((k) => (
+            <option key={k.hint} value={k.hint}>
+              {k.label}
+            </option>
+          ))}
+        </select>
+        <RangePicker
+          value={range}
+          granularity="day"
+          onChange={(v) => {
+            setRange(v)
+            setOffset(0)
+          }}
+        />
+        <IconButton title="刷新" onClick={refresh}>
+          <RefreshIcon />
+        </IconButton>
+      </div>
+
+      {logs.isLoading ? (
+        <Loading />
+      ) : logs.isError ? (
+        <ErrorText text={(logs.error as Error).message} />
+      ) : items.length === 0 ? (
+        <Empty text="所选范围内没有调用记录" />
+      ) : (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[46rem] text-sm">
+              <thead>
+                <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800">
+                  <th className="py-2 pr-3 font-medium">时间</th>
+                  <th className="py-2 pr-3 font-medium">工具</th>
+                  <th className="py-2 pr-3 font-medium">服务器</th>
+                  <th className="py-2 pr-3 font-medium">状态</th>
+                  <th className="py-2 pr-3 font-medium">计费</th>
+                  <th className="py-2 pr-3 text-right font-medium">尝试</th>
+                  <th className="py-2 pr-3 text-right font-medium">耗时</th>
+                  <th className="py-2 font-medium">错误</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((r) => (
+                  <tr key={r.id} className="border-b border-zinc-100 last:border-0 dark:border-zinc-800/60">
+                    <td className="py-2 pr-3 text-xs whitespace-nowrap text-zinc-600 dark:text-zinc-400">
+                      {new Date(r.created_at).toLocaleString()}
+                    </td>
+                    <td className="py-2 pr-3 font-mono text-xs text-zinc-700 dark:text-zinc-300">
+                      {r.tool || '—'}
+                    </td>
+                    <td className="py-2 pr-3 text-xs text-zinc-600 dark:text-zinc-400">
+                      {r.server_name || '—'}
+                      {r.key_hint ? (
+                        <span className="mt-0.5 block font-mono text-[11px] text-zinc-400 dark:text-zinc-500">
+                          {r.key_hint}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="py-2 pr-3">
+                      <Badge tone={r.success ? 'ok' : 'warn'}>
+                        {r.http_status === 0 ? '网络' : r.http_status}
+                      </Badge>
+                    </td>
+                    <td className="py-2 pr-3 text-xs text-zinc-500">
+                      {r.billable ? (
+                        <span className="text-emerald-600 dark:text-emerald-400">计入</span>
+                      ) : (
+                        '不计入'
+                      )}
+                    </td>
+                    <td className="py-2 pr-3 text-right font-mono text-xs text-zinc-600 dark:text-zinc-400">
+                      {r.attempts}
+                    </td>
+                    <td className="py-2 pr-3 text-right font-mono text-xs text-zinc-500">
+                      {r.duration_ms} ms
+                    </td>
+                    <td
+                      className="max-w-[16rem] truncate py-2 text-xs text-red-600 dark:text-red-400"
+                      title={r.error}
+                    >
+                      {r.error || '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
+            <span>
+              第 {page} / {totalPages} 页 · 共 {total.toLocaleString('en-US')} 条
+            </span>
+            <div className="flex gap-2">
+              <Button
+                className="py-1 text-xs"
+                disabled={offset === 0}
+                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+              >
+                上一页
+              </Button>
+              <Button
+                className="py-1 text-xs"
+                disabled={offset + PAGE_SIZE >= total}
+                onClick={() => setOffset(offset + PAGE_SIZE)}
+              >
+                下一页
+              </Button>
+            </div>
+          </div>
+        </>
+      )}
+    </Card>
+  )
+}
+
+// dayRange 当天的自然日范围（[今天 00:00, 明天 00:00)）
+function dayRange(now: number): RangeValue {
+  const d = new Date(now)
+  d.setHours(0, 0, 0, 0)
+  return { from: d.getTime(), to: d.getTime() + DAY }
+}
+
 // ClientAccessCard 客户端接入说明，并提供开箱可用的 JSON 配置一键复制。
 function ClientAccessCard() {
   const origin = window.location.origin
@@ -891,6 +1136,7 @@ function McpCardHead({ s, onToggle }: { s: MCPServer; onToggle: () => void }) {
           <Badge tone={statusTone[s.last_status] ?? 'off'}>
             {statusText[s.last_status] ?? s.last_status}
           </Badge>
+          {s.source?.startsWith('local:') ? <Badge tone="info">本地</Badge> : null}
         </div>
         <p
           className="mt-1 truncate font-mono text-xs break-all text-zinc-500 dark:text-zinc-400"

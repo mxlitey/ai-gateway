@@ -307,12 +307,15 @@ func (s *Store) MCPDailyCallCounts(serverID string, sinceMs int64) (map[string]i
 	return out, rows.Err()
 }
 
-// MCPDailyToolCallCounts 统计某服务器自 sinceMs 起各工具的计费调用次数（工具名 -> 次数）。
-func (s *Store) MCPDailyToolCallCounts(serverID string, sinceMs int64) (map[string]int64, error) {
+// MCPDailyToolCallCounts 统计某服务器自 sinceMs 起各上游密钥对每个工具的计费调用次数。
+//
+// 返回结构为 工具名 -> key_hint -> 次数：工具配额按上游密钥独立计算，
+// 因此这里必须带 key_hint 分组。
+func (s *Store) MCPDailyToolCallCounts(serverID string, sinceMs int64) (map[string]map[string]int64, error) {
 	rows, err := s.db.Query(
-		`SELECT tool, COUNT(1) FROM mcp_call_logs
+		`SELECT tool, key_hint, COUNT(1) FROM mcp_call_logs
 		 WHERE server_id = ? AND billable = 1 AND created_at >= ?
-		 GROUP BY tool`,
+		 GROUP BY tool, key_hint`,
 		serverID, sinceMs,
 	)
 	if err != nil {
@@ -320,44 +323,73 @@ func (s *Store) MCPDailyToolCallCounts(serverID string, sinceMs int64) (map[stri
 	}
 	defer rows.Close()
 
-	out := map[string]int64{}
+	out := map[string]map[string]int64{}
 	for rows.Next() {
-		var tool string
+		var tool, hint string
 		var n int64
-		if err := rows.Scan(&tool, &n); err != nil {
+		if err := rows.Scan(&tool, &hint, &n); err != nil {
 			return nil, err
 		}
-		out[tool] = n
+		if out[tool] == nil {
+			out[tool] = map[string]int64{}
+		}
+		out[tool][hint] = n
 	}
 	return out, rows.Err()
 }
 
 // MCPCallLogFilter 调用日志的查询条件（零值表示不过滤）。
+//
+// ServerName 用展示名筛选（与「用量」页按渠道名筛选一致），这样已删除服务器的历史记录也能筛到。
 type MCPCallLogFilter struct {
-	FromMs   int64
-	ToMs     int64
-	ServerID string
-	Tool     string
-	OnlyFail bool
-	Limit    int
-	Offset   int
+	FromMs     int64
+	ToMs       int64
+	ServerName string
+	Tool       string
+	KeyHint    string
+	OnlyFail   bool
+	Limit      int
+	Offset     int
 }
 
 func (f MCPCallLogFilter) where() (string, []any) {
 	conds := []string{"created_at >= ?", "created_at < ?"}
 	args := []any{f.FromMs, f.ToMs}
-	if f.ServerID != "" {
-		conds = append(conds, "server_id = ?")
-		args = append(args, f.ServerID)
+	if f.ServerName != "" {
+		conds = append(conds, "server_name = ?")
+		args = append(args, f.ServerName)
 	}
 	if f.Tool != "" {
 		conds = append(conds, "tool = ?")
 		args = append(args, f.Tool)
 	}
+	if f.KeyHint != "" {
+		conds = append(conds, "key_hint = ?")
+		args = append(args, f.KeyHint)
+	}
 	if f.OnlyFail {
 		conds = append(conds, "success = 0")
 	}
 	return " WHERE " + strings.Join(conds, " AND "), args
+}
+
+// mcpUsageWhere 拼装「时间区间 + 服务器名 + 工具名 + 上游密钥」的筛选条件。
+func mcpUsageWhere(fromMs, toMs int64, serverName, tool, keyHint string) (string, []any) {
+	conds := []string{"created_at >= ?", "created_at < ?"}
+	args := []any{fromMs, toMs}
+	if serverName != "" {
+		conds = append(conds, "server_name = ?")
+		args = append(args, serverName)
+	}
+	if tool != "" {
+		conds = append(conds, "tool = ?")
+		args = append(args, tool)
+	}
+	if keyHint != "" {
+		conds = append(conds, "key_hint = ?")
+		args = append(args, keyHint)
+	}
+	return strings.Join(conds, " AND "), args
 }
 
 // ListMCPCallLogs 按时间倒序返回调用明细。
@@ -404,11 +436,15 @@ func (s *Store) CountMCPCallLogs(f MCPCallLogFilter) (int64, error) {
 	return n, err
 }
 
-// MCPUsageSummary 汇总时间区间内的 MCP 调用次数。
-func (s *Store) MCPUsageSummary(fromMs, toMs int64) (*model.MCPUsageSummary, error) {
+// MCPUsageSummary 汇总时间区间内的 MCP 调用次数；服务器名 / 工具名 / 上游密钥为空表示不筛选。
+//
+// 分组结果不受自身筛选影响：界面用它填充筛选下拉框，
+// 若跟着自身筛选走，选中某个值后其余选项就会从下拉框里消失。
+// 例外：按工具的列表跟随服务器筛选，保证选定服务器后工具下拉只展示该服务器用过的工具；
+// 按密钥的列表同样只跟随服务器筛选，保证密钥下拉不受工具与密钥自身选择影响。
+func (s *Store) MCPUsageSummary(fromMs, toMs int64, serverName, tool, keyHint string) (*model.MCPUsageSummary, error) {
 	sum := &model.MCPUsageSummary{From: fromMs, To: toMs}
-	where := "created_at >= ? AND created_at < ?"
-	args := []any{fromMs, toMs}
+	where, args := mcpUsageWhere(fromMs, toMs, serverName, tool, keyHint)
 
 	if err := s.db.QueryRow(
 		`SELECT COUNT(1), COALESCE(SUM(success), 0), COALESCE(SUM(billable), 0)
@@ -419,7 +455,11 @@ func (s *Store) MCPUsageSummary(fromMs, toMs int64) (*model.MCPUsageSummary, err
 	}
 	sum.Failures = sum.Calls - sum.Success
 
-	group := func(expr string) ([]model.MCPUsageBucket, error) {
+	whereAll, argsAll := mcpUsageWhere(fromMs, toMs, "", "", "")
+	// 工具与密钥下拉只跟随服务器筛选
+	whereServer, argsServer := mcpUsageWhere(fromMs, toMs, serverName, "", "")
+
+	group := func(expr, where string, args []any) ([]model.MCPUsageBucket, error) {
 		rows, err := s.db.Query(
 			`SELECT `+expr+` AS k, COUNT(1), COALESCE(SUM(success), 0)
 			 FROM mcp_call_logs WHERE `+where+` GROUP BY k ORDER BY 2 DESC`,
@@ -443,20 +483,20 @@ func (s *Store) MCPUsageSummary(fromMs, toMs int64) (*model.MCPUsageSummary, err
 	}
 
 	var err error
-	if sum.ByServer, err = group("server_name"); err != nil {
+	if sum.ByServer, err = group("server_name", whereAll, argsAll); err != nil {
 		return nil, err
 	}
-	if sum.ByTool, err = group("tool"); err != nil {
+	if sum.ByTool, err = group("tool", whereServer, argsServer); err != nil {
 		return nil, err
 	}
-	if sum.ByDay, err = group(`strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', '+8 hours')`); err != nil {
+	if sum.ByDay, err = group(`strftime('%Y-%m-%d', created_at / 1000, 'unixepoch', '+8 hours')`, whereAll, argsAll); err != nil {
 		return nil, err
 	}
 	for i, j := 0, len(sum.ByDay)-1; i < j; i, j = i+1, j-1 {
 		sum.ByDay[i], sum.ByDay[j] = sum.ByDay[j], sum.ByDay[i]
 	}
 
-	if sum.ByKey, err = s.mcpKeyUsage(where, args); err != nil {
+	if sum.ByKey, err = s.mcpKeyUsage(whereServer, argsServer); err != nil {
 		return nil, err
 	}
 	return sum, nil
@@ -465,8 +505,8 @@ func (s *Store) MCPUsageSummary(fromMs, toMs int64) (*model.MCPUsageSummary, err
 // mcpKeyUsage 按「服务器 + 密钥」维度汇总计费调用次数，并补上当前的配置信息。
 //
 // 失败的调用不记录密钥（一次调用链可能试过多把密钥，无法归因到某一把），
-// 所以这里只统计成功且计费的调用；配置里存在但本期没被用到的密钥也会列出（次数 0），
-// 便于看出「哪把密钥一直没轮到」。已从配置里删除的密钥只保留其历史统计。
+// 所以这里只统计成功且计费的调用。与「用量」页一致，只返回本期真正有调用记录的密钥，
+// 没被用到的密钥不出现在筛选下拉里。
 func (s *Store) mcpKeyUsage(where string, args []any) ([]model.MCPKeyUsage, error) {
 	rows, err := s.db.Query(
 		`SELECT server_id, server_name, key_hint, COUNT(1)
@@ -524,8 +564,6 @@ func (s *Store) mcpKeyUsage(where string, args []any) ([]model.MCPKeyUsage, erro
 		})
 	}
 
-	// 先按调用量输出有记录的密钥
-	emitted := map[string]bool{}
 	for _, k := range order {
 		st := stats[k]
 		serverID, hint, _ := strings.Cut(k, "\x00")
@@ -538,20 +576,7 @@ func (s *Store) mcpKeyUsage(where string, args []any) ([]model.MCPKeyUsage, erro
 				}
 			}
 		}
-		emitted[k] = true
 		emit(serverID, st.serverName, hint, label, st.calls, limit, enabled)
-	}
-
-	// 再补上配置里存在、但本期一次都没被用到的密钥
-	for i := range servers {
-		srv := &servers[i]
-		for _, key := range srv.Keys {
-			hint := model.KeyHint(key.Key)
-			if emitted[srv.ID+"\x00"+hint] {
-				continue
-			}
-			emit(srv.ID, srv.Name, hint, key.Label, 0, key.DailyLimit, key.Enabled)
-		}
 	}
 	return out, nil
 }

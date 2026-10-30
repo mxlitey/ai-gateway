@@ -1,0 +1,7 @@
+{
+  "name": "本地示例",
+  "alias": "local-demo",
+  "entry": "main.py",
+  "path": "/mcp",
+  "startup_timeout_ms": 30000
+}

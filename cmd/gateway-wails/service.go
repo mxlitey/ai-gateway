@@ -358,6 +358,7 @@ func resolveConfig() (*config.Config, error) {
 	exeDir := filepath.Dir(exe)
 	cfg.DataDir = filepath.Join(exeDir, "data")
 	cfg.PluginsDir = filepath.Join(exeDir, "plugins")
+	cfg.MCPDir = filepath.Join(exeDir, "mcp")
 	cfg.NoBrowser = true
 
 	args := os.Args[1:]
@@ -366,6 +367,9 @@ func resolveConfig() (*config.Config, error) {
 	}
 	if v := flagValue(args, "--plugins-dir"); v != "" {
 		cfg.PluginsDir = v
+	}
+	if v := flagValue(args, "--mcp-dir"); v != "" {
+		cfg.MCPDir = v
 	}
 	return cfg, nil
 }

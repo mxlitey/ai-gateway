@@ -23,13 +23,14 @@ func (svc *Service) callTool(ctx context.Context, srv *model.MCPServer, r *http.
 	toolName, _ := params["name"].(string)
 	start := time.Now()
 
-	// 工具维度优先：配了日上限（-1 或未配置表示不限）就先按工具配额拦截，超限直接拒绝
+	// 工具上限语义：
+	//   -1     完全不限：上游不对该工具计费，连密钥剩余次数都不校验；
+	//   留空/0 该工具不单独限量，但仍校验上游密钥剩余次数
+	//          （同一服务器多个工具可能共享这份额度，用完就不能再调）；
+	//   正数   每条密钥对该工具另有每日上限，与密钥剩余次数取更严格的一方。
 	toolLimit, hasToolLimit := srv.ToolLimits[toolName]
-	toolLimited := hasToolLimit && toolLimit >= 0
-	if toolLimited && svc.quota.ToolUsed(srv.ID, toolName) >= int64(toolLimit) {
-		svc.logCall(srv, toolName, "", false, false, 0, 0, time.Since(start), errQuotaExhausted)
-		return nil, &upstreamError{Message: errQuotaExhausted}
-	}
+	toolUnlimited := hasToolLimit && toolLimit < 0
+	toolCapped := hasToolLimit && toolLimit > 0
 
 	keys := svc.orderedKeys(srv)
 	if len(keys) == 0 {
@@ -43,10 +44,20 @@ func (svc *Service) callTool(ctx context.Context, srv *model.MCPServer, r *http.
 	attempts := 0
 	lastErr := ""
 	for _, key := range keys {
-		// 只有该工具限量时才顺带校验密钥剩余次数；工具不限量时密钥上限不参与拦截
-		if toolLimited {
+		// 本地服务器不产生上游费用，不校验密钥与工具配额，只保留可选的整台日上限
+		if srv.IsLocal() {
+			if srv.DailyLimit >= 0 && svc.quota.DailyTotal(srv.ID) >= int64(srv.DailyLimit) {
+				lastErr = errQuotaExhausted
+				continue
+			}
+		} else if !toolUnlimited {
+			// 配额都按这条密钥独立计算；-1 完全不限时整段跳过校验
 			if ok, reason := svc.quotaLeft(srv, key); !ok {
 				lastErr = reason
+				continue
+			}
+			if toolCapped && svc.quota.ToolUsed(srv.ID, toolName, model.KeyHint(key)) >= int64(toolLimit) {
+				lastErr = errQuotaExhausted
 				continue
 			}
 		}
@@ -73,7 +84,7 @@ func (svc *Service) callTool(ctx context.Context, srv *model.MCPServer, r *http.
 		billable := isBillable(srv, raw)
 		if billable {
 			svc.quota.Incr(srv.ID, model.KeyHint(key))
-			svc.quota.IncrTool(srv.ID, toolName)
+			svc.quota.IncrTool(srv.ID, toolName, model.KeyHint(key))
 		}
 		svc.logCall(srv, toolName, key, true, billable, http.StatusOK, attempts, time.Since(start), "")
 		return raw, nil

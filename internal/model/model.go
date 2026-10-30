@@ -235,8 +235,10 @@ type MCPServer struct {
 	KeyStrategy string `json:"key_strategy"`
 	// DailyLimit 整台服务器每日计费调用上限：-1 不限，0 不允许调用，正数为上限。
 	DailyLimit int `json:"daily_limit"`
-	// ToolLimits 工具级每日计费调用上限（上游工具名 -> 上限），用于不同工具分配不同配额；
-	// -1 或未列出的工具表示不限，0 表示该工具不允许调用。
+	// ToolLimits 工具级每日计费调用上限（上游工具名 -> 上限），用于不同工具分配不同配额。
+	// 语义：-1 完全不限，且不校验密钥剩余次数（上游对该工具不计费）；
+	// 未列出或 0 表示该工具不单独限量，但仍校验上游密钥剩余次数（同服务器的工具可能共享额度）；
+	// 正数为该工具在每条密钥上的每日上限。
 	ToolLimits map[string]int `json:"tool_limits"`
 	// BillableMode 计费口径：success 表示成功调用即计费；marker 表示响应含 BillableMarker 才计费。
 	// 后者用于上游「判定无需联网就直接作答、不产生计费」的场景（如百度 AI 搜索）。
@@ -262,8 +264,14 @@ type MCPServer struct {
 	ToolDailyCalls map[string]int64 `json:"tool_daily_calls"`
 }
 
+// LocalSourcePrefix 本地 MCP 服务器的 Source 前缀，后接 mcp 目录下的子目录名。
+const LocalSourcePrefix = "local:"
+
 // IsManual 判断服务器是否由用户手工添加（非插件注册）。
 func (s *MCPServer) IsManual() bool { return s.Source == "" || s.Source == "manual" }
+
+// IsLocal 判断服务器是否由 mcp 目录自动登记的本地 Python 服务器。
+func (s *MCPServer) IsLocal() bool { return strings.HasPrefix(s.Source, LocalSourcePrefix) }
 
 // EnabledKeys 返回已启用的密钥值。
 func (s *MCPServer) EnabledKeys() []string {

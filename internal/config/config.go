@@ -17,6 +17,7 @@ type Config struct {
 	Port          int
 	DataDir       string
 	PluginsDir    string
+	MCPDir        string
 	LogLevel      string
 	Dev           bool
 	NoBrowser     bool
@@ -73,6 +74,7 @@ func Load(args []string) (*Config, error) {
 	fs.IntVar(&c.Port, "port", envIntOr("AIGW_PORT", DefaultPort), "监听端口")
 	fs.StringVar(&c.DataDir, "data-dir", envOr("AIGW_DATA_DIR", "./data"), "数据目录")
 	fs.StringVar(&c.PluginsDir, "plugins-dir", envOr("AIGW_PLUGINS_DIR", "./plugins"), "插件目录")
+	fs.StringVar(&c.MCPDir, "mcp-dir", envOr("AIGW_MCP_DIR", "./mcp"), "本地 MCP 服务器目录")
 	fs.StringVar(&c.LogLevel, "log-level", envOr("AIGW_LOG_LEVEL", "info"), "日志级别 debug|info|warn|error")
 	fs.BoolVar(&c.Dev, "dev", false, "开发模式")
 	fs.BoolVar(&c.NoBrowser, "no-browser", false, "启动后不自动打开浏览器")
@@ -91,6 +93,9 @@ func Load(args []string) (*Config, error) {
 	}
 	if c.PluginsDir, err = filepath.Abs(c.PluginsDir); err != nil {
 		return nil, fmt.Errorf("解析插件目录失败: %w", err)
+	}
+	if c.MCPDir, err = filepath.Abs(c.MCPDir); err != nil {
+		return nil, fmt.Errorf("解析本地 MCP 目录失败: %w", err)
 	}
 	return c, nil
 }

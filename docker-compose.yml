@@ -18,7 +18,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        VERSION: ${VERSION:-1.2.1}
+        VERSION: ${VERSION:-1.2.3}
     image: ai-gateway:latest
     container_name: ai-gateway
     restart: unless-stopped
@@ -39,6 +39,7 @@ services:
     volumes:
       - ai-gateway-data:/data
       - ai-gateway-plugins:/plugins
+      - ai-gateway-mcp:/mcp
     healthcheck:
       # debian-slim 没有 wget/curl，用镜像内的 python3 探活
       test: ["CMD", "python3", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/health',timeout=4).status==200 else 1)"]
@@ -50,3 +51,4 @@ services:
 volumes:
   ai-gateway-data:
   ai-gateway-plugins:
+  ai-gateway-mcp:

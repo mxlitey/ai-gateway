@@ -34,6 +34,13 @@ class Endpoints:
     # chat_mirror 是可选的对话镜像域**完整 URL**；留空则只用主域。
     chat_mirror: str = ""
 
+    # 签到 / 积分（ug 族）的专属画像。这一族与对话那套**不是同一套头**：
+    # 上游认的是 VSCode 插件进程的 UA 与 Package-Type，照搬对话那套会回
+    # 401 + code 1001「not able to authenticate you」，看着像登录态失效。
+    ug_user_agent: str = "VSCode 1.107.1 (TRAE CN)"
+    ug_market_client_id: str = "VSCode 1.107.1"
+    ug_package_type: str = "stable_cn"
+
     # 接口路径
     ep_chat: str = "/api/agent/v3/llm_utils_chat"
     ep_models: str = "/api/ide/v1/get_detail_param"

@@ -1,5 +1,5 @@
 # AI Gateway 绿色版一键构建
-# 用法：pwsh -File build/build.ps1 -Version 1.2.1
+# 用法：pwsh -File build/build.ps1 -Version 1.2.2
 #       加 -Docker 同时构建 Linux 镜像（默认 amd64 + arm64 双架构），
 #       导出 dist/ai-gateway-v<版本>-docker-amd64.tar 与 -arm64.tar
 param(
@@ -97,7 +97,7 @@ Remove-Item "dist/ai-gateway.exe" -Force -ErrorAction SilentlyContinue
 # ---- 4. 组装绿色版 ----
 Write-Host "[4/$totalSteps] 组装绿色版 ..." -ForegroundColor Cyan
 Copy-Item "build/README.txt" "dist/README.txt" -Force
-New-Item -ItemType Directory -Force -Path "dist/plugins", "dist/data" | Out-Null
+New-Item -ItemType Directory -Force -Path "dist/plugins", "dist/mcp", "dist/data" | Out-Null
 
 # 内置插件：插件一律是 Python 源码（同一份源码在 Windows / macOS / Linux 通用），
 # 整目录拷贝即可，不需要任何编译。先删旧目录，避免残留上一次的可执行产物。
@@ -108,6 +108,15 @@ foreach ($name in @("trae", "workbuddy", "modelscope", "kilo", "cline", "minimax
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
     Copy-Item "examples/$name/*.py" $dst -Force
     Copy-Item "examples/$name/plugin.json" "$dst/plugin.json" -Force
+}
+
+# 本地 MCP 服务器：同样是 Python 源码，整目录拷贝；网关启动时自动扫描登记。
+foreach ($dir in (Get-ChildItem "examples/mcp" -Directory -ErrorAction SilentlyContinue)) {
+    if (-not (Test-Path (Join-Path $dir.FullName "mcp.json"))) { continue }
+    $dst = "dist/mcp/$($dir.Name)"
+    Remove-Item $dst -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Copy-Item (Join-Path $dir.FullName "*") $dst -Recurse -Force
 }
 
 # ---- 5. Docker 镜像（可选）----

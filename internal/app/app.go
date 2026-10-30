@@ -33,9 +33,10 @@ type App struct {
 	errCh   chan error
 	cancel  context.CancelFunc
 
-	store *store.Store
-	host  *plugin.Host
-	srv   *http.Server
+	store  *store.Store
+	host   *plugin.Host
+	mcpSvc *mcp.Service
+	srv    *http.Server
 }
 
 // New 创建实例（此时尚未占用端口与数据目录）。
@@ -144,7 +145,9 @@ func (a *App) Start() error {
 	api.SetCooler(proxyHandler.Cooler())
 
 	// MCP 聚合：对外一个 MCP 服务器，内聚多台 Streamable HTTP 上游
-	mcpSvc := mcp.NewService(st)
+	mcpSvc := mcp.NewService(st, a.cfg)
+	// 本地 MCP：扫描 mcp 目录并拉起 Python 进程（异步启动，不阻塞网关就绪）
+	mcpSvc.StartLocal()
 	mcpSvc.Warmup()
 	mcpHandler := mcp.NewHandler(st, mcpSvc)
 	api.SetMCP(mcpSvc)
@@ -164,7 +167,7 @@ func (a *App) Start() error {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	a.mu.Lock()
-	a.store, a.host, a.srv, a.cancel, a.running = st, host, srv, cancel, true
+	a.store, a.host, a.mcpSvc, a.srv, a.cancel, a.running = st, host, mcpSvc, srv, cancel, true
 	a.mu.Unlock()
 
 	go func() {
@@ -256,8 +259,8 @@ func (a *App) Stop() error {
 		a.mu.Unlock()
 		return nil
 	}
-	srv, host, st, cancel := a.srv, a.host, a.store, a.cancel
-	a.store, a.host, a.srv, a.cancel, a.running = nil, nil, nil, nil, false
+	srv, host, mcpSvc, st, cancel := a.srv, a.host, a.mcpSvc, a.store, a.cancel
+	a.store, a.host, a.mcpSvc, a.srv, a.cancel, a.running = nil, nil, nil, nil, nil, false
 	a.mu.Unlock()
 
 	cancel()
@@ -273,6 +276,9 @@ func (a *App) Stop() error {
 
 	if host != nil {
 		host.Shutdown()
+	}
+	if mcpSvc != nil {
+		mcpSvc.StopLocal()
 	}
 	if st != nil {
 		_ = st.Close()

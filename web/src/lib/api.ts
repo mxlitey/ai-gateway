@@ -793,7 +793,14 @@ export const api = {
       method: 'POST',
       ...json({ name, arguments: args }),
     }),
-  mcpUsageSummary: (params: { days?: number; from?: number; to?: number }) => {
+  mcpUsageSummary: (params: {
+    days?: number
+    from?: number
+    to?: number
+    server_name?: string
+    tool?: string
+    key_hint?: string
+  }) => {
     const q = new URLSearchParams()
     if (params.from != null && params.to != null) {
       q.set('from', String(params.from))
@@ -801,20 +808,32 @@ export const api = {
     } else if (params.days != null) {
       q.set('days', String(params.days))
     }
+    if (params.server_name) q.set('server_name', params.server_name)
+    if (params.tool) q.set('tool', params.tool)
+    if (params.key_hint) q.set('key_hint', params.key_hint)
     return request<MCPUsageSummary>(`/admin/api/mcp/usage/summary?${q.toString()}`)
   },
   mcpCallLogs: (params: {
     days?: number
-    server_id?: string
+    from?: number
+    to?: number
+    server_name?: string
     tool?: string
+    key_hint?: string
     only_fail?: boolean
     limit?: number
     offset?: number
   }) => {
     const q = new URLSearchParams()
-    if (params.days != null) q.set('days', String(params.days))
-    if (params.server_id) q.set('server_id', params.server_id)
+    if (params.from != null && params.to != null) {
+      q.set('from', String(params.from))
+      q.set('to', String(params.to))
+    } else if (params.days != null) {
+      q.set('days', String(params.days))
+    }
+    if (params.server_name) q.set('server_name', params.server_name)
     if (params.tool) q.set('tool', params.tool)
+    if (params.key_hint) q.set('key_hint', params.key_hint)
     if (params.only_fail) q.set('only_fail', '1')
     if (params.limit) q.set('limit', String(params.limit))
     if (params.offset) q.set('offset', String(params.offset))

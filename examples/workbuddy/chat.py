@@ -212,18 +212,61 @@ def _message_text(message):
     return ""
 
 
+def _question_of(message):
+    """取一条 user 消息的「提问本体」。
+
+    先摘掉 <system-reminder> 等上下文块，再把 <user_query> / <user_input> 之类
+    的提问标签脱壳；没有标签时退回摘掉上下文后的纯文本。
+    """
+    text = _message_text(message)
+    if not text:
+        return ""
+    rest = text
+    for name in PACKAGING_TAGS:
+        rest, _ = _take_blocks(rest, name)
+    for name in SOURCE_QUESTION_TAGS:
+        rest, found = _take_blocks(rest, name)
+        for block in found:
+            inner = _unwrap_whole(block)
+            if inner:
+                return inner
+    return _unwrap_whole(rest.strip())
+
+
+def _last_question(body):
+    """最后一条 user 消息里的提问本体（取不到提问时退回它的完整文本）。
+
+    上下文块里带时间戳、环境信息这类每次都会变的内容，先剔掉再派生标识，
+    否则同一个问题会算出一串不同的 ID。
+    """
+    messages = body.get("messages")
+    if not isinstance(messages, list):
+        return ""
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        return _question_of(message) or _message_text(message)
+    return ""
+
+
+def _hash32(seed):
+    """种子的 32 位 hex 摘要（会话头族各级标识的公共原语）。"""
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+
+
 def _stable_uuid(seed):
     """由种子确定性派生 8-4-4-4-12 形态的标识（同种子恒等）。"""
-    h = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+    h = _hash32(seed)
     return "%s-%s-%s-%s-%s" % (h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
 
 
-def _conversation_id(body):
-    """取会话 ID：客户端自带优先，否则按「首条 user 提问」稳定派生。
+def _conversation_id(body, question):
+    """取会话 ID：客户端自带优先，否则按「最后一问」稳定派生。
 
     上游按会话归组用量；不派生的话，所有无会话标识的客户端每次请求都会
-    在官网明细里裂成互不相干的一条。只用首条 user 文本（不带 system）：
-    部分客户端每轮都会改写 system 提示，带上它会让同一会话的 ID 逐轮漂移。
+    在官网明细里裂成互不相干的一条。只用提问本体（不带 system、不带上下文块）：
+    部分客户端每轮都会改写提示词，带上它会让标识逐轮漂移。
     """
     meta = body.get("metadata")
     if isinstance(meta, dict):
@@ -236,36 +279,9 @@ def _conversation_id(body):
     if value:
         return value
 
-    messages = body.get("messages")
-    if not isinstance(messages, list):
+    if not question:
         return ""
-    for message in messages:
-        if not isinstance(message, dict) or message.get("role") != "user":
-            continue
-        text = _message_text(message)
-        if text:
-            return _stable_uuid("conversation|" + text)
-    return ""
-
-
-def _turn_signature(body):
-    """对话轮签名：最后一条 user 消息的「序号 + 文本」。
-
-    一次用户发送内的多次上游调用（工具调用多轮 / 重试 / 换号）最后一条 user
-    消息恒定，因此共用同一个 X-Conversation-Request-ID；用户发下一条消息即换键。
-    """
-    messages = body.get("messages")
-    if not isinstance(messages, list):
-        return ""
-    for index in range(len(messages) - 1, -1, -1):
-        message = messages[index]
-        if not isinstance(message, dict) or message.get("role") != "user":
-            continue
-        text = _message_text(message)
-        if not text:
-            return ""
-        return "%d:%s" % (index, text)
-    return ""
+    return _stable_uuid("conversation|" + question)
 
 
 def _header_value(headers, name):
@@ -285,20 +301,23 @@ def conversation_meta(body, headers=None):
     对齐官方桌面端的三层标识：会话级（X-Conversation-ID，多轮稳定）、
     对话轮级（X-Conversation-Request-ID，一次发送内稳定）、消息级（每条独立）。
 
+    三者统一由「最后一问」派生：同一个提问恒定得到同一组 ID，提问一变整组即变。
     客户端自己发了这套头就原样沿用：会话中途换到本插件时，上游看到的层级
     才与官方客户端一致（否则同一场会话会被当成新会话重新归组）。
     """
-    conversation_id = _header_value(headers, "X-Conversation-ID") or _conversation_id(body)
+    question = _last_question(body)
+    conversation_id = _header_value(headers, "X-Conversation-ID") or _conversation_id(body, question)
     turn_id = _header_value(headers, "X-Conversation-Request-ID")
-    if not turn_id:
-        signature = _turn_signature(body)
-        if signature:
-            seed = "turn|" + conversation_id + "|" + signature
-            turn_id = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+    if not turn_id and question:
+        seed = "turn|" + conversation_id + "|" + _hash32("question|" + question)
+        turn_id = _hash32(seed)
+    message_id = _header_value(headers, "X-Conversation-Message-ID")
+    if not message_id and question:
+        message_id = _hash32("message|" + conversation_id + "|" + _hash32("question|" + question))
     return {
         "conversation_id": conversation_id,
         "conversation_request_id": turn_id,
-        "message_id": _header_value(headers, "X-Conversation-Message-ID"),
+        "message_id": message_id,
     }
 
 

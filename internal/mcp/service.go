@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/czg95/ai-gateway-v2/internal/config"
 	"github.com/czg95/ai-gateway-v2/internal/model"
 	"github.com/czg95/ai-gateway-v2/internal/store"
 )
@@ -179,35 +180,40 @@ func (q *quota) Load(serverID string, sinceMs int64, counts map[string]int64) {
 	}
 }
 
-// LoadTool 用库里的统计覆盖某服务器各工具的内存计数。
-func (q *quota) LoadTool(serverID string, counts map[string]int64) {
+// LoadTool 用库里的统计覆盖某服务器各上游密钥、各工具的内存计数。
+//
+// counts 的结构为 工具名 -> key_hint -> 次数。
+func (q *quota) LoadTool(serverID string, counts map[string]map[string]int64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.resetIfNeeded()
-	for tool, n := range counts {
-		q.counts[toolKey(serverID, tool)] = n
+	for tool, byHint := range counts {
+		for hint, n := range byHint {
+			q.counts[toolKey(serverID, tool, hint)] = n
+		}
 	}
 }
 
-// toolKey 工具计数的内部键，用 \x01 前缀与密钥计数区分。
-func toolKey(serverID, tool string) string {
-	return serverID + "\x01" + tool
+// toolKey 工具计数的内部键，用 \x01 前缀与密钥计数区分；
+// 工具计数按（服务器, 上游密钥, 工具）独立统计，\x02 分隔密钥与工具名。
+func toolKey(serverID, tool, keyHint string) string {
+	return serverID + "\x01" + keyHint + "\x02" + tool
 }
 
-// ToolUsed 返回某工具当天的计费调用次数。
-func (q *quota) ToolUsed(serverID, tool string) int64 {
+// ToolUsed 返回某上游密钥当天对某工具的计费调用次数。
+func (q *quota) ToolUsed(serverID, tool, keyHint string) int64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.resetIfNeeded()
-	return q.counts[toolKey(serverID, tool)]
+	return q.counts[toolKey(serverID, tool, keyHint)]
 }
 
-// IncrTool 记录一次工具计费调用。
-func (q *quota) IncrTool(serverID, tool string) {
+// IncrTool 记录某上游密钥对某工具的一次计费调用。
+func (q *quota) IncrTool(serverID, tool, keyHint string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.resetIfNeeded()
-	q.counts[toolKey(serverID, tool)]++
+	q.counts[toolKey(serverID, tool, keyHint)]++
 }
 
 // Used 返回某密钥当天的计费调用次数。
@@ -257,6 +263,8 @@ func (q *quota) Snapshot(serverID string) map[string]int64 {
 }
 
 // ToolSnapshot 返回某服务器当天各工具的计费调用次数（工具名 -> 次数）。
+//
+// 计数按上游密钥独立存放，这里跨密钥汇总用于面板展示。
 func (q *quota) ToolSnapshot(serverID string) map[string]int64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -264,9 +272,14 @@ func (q *quota) ToolSnapshot(serverID string) map[string]int64 {
 	prefix := serverID + "\x01"
 	out := map[string]int64{}
 	for k, v := range q.counts {
-		if strings.HasPrefix(k, prefix) {
-			out[strings.TrimPrefix(k, prefix)] = v
+		if !strings.HasPrefix(k, prefix) {
+			continue
 		}
+		_, tool, ok := strings.Cut(strings.TrimPrefix(k, prefix), "\x02")
+		if !ok {
+			continue
+		}
+		out[tool] += v
 	}
 	return out
 }
@@ -301,6 +314,8 @@ func toolTimeout(s *model.MCPServer) time.Duration {
 type Service struct {
 	store  *store.Store
 	client *client
+	cfg    *config.Config
+	local  *localManager
 
 	registry *registry
 	cache    *toolCache
@@ -318,16 +333,19 @@ type Service struct {
 }
 
 // NewService 创建 MCP 聚合服务。
-func NewService(s *store.Store) *Service {
-	return &Service{
+func NewService(s *store.Store, cfg *config.Config) *Service {
+	svc := &Service{
 		store:    s,
 		client:   newClient(),
+		cfg:      cfg,
 		registry: newRegistry(),
 		cache:    newToolCache(),
 		quota:    newQuota(),
 		states:   map[string]*serverState{},
 		rot:      map[string]uint64{},
 	}
+	svc.local = newLocalManager(cfg, s, svc)
+	return svc
 }
 
 // Warmup 预热：从库里恢复工具路由与今日配额计数。

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/czg95/ai-gateway-v2/internal/admin"
+	"github.com/czg95/ai-gateway-v2/internal/adminmcp"
 	"github.com/czg95/ai-gateway-v2/internal/config"
 	"github.com/czg95/ai-gateway-v2/internal/httpapi"
 	"github.com/czg95/ai-gateway-v2/internal/mcp"
@@ -151,6 +152,22 @@ func (a *App) Start() error {
 	mcpSvc.Warmup()
 	mcpHandler := mcp.NewHandler(st, mcpSvc)
 	api.SetMCP(mcpSvc)
+
+	// 管理 MCP（/admin/mcp）：把网关自身的管理能力暴露为独立 MCP 服务器。
+	// 与上面的聚合入口互不相干：工具由本进程实现，鉴权走独立管理令牌。
+	adminCfg, err := loadAdminMCPConfig(st)
+	if err != nil {
+		slog.Error("读取管理 MCP 配置失败，按未启用处理", "err", err)
+	}
+	adminSrv := adminmcp.NewServer(adminCfg)
+	adminmcp.RegisterReadTools(adminSrv, adminmcp.ReadDeps{Store: st, Pricer: pricer})
+	adminmcp.RegisterWriteTools(adminSrv, adminmcp.WriteDeps{
+		Store: st, Host: host, MCP: mcpSvc,
+		HTTP: &http.Client{Timeout: 60 * time.Second},
+	})
+	adminMCPHandler := adminmcp.NewHandler(adminSrv)
+	api.SetAdminMCP(adminSrv)
+
 	if a.cfg.AdminPassword != "" {
 		if initialized, err := api.Service().IsInitialized(); err == nil && !initialized {
 			if err := api.Service().Setup(a.cfg.AdminPassword); err != nil {
@@ -161,7 +178,13 @@ func (a *App) Start() error {
 		}
 	}
 
-	router := httpapi.NewRouter(httpapi.Deps{Proxy: proxyHandler, Admin: api, Host: host, MCP: mcpHandler})
+	router := httpapi.NewRouter(httpapi.Deps{
+		Proxy:    proxyHandler,
+		Admin:    api,
+		Host:     host,
+		MCP:      mcpHandler,
+		AdminMCP: adminMCPHandler,
+	})
 	srv := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 15 * time.Second}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -234,6 +257,29 @@ func (a *App) loadRuntimeSettings() store.RuntimeSettings {
 		return store.DefaultRuntimeSettings()
 	}
 	return rs
+}
+
+// loadAdminMCPConfig 读取管理 MCP 的开关、写权限与令牌摘要。
+func loadAdminMCPConfig(st *store.Store) (*adminmcp.Config, error) {
+	var enabled, writable bool
+	var hash string
+
+	if v, ok, err := st.GetSetting(store.SettingAdminMCPEnabled); err != nil {
+		return adminmcp.NewConfig(false, false, ""), err
+	} else if ok {
+		enabled = v == "1"
+	}
+	if v, ok, err := st.GetSetting(store.SettingAdminMCPWritable); err != nil {
+		return adminmcp.NewConfig(enabled, false, ""), err
+	} else if ok {
+		writable = v == "1"
+	}
+	if v, ok, err := st.GetSetting(store.SettingAdminMCPTokenHash); err != nil {
+		return adminmcp.NewConfig(enabled, writable, ""), err
+	} else if ok {
+		hash = v
+	}
+	return adminmcp.NewConfig(enabled, writable, hash), nil
 }
 
 // priceEndpoint 返回生效的价格源地址：面板设置优先，其次环境变量 / 内置默认。

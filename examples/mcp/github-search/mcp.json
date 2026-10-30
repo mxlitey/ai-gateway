@@ -1,0 +1,7 @@
+{
+  "name": "GitHub 搜索",
+  "alias": "github-search",
+  "entry": "main.py",
+  "path": "/mcp",
+  "startup_timeout_ms": 30000
+}

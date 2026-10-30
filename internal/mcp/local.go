@@ -707,6 +707,10 @@ func (lm *localManager) launch(py *localPython, mf localManifest, port int) (*ex
 		pp += string(os.PathListSeparator) + old
 	}
 	env = append(env, "PYTHONPATH="+pp)
+	// 私有可写目录：运行期状态写这里，不要写进 mcp 目录（升级/换镜像会覆盖）
+	dataPath := filepath.Join(lm.dataDir, "mcp", mf.dir)
+	_ = os.MkdirAll(dataPath, 0o755)
+	env = append(env, "AIGW_MCP_DATA="+dataPath)
 	for k, v := range mf.Env {
 		env = append(env, k+"="+templatePort(v, port))
 	}

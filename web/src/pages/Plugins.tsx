@@ -245,6 +245,8 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
   const queryClient = useQueryClient()
   const [login, setLogin] = useState<LoginFlow | null>(null)
   const loginRef = useRef<LoginFlow | null>(null)
+  // 粘贴回调链接（Docker 下浏览器访问不到容器内回环回调时使用）
+  const [callbackURL, setCallbackURL] = useState('')
   // 打开控制台时自动刷新一轮额度与签到状态（只跑一次，见下方 effect）
   const autoRefreshed = useRef(false)
   const [autoRefreshing, setAutoRefreshing] = useState(false)
@@ -262,7 +264,17 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
   const keepLogin = (next: LoginFlow | null) => {
     loginRef.current = next
     setLogin(next)
+    if (!next) setCallbackURL('')
   }
+
+  const submitCallback = useMutation({
+    mutationFn: (url: string) => api.pluginSubmitCallback(plugin.id, url),
+    onSuccess: () => {
+      toast('ok', '回调已提交，正在确认授权结果')
+      setCallbackURL('')
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
 
   // link 类登录（OAuth）：发起后拿到授权链接，随后每 2 秒问一次结果
   // action 类（例如从本机桌面端导入）：插件直接返回 ok，无需轮询
@@ -505,6 +517,29 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
                 取消
               </Button>
             </div>
+            {login.status === 'pending' ? (
+              <div className="space-y-1.5 border-t border-emerald-200 pt-2 dark:border-emerald-900">
+                <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
+                  Docker 部署时浏览器访问不到上面的回调页，授权后页面打不开属正常现象：
+                  把地址栏里的完整链接粘贴到下面，由网关转交给插件处理。
+                </p>
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={callbackURL}
+                    onChange={(e) => setCallbackURL(e.target.value)}
+                    placeholder="http://127.0.0.1:xxxxx/..."
+                    className="flex-1 text-xs"
+                  />
+                  <Button
+                    className="py-1 text-xs"
+                    disabled={submitCallback.isPending || !callbackURL.trim()}
+                    onClick={() => submitCallback.mutate(callbackURL.trim())}
+                  >
+                    提交回调
+                  </Button>
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : null}
 

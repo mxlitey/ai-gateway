@@ -22,7 +22,7 @@ AI Gateway 是一个运行在你自己电脑（或自己的服务器）上的 AP
 - **渠道管理** — 每个模型可挂多个上游渠道，按「模型优先级」排序择优；支持模型映射（公开名 → 上游名）、按渠道单独停用某个模型、自定义请求头（含占位符）
 - **多密钥策略** — 同渠道多密钥可选「轮询分摊」或「顺序故障转移」
 - **故障转移与冷却** — 上游返回 404/429/5xx/网络错误/无效响应时自动切下一个目标；失败的密钥进入指数递增冷却，冷却期内不再参与选路（参数可在面板调整，状态可查可重置）
-- **API 密钥** — 面板一键签发 `sk-` 客户端密钥，可限定可用渠道、随时停用；校验失败返回标准 OpenAI 错误格式
+- **API 密钥** — 面板一键签发 `sk-` 客户端密钥，渠道与 MCP 权限可分别设为「全部 / 仅勾选 / 禁用」，随时停用；校验失败返回标准 OpenAI 错误格式
 - **MCP 聚合** — 对外是一个 MCP 服务器（`POST /mcp`），对内聚合多台 Streamable HTTP 上游：合并工具列表、按命名空间路由工具调用，支持密钥轮换、服务器/密钥/工具三级每日调用上限，以及按调用次数计费的口径（「成功即计费」或「响应含标记才计费」）
 - **用量与费用** — 按密钥/模型/渠道/端点/上游密钥记录 token 用量，内置价格表（默认同步 OpenRouter 价目）自动核算费用，价格源与刷新间隔可配置
 - **插件体系** — Python 写的本地 HTTP 服务放进 `plugins/` 目录即自动拉起、探活、注册为渠道；插件自选端口，可声明控制台能力（账号签到、额度查询），宿主统一托管登录回调
@@ -207,16 +207,30 @@ plugins/
 
 账号类插件在面板「插件 → 控制台」里完成登录与签到，之后到「渠道管理」点「获取上游模型」勾选要用的模型即可。说明见 [docs/plugins-free-channels.md](docs/plugins-free-channels.md) 与 [docs/plugins-modelscope-kilo.md](docs/plugins-modelscope-kilo.md)；完整开发规范见 [docs/plugin-spec.md](docs/plugin-spec.md)。
 
+### 本地 MCP 服务器
+
+`mcp/` 目录用于放你自己写的 Python MCP 服务器：每个子目录一个服务（可选 `mcp.json` + 入口脚本 + `requirements.txt`），网关启动时扫描并自动登记到「MCP 服务器」页（卡片带「本地」徽章），自动分配 `127.0.0.1` 端口、自动安装依赖、崩溃自动重启；删除目录后重启即从列表移除，历史调用记录保留。
+
+```text
+mcp/
+└── local-demo/
+    ├── mcp.json          # 可选：name / alias / entry / path / startup_timeout_ms
+    ├── main.py           # 监听 AIGW_MCP_PORT，实现 initialize / tools/list / tools/call
+    └── requirements.txt  # 可选：有实际依赖时自动 pip 安装
+```
+
+示例见 `examples/mcp/local-demo`（内置到安装包与镜像），完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里按服务器粒度限定该密钥可用的 MCP 服务器（不勾选表示全部）。
+
 ## 🛠️ 从源码构建
 
 依赖 [Go 1.26+](https://go.dev/dl/) 与 [Node.js 20+](https://nodejs.org/)（Windows，PowerShell）：
 
 ```powershell
-pwsh -File build/build.ps1 -Version 1.2.2
+pwsh -File build/build.ps1 -Version 1.2.4
 # 同时构建 Linux 镜像（默认 amd64 + arm64 双架构）
-pwsh -File build/build.ps1 -Version 1.2.2 -Docker
+pwsh -File build/build.ps1 -Version 1.2.4 -Docker
 # 只构建单架构时显式指定
-pwsh -File build/build.ps1 -Version 1.2.2 -Docker -DockerPlatforms linux/amd64
+pwsh -File build/build.ps1 -Version 1.2.4 -Docker -DockerPlatforms linux/amd64
 ```
 
 脚本会依次：构建前端（`web/`，产物经 `//go:embed` 内嵌进二进制）→ 生成 Wails bindings / 图标资源 → `go mod tidy` → 编译 `dist/ai-gateway-v<版本号>.exe` → 组装绿色版目录（含内置示例插件）→（可选）用 `docker buildx` 逐架构构建并导出 `dist/ai-gateway-v<版本号>-docker-amd64.tar` / `-arm64.tar`。构建 arm64 需要 buildx 与 QEMU 模拟（Docker Desktop 默认已启用；Linux 上执行 `docker run --privileged --rm tonistiigi/binfmt --install arm64`）。
@@ -262,7 +276,8 @@ ai-gateway-v2/
 ├── web/                   # 管理面板前端（React 19 + Vite + Tailwind，embed.go 内嵌产物）
 ├── examples/              # 示例插件（hello-py / trae / workbuddy / modelscope / kilo /
 │                          #   cline / minimax / loomy / lobsterai / gemini，均为 Python）
-├── docs/                  # 插件开发规范与各插件说明
+├── mcp/                   # 本地 MCP 服务器（每个子目录一个，启动时自动登记）
+├── docs/                  # 插件 / 本地 MCP 开发规范与各插件说明
 ├── build/                 # 一键构建脚本与绿色版说明
 ├── Dockerfile             # 多阶段构建的无界面 Linux 镜像
 └── docker-compose.yml     # 一键部署示例

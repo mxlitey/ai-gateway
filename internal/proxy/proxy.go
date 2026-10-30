@@ -97,6 +97,13 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path := r.URL.Path
+	// 渠道权限被设为「禁用」时，该密钥不能调用任何 /v1 接口（仍可用于 /mcp）
+	if apiKey.ChannelScope == model.ScopeNone ||
+		(apiKey.ChannelScope == model.ScopeSelected && len(apiKey.ChannelIDs) == 0) {
+		h.logGatewayError("", http.StatusForbidden, "该密钥未获得渠道访问权限")
+		jsonError(w, http.StatusForbidden, "该密钥未获得渠道访问权限", "invalid_request_error")
+		return
+	}
 	allowed := apiKey.ChannelIDs
 
 	if strings.HasSuffix(path, "/models") && r.Method == http.MethodGet {

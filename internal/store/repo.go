@@ -219,21 +219,34 @@ func (s *Store) DeleteChannel(id string) error {
 
 // ---------- 客户端密钥 ----------
 
-const apiKeyCols = `id, name, key, channel_ids, enabled, created_at`
+const apiKeyCols = `id, name, key, channel_scope, channel_ids, mcp_scope, mcp_server_ids, enabled, created_at`
 
 func scanAPIKey(sc scanner) (*model.APIKey, error) {
-	k := &model.APIKey{ChannelIDs: []string{}}
-	var chS string
+	k := &model.APIKey{ChannelIDs: []string{}, MCPServerIDs: []string{}}
+	var chS, mcpS string
 	var enabled int
-	if err := sc.Scan(&k.ID, &k.Name, &k.Key, &chS, &enabled, &k.CreatedAt); err != nil {
+	if err := sc.Scan(&k.ID, &k.Name, &k.Key, &k.ChannelScope, &chS, &k.MCPScope, &mcpS, &enabled, &k.CreatedAt); err != nil {
 		return nil, err
 	}
 	k.Enabled = enabled != 0
 	if err := decodeJSON(chS, &k.ChannelIDs); err != nil {
 		return nil, err
 	}
+	if err := decodeJSON(mcpS, &k.MCPServerIDs); err != nil {
+		return nil, err
+	}
 	if k.ChannelIDs == nil {
 		k.ChannelIDs = []string{}
+	}
+	if k.MCPServerIDs == nil {
+		k.MCPServerIDs = []string{}
+	}
+	// 兜底：范围字段缺失时按旧语义（全部可用）
+	if k.ChannelScope == "" {
+		k.ChannelScope = model.ScopeAll
+	}
+	if k.MCPScope == "" {
+		k.MCPScope = model.ScopeAll
 	}
 	return k, nil
 }
@@ -289,22 +302,30 @@ func (s *Store) CreateAPIKey(k *model.APIKey) error {
 	if err != nil {
 		return err
 	}
+	mcpIDs, err := marshalJSON(k.MCPServerIDs)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.Exec(
-		`INSERT INTO api_keys (id, name, key, channel_ids, enabled, created_at) VALUES (?,?,?,?,?,?)`,
-		k.ID, k.Name, k.Key, ch, boolToInt(k.Enabled), k.CreatedAt,
+		`INSERT INTO api_keys (id, name, key, channel_scope, channel_ids, mcp_scope, mcp_server_ids, enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?)`,
+		k.ID, k.Name, k.Key, k.ChannelScope, ch, k.MCPScope, mcpIDs, boolToInt(k.Enabled), k.CreatedAt,
 	)
 	return err
 }
 
-// UpdateAPIKey 更新密钥（名称 / 绑定渠道 / 启停）。
+// UpdateAPIKey 更新密钥（名称 / 渠道权限 / MCP 权限 / 启停）。
 func (s *Store) UpdateAPIKey(k *model.APIKey) error {
 	ch, err := marshalJSON(k.ChannelIDs)
 	if err != nil {
 		return err
 	}
+	mcpIDs, err := marshalJSON(k.MCPServerIDs)
+	if err != nil {
+		return err
+	}
 	_, err = s.db.Exec(
-		`UPDATE api_keys SET name = ?, channel_ids = ?, enabled = ? WHERE id = ?`,
-		k.Name, ch, boolToInt(k.Enabled), k.ID,
+		`UPDATE api_keys SET name = ?, channel_scope = ?, channel_ids = ?, mcp_scope = ?, mcp_server_ids = ?, enabled = ? WHERE id = ?`,
+		k.Name, k.ChannelScope, ch, k.MCPScope, mcpIDs, boolToInt(k.Enabled), k.ID,
 	)
 	return err
 }

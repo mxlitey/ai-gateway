@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/czg95/ai-gateway-v2/internal/channel"
+	"github.com/czg95/ai-gateway-v2/internal/adminmcp"
 	"github.com/czg95/ai-gateway-v2/internal/config"
 	"github.com/czg95/ai-gateway-v2/internal/id"
 	"github.com/czg95/ai-gateway-v2/internal/mcp"
@@ -38,6 +39,8 @@ type API struct {
 	cooler *penalty.Cooler
 	// mcp MCP 聚合服务（由 app 层注入），用于服务器探测、工具刷新与试调用。
 	mcp *mcp.Service
+	// adminMCP 管理 MCP 注册表（由 app 层注入），用于开关、令牌与工具清单。
+	adminMCP *adminmcp.Server
 }
 
 // NewAPI 创建管理接口处理器。host / pricer 可为 nil；cfg 提供监听地址与数据目录等运行信息。
@@ -201,6 +204,14 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 	// ---- MCP 上游聚合 ----
 	case path == "/mcp" || strings.HasPrefix(path, "/mcp/"):
 		a.mcpSubroutes(w, r, path, method)
+
+	// ---- 管理 MCP（/admin/mcp 的配置接口） ----
+	case path == "/admin-mcp" && method == http.MethodGet:
+		a.adminMCPState(w)
+	case path == "/admin-mcp" && method == http.MethodPut:
+		a.saveAdminMCP(w, r)
+	case path == "/admin-mcp/token" && method == http.MethodPost:
+		a.resetAdminMCPTokenAPI(w)
 
 	// ---- 用量与费用 ----
 	case path == "/usage/summary" && method == http.MethodGet:
@@ -515,8 +526,11 @@ func (a *API) listAPIKeys(w http.ResponseWriter) {
 
 func (a *API) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name       string   `json:"name"`
-		ChannelIDs []string `json:"channel_ids"`
+		Name         string   `json:"name"`
+		ChannelScope string   `json:"channel_scope"`
+		ChannelIDs   []string `json:"channel_ids"`
+		MCPScope     string   `json:"mcp_scope"`
+		MCPServerIDs []string `json:"mcp_server_ids"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
@@ -525,13 +539,18 @@ func (a *API) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = "Unnamed"
 	}
+	channelScope, channelIDs := normalizeScope(body.ChannelScope, body.ChannelIDs)
+	mcpScope, mcpIDs := normalizeScope(body.MCPScope, body.MCPServerIDs)
 	k := &model.APIKey{
-		ID:         id.UUID(),
-		Name:       name,
-		Key:        id.APIKey(),
-		ChannelIDs: sanitizeStrings(body.ChannelIDs),
-		Enabled:    true,
-		CreatedAt:  time.Now().UnixMilli(),
+		ID:           id.UUID(),
+		Name:         name,
+		Key:          id.APIKey(),
+		ChannelScope: channelScope,
+		ChannelIDs:   channelIDs,
+		MCPScope:     mcpScope,
+		MCPServerIDs: mcpIDs,
+		Enabled:      true,
+		CreatedAt:    time.Now().UnixMilli(),
 	}
 	if err := a.store.CreateAPIKey(k); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
@@ -571,9 +590,12 @@ func (a *API) apiKeySubroutes(w http.ResponseWriter, r *http.Request, path, meth
 			return
 		}
 		var body struct {
-			Name       *string   `json:"name"`
-			Enabled    *bool     `json:"enabled"`
-			ChannelIDs *[]string `json:"channel_ids"`
+			Name         *string   `json:"name"`
+			Enabled      *bool     `json:"enabled"`
+			ChannelScope *string   `json:"channel_scope"`
+			ChannelIDs   *[]string `json:"channel_ids"`
+			MCPScope     *string   `json:"mcp_scope"`
+			MCPServerIDs *[]string `json:"mcp_server_ids"`
 		}
 		if !decodeBody(w, r, &body) {
 			return
@@ -584,9 +606,8 @@ func (a *API) apiKeySubroutes(w http.ResponseWriter, r *http.Request, path, meth
 		if body.Enabled != nil {
 			k.Enabled = *body.Enabled
 		}
-		if body.ChannelIDs != nil {
-			k.ChannelIDs = sanitizeStrings(*body.ChannelIDs)
-		}
+		k.ChannelScope, k.ChannelIDs = applyScope(k.ChannelScope, k.ChannelIDs, body.ChannelScope, body.ChannelIDs)
+		k.MCPScope, k.MCPServerIDs = applyScope(k.MCPScope, k.MCPServerIDs, body.MCPScope, body.MCPServerIDs)
 		if err := a.store.UpdateAPIKey(k); err != nil {
 			jsonErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -1430,6 +1451,8 @@ func (a *API) pluginSubroutes(w http.ResponseWriter, r *http.Request, path, meth
 	switch {
 	case strings.HasSuffix(rest, "/start") && method == http.MethodPost:
 		a.pluginAction(w, strings.TrimSuffix(rest, "/start"), "start")
+	case strings.HasSuffix(rest, "/callback") && method == http.MethodPost:
+		a.submitPluginCallback(w, r, strings.TrimSuffix(rest, "/callback"))
 	case strings.HasSuffix(rest, "/stop") && method == http.MethodPost:
 		a.pluginAction(w, strings.TrimSuffix(rest, "/stop"), "stop")
 	case strings.HasSuffix(rest, "/restart") && method == http.MethodPost:
@@ -1443,6 +1466,25 @@ func (a *API) pluginSubroutes(w http.ResponseWriter, r *http.Request, path, meth
 	default:
 		jsonErr(w, http.StatusNotFound, "Not found")
 	}
+}
+
+// submitPluginCallback 处理用户粘贴的登录回调链接（浏览器无法直达容器内回环地址时使用）。
+func (a *API) submitPluginCallback(w http.ResponseWriter, r *http.Request, pluginID string) {
+	if a.host == nil {
+		jsonErr(w, http.StatusNotImplemented, "插件宿主未启用")
+		return
+	}
+	var body struct {
+		URL string `json:"url"`
+	}
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	if err := a.host.SubmitCallback(pluginID, body.URL); err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	jsonOK(w, map[string]any{"success": true})
 }
 
 func (a *API) pluginAction(w http.ResponseWriter, pluginID, action string) {
@@ -1962,6 +2004,46 @@ func sanitizeStrings(in []string) []string {
 		}
 	}
 	return out
+}
+
+// normalizeScope 把权限范围与勾选列表归一化：
+//   - all / none 时丢弃勾选列表，避免切换范围后残留旧值；
+//   - selected 但没有勾选任何项时等价于 none（「一个都不给」只能这样表达）；
+//   - 范围为空（旧版客户端只传 ids）时按旧语义推导：有勾选即限定，没勾选即全部。
+func normalizeScope(scope string, ids []string) (string, []string) {
+	ids = sanitizeStrings(ids)
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case model.ScopeNone:
+		return model.ScopeNone, []string{}
+	case model.ScopeSelected:
+		if len(ids) == 0 {
+			return model.ScopeNone, []string{}
+		}
+		return model.ScopeSelected, ids
+	case model.ScopeAll:
+		return model.ScopeAll, []string{}
+	}
+	if len(ids) > 0 {
+		return model.ScopeSelected, ids
+	}
+	return model.ScopeAll, []string{}
+}
+
+// applyScope 在 PATCH 中按「传了什么改什么」的规则合并权限范围：
+// 只传范围时沿用当前列表；只传列表时沿用当前范围（旧语义下按勾选推导）。
+func applyScope(curScope string, curIDs []string, scope *string, ids *[]string) (string, []string) {
+	if scope == nil && ids == nil {
+		return curScope, curIDs
+	}
+	list := curIDs
+	if ids != nil {
+		list = *ids
+	}
+	if scope == nil {
+		// 兼容旧调用方：只传 ids 时按「勾选即限定」理解
+		return normalizeScope("", list)
+	}
+	return normalizeScope(*scope, list)
 }
 
 func normalizeModelMap(in map[string]string) map[string]string {

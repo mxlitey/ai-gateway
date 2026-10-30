@@ -107,14 +107,25 @@ func (c *Channel) IsModelDisabled(publicModel string) bool {
 	return false
 }
 
+// 密钥权限范围取值：all=全部可用，selected=仅勾选项，none=完全不授权。
+// 用显式范围而不是「空列表代表全部」，才能表达「一个都不给」。
+const (
+	ScopeAll      = "all"
+	ScopeSelected = "selected"
+	ScopeNone     = "none"
+)
+
 // APIKey 客户端访问密钥。
 type APIKey struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Key        string   `json:"key"`
-	ChannelIDs []string `json:"channel_ids"`
-	Enabled    bool     `json:"enabled"`
-	CreatedAt  int64    `json:"created_at"`
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Key          string   `json:"key"`
+	ChannelScope string   `json:"channel_scope"`
+	ChannelIDs   []string `json:"channel_ids"`
+	MCPScope     string   `json:"mcp_scope"`
+	MCPServerIDs []string `json:"mcp_server_ids"`
+	Enabled      bool     `json:"enabled"`
+	CreatedAt    int64    `json:"created_at"`
 }
 
 // ErrorLog 一条上游错误记录。

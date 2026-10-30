@@ -1,7 +1,7 @@
 {
   "fixed": {
-    "file_version": "1.2.3",
-    "product_version": "1.2.3"
+    "file_version": "1.2.5",
+    "product_version": "1.2.5"
   },
   "info": {
     "0000": {
@@ -10,8 +10,8 @@
       "CompanyName": "AI Gateway",
       "InternalName": "ai-gateway",
       "OriginalFilename": "ai-gateway.exe",
-      "FileVersion": "1.2.3",
-      "ProductVersion": "1.2.3"
+      "FileVersion": "1.2.5",
+      "ProductVersion": "1.2.5"
     }
   }
 }

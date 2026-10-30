@@ -26,6 +26,13 @@ const (
 	SettingRuntimeKeyCooldownEnabled  = "runtime.key_cooldown_enabled"
 	SettingRuntimeKeyCooldownBaseSec  = "runtime.key_cooldown_base_seconds"
 	SettingRuntimeKeyCooldownMaxSec   = "runtime.key_cooldown_max_seconds"
+
+	// 管理 MCP（/admin/mcp）：把网关自身的管理能力暴露为 MCP 工具。
+	// 与 RuntimeSettings 分开存：这几项含凭据摘要，不参与整体覆盖式保存。
+	SettingAdminMCPEnabled  = "admin_mcp.enabled"
+	SettingAdminMCPWritable = "admin_mcp.writable"
+	// SettingAdminMCPTokenHash 管理令牌的 SHA-256 摘要（十六进制），明文不落库。
+	SettingAdminMCPTokenHash = "admin_mcp.token_hash"
 )
 
 // RuntimeSettings 运行期设置：面板可改，多数立即生效（无需重启）。

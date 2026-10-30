@@ -6,5 +6,6 @@
   "port": 20727,
   "startup_timeout_ms": 30000,
   "console": true,
-  "capabilities": ["checkin", "quota"]
+  "capabilities": ["checkin", "quota"],
+  "callback_paths": ["/authorize"]
 }

@@ -42,6 +42,9 @@ type Manifest struct {
 	Requirements []string `json:"requirements"`
 	// PythonVersion 期望的 Python 版本（可选，仅用于便携解释器下载与提示）。
 	PythonVersion string `json:"python_version"`
+	// CallbackPaths 插件自行监听、且必须由浏览器直达的回调路径（如 TRAE 的 /authorize）。
+	// 仅在这些路径上允许「粘贴回调链接」；Docker 中回调端口无法从宿主机访问时使用。
+	CallbackPaths []string `json:"callback_paths"`
 
 	// ID 由插件目录名推导（加载时填充），无需在 plugin.json 里声明
 	ID string `json:"-"`

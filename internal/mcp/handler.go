@@ -42,7 +42,8 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if _, errMsg := h.verify(r); errMsg != "" {
+	key, errMsg := h.verify(r)
+	if key == nil {
 		writeRPCError(w, nil, CodeInvalidRequest, "Unauthorized: "+errMsg)
 		return
 	}
@@ -73,19 +74,25 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 密钥的 MCP 权限被设为「禁用」时直接拒绝，避免客户端拿到一个空工具列表后反复重试
+	if key.MCPScope == model.ScopeNone {
+		writeRPCError(w, req.ID, CodeInvalidRequest, "Unauthorized: 该密钥未获得 MCP 访问权限")
+		return
+	}
+
 	switch req.Method {
 	case "initialize":
-		h.handleInitialize(w, req, alias)
+		h.handleInitialize(w, req, alias, key)
 	case "ping":
 		writeRPCResult(w, req.ID, map[string]any{})
 	case "tools/list":
-		h.handleToolsList(w, r, req, alias)
+		h.handleToolsList(w, r, req, alias, key)
 	case "tools/call":
-		h.handleToolsCall(w, r, req, alias)
+		h.handleToolsCall(w, r, req, alias, key)
 	default:
 		// 单服务器模式：未知方法（resources / prompts 等）原样转发
 		if alias != "" {
-			h.handlePassthrough(w, r, req, alias)
+			h.handlePassthrough(w, r, req, alias, key)
 			return
 		}
 		writeRPCError(w, req.ID, CodeMethodNotFound, "网关未实现该方法: "+req.Method)
@@ -112,7 +119,7 @@ func (h *Handler) verify(r *http.Request) (*model.APIKey, string) {
 }
 
 // handleInitialize 与客户端协商版本，并声明网关能力。
-func (h *Handler) handleInitialize(w http.ResponseWriter, req request, alias string) {
+func (h *Handler) handleInitialize(w http.ResponseWriter, req request, alias string, key *model.APIKey) {
 	var params struct {
 		ProtocolVersion string `json:"protocolVersion"`
 	}
@@ -122,7 +129,7 @@ func (h *Handler) handleInitialize(w http.ResponseWriter, req request, alias str
 
 	// 只在实际有可用服务器时声明 tools 能力，避免客户端对着空网关反复调用
 	caps := map[string]any{}
-	if servers, err := h.targets(alias); err == nil && len(servers) > 0 {
+	if servers, err := h.targets(alias, key); err == nil && len(servers) > 0 {
 		caps["tools"] = map[string]any{"listChanged": false}
 	}
 
@@ -150,8 +157,8 @@ func negotiateVersion(client string) string {
 }
 
 // handleToolsList 合并所有启用服务器的工具列表。
-func (h *Handler) handleToolsList(w http.ResponseWriter, r *http.Request, req request, alias string) {
-	servers, err := h.targets(alias)
+func (h *Handler) handleToolsList(w http.ResponseWriter, r *http.Request, req request, alias string, key *model.APIKey) {
+	servers, err := h.targets(alias, key)
 	if err != nil {
 		writeRPCError(w, req.ID, CodeInternalError, err.Error())
 		return
@@ -193,7 +200,7 @@ func (h *Handler) handleToolsList(w http.ResponseWriter, r *http.Request, req re
 }
 
 // handleToolsCall 把对外工具名解析回（服务器, 上游工具名）并转发。
-func (h *Handler) handleToolsCall(w http.ResponseWriter, r *http.Request, req request, alias string) {
+func (h *Handler) handleToolsCall(w http.ResponseWriter, r *http.Request, req request, alias string, key *model.APIKey) {
 	var params map[string]any
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		writeRPCError(w, req.ID, CodeInvalidParams, "参数不合法")
@@ -219,12 +226,20 @@ func (h *Handler) handleToolsCall(w http.ResponseWriter, r *http.Request, req re
 			writeRPCError(w, req.ID, CodeNoUpstream, "该工具所属的服务器已不可用")
 			return
 		}
+		if !allowedByKey(key, s.ID) {
+			writeRPCError(w, req.ID, CodeInvalidParams, "该密钥无权调用此工具")
+			return
+		}
 		srv = s
 		toolName = route.Tool
 	} else {
 		srv = h.findByAlias(alias)
 		if srv == nil {
 			writeRPCError(w, req.ID, CodeNoUpstream, "服务器不存在: "+alias)
+			return
+		}
+		if !allowedByKey(key, srv.ID) {
+			writeRPCError(w, req.ID, CodeInvalidParams, "该密钥无权访问此 MCP 服务器")
 			return
 		}
 	}
@@ -246,10 +261,14 @@ func (h *Handler) handleToolsCall(w http.ResponseWriter, r *http.Request, req re
 }
 
 // handlePassthrough 单服务器模式下把任意方法原样转发给上游。
-func (h *Handler) handlePassthrough(w http.ResponseWriter, r *http.Request, req request, alias string) {
+func (h *Handler) handlePassthrough(w http.ResponseWriter, r *http.Request, req request, alias string, key *model.APIKey) {
 	srv := h.findByAlias(alias)
 	if srv == nil {
 		writeRPCError(w, req.ID, CodeNoUpstream, "服务器不存在: "+alias)
+		return
+	}
+	if !allowedByKey(key, srv.ID) {
+		writeRPCError(w, req.ID, CodeInvalidParams, "该密钥无权访问此 MCP 服务器")
 		return
 	}
 	var params any
@@ -271,11 +290,15 @@ func (h *Handler) handlePassthrough(w http.ResponseWriter, r *http.Request, req 
 }
 
 // targets 返回本次请求涉及的服务器：单服务器模式只返回它，聚合模式返回全部启用的。
-func (h *Handler) targets(alias string) ([]model.MCPServer, error) {
+// 密钥限定了 MCP 权限时，只返回其中被授权的服务器。
+func (h *Handler) targets(alias string, key *model.APIKey) ([]model.MCPServer, error) {
 	if alias != "" {
 		srv := h.findByAlias(alias)
 		if srv == nil {
 			return nil, fmt.Errorf("服务器不存在: %s", alias)
+		}
+		if !allowedByKey(key, srv.ID) {
+			return nil, fmt.Errorf("该密钥无权访问此 MCP 服务器: %s", alias)
 		}
 		return []model.MCPServer{*srv}, nil
 	}
@@ -285,12 +308,33 @@ func (h *Handler) targets(alias string) ([]model.MCPServer, error) {
 	}
 	out := make([]model.MCPServer, 0, len(all))
 	for i := range all {
-		if !all[i].Enabled {
+		if !all[i].Enabled || !allowedByKey(key, all[i].ID) {
 			continue
 		}
 		out = append(out, all[i])
 	}
 	return out, nil
+}
+
+// allowedByKey 判断密钥是否有权访问某台 MCP 服务器：
+// 范围 all 时全部可用，selected 时仅勾选项可用，none 时全部不可用。
+func allowedByKey(key *model.APIKey, serverID string) bool {
+	if key == nil {
+		return true
+	}
+	switch key.MCPScope {
+	case model.ScopeNone:
+		return false
+	case model.ScopeSelected:
+		for _, id := range key.MCPServerIDs {
+			if id == serverID {
+				return true
+			}
+		}
+		return false
+	default:
+		return true
+	}
 }
 
 // findByAlias 按别名（缺省为 id）查找服务器；只返回已启用的服务器。

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/czg95/ai-gateway-v2/internal/admin"
+	"github.com/czg95/ai-gateway-v2/internal/adminmcp"
 	"github.com/czg95/ai-gateway-v2/internal/mcp"
 	"github.com/czg95/ai-gateway-v2/internal/plugin"
 	"github.com/czg95/ai-gateway-v2/internal/proxy"
@@ -22,6 +23,9 @@ type Deps struct {
 	Host *plugin.Host
 	// MCP 聚合入口；为空表示未启用 MCP 代理。
 	MCP *mcp.Handler
+	// AdminMCP 管理 MCP 入口（/admin/mcp）；为空表示未启用。
+	// 与 MCP 完全独立：工具由本进程实现，鉴权走管理令牌。
+	AdminMCP *adminmcp.Handler
 }
 
 // NewRouter 组装完整路由。
@@ -41,6 +45,13 @@ func NewRouter(d Deps) http.Handler {
 	if d.MCP != nil {
 		mux.HandleFunc("/mcp", d.MCP.Handle)
 		mux.HandleFunc("/mcp/", d.MCP.Handle)
+	}
+
+	// /admin/mcp 管理 MCP：暴露网关自身的管理能力，鉴权走独立管理令牌。
+	// 必须注册在 /admin/api 之前，避免被其前缀匹配吃掉。
+	if d.AdminMCP != nil {
+		mux.HandleFunc("/admin/mcp", d.AdminMCP.Handle)
+		mux.HandleFunc("/admin/mcp/", d.AdminMCP.Handle)
 	}
 
 	// 统一登录回调入口：免鉴权（浏览器重定向带不了管理员凭据），

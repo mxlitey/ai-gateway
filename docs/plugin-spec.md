@@ -586,6 +586,20 @@ https://gw.example.com/plugin-callback/<插件id>/<method>/<state>
 > 提示：把 `state` 放进回调**路径**（而非查询串）更稳妥——部分上游要求 `redirect_uri`
 > 精确匹配，路径形态的地址更容易登记进白名单。
 
+#### 上游强制固定回调地址时（`callback_paths`）
+
+个别上游（如 TRAE、LobsterAI）只接受 `http://127.0.0.1:<端口>/...` 形式的 `redirect_uri`，
+无法使用网关的统一回调入口。这类插件可以在 `plugin.json` 声明自己监听的回调路径：
+
+```json
+{ "callback_paths": ["/authorize"] }
+```
+
+- 这些路径由插件**在自身端口上**处理（与 §3「不得监听额外端口」不冲突）；
+- 桌面版可直接访问；**Docker 部署时该端口只在容器内，宿主机浏览器打不开**，属于预期现象；
+- 此时用户把浏览器地址栏里的完整回调链接粘贴到面板登录卡片，网关校验后转发给插件
+  （`POST /admin/api/plugins/<id>/callback`；只接受回环地址、只放行 `callback_paths` 里的路径）。
+
 #### 反代 / 隧道场景
 
 网关支持把面板与回调一起暴露到公网（nginx、frp、Cloudflare Tunnel 等）。此时：
@@ -604,6 +618,7 @@ https://gw.example.com/plugin-callback/<插件id>/<method>/<state>
 - 登录按钮由插件声明的 `login_methods` 决定，面板不写死任何登录方式
 - 声明了 `fields` 的方法：点按钮先展开输入表单，提交后把值 POST 给插件；未声明的仍是「点一下即完成」
 - `link` 类登录每 2 秒轮询，**无次数上限**，用户可点「取消」终止；同时只跟踪一个登录会话
+- `link` 类登录等待期间，面板提供「粘贴回调链接」输入框：Docker 下回调页打不开时，把地址栏完整链接粘进来即可
 - 账号列表的列与按钮由 `capabilities` 决定（`checkin` / `quota`）
 - 所有操作走 toast 反馈，失败展示插件返回的 `error`
 

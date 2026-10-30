@@ -1,12 +1,16 @@
 package plugin
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/czg95/ai-gateway-v2/internal/config"
 	"github.com/czg95/ai-gateway-v2/internal/netinfo"
@@ -260,6 +264,82 @@ func (h *Host) ServeCallback(w http.ResponseWriter, r *http.Request, pluginID, s
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, io.LimitReader(resp.Body, 1<<20))
+}
+
+// SubmitCallback 用用户粘贴的回调链接完成登录。
+//
+// 适用场景：插件按上游要求把回调地址固定成 http://127.0.0.1:<插件端口>/...，
+// 而 Docker 部署时该端口只存在于容器内，宿主机浏览器访问不到（页面打不开）。
+// 此时用户在浏览器地址栏复制整条回调链接，由网关转交给容器内的插件处理。
+//
+// 安全边界：只接受回环地址、只允许插件在 plugin.json 的 callback_paths 里声明的路径。
+func (h *Host) SubmitCallback(pluginID, raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("链接格式不正确，请粘贴浏览器地址栏中的完整回调地址")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("回调链接只支持 http/https")
+	}
+	host := strings.ToLower(u.Hostname())
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		return fmt.Errorf("只接受本机回环地址的回调链接")
+	}
+
+	h.mu.Lock()
+	inst, ok := h.items[pluginID]
+	var port int
+	var status string
+	var allowedPaths []string
+	if ok {
+		port, status = inst.port, inst.status
+		allowedPaths = append([]string(nil), inst.manifest.CallbackPaths...)
+	}
+	h.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("插件不存在: %s", pluginID)
+	}
+	if len(allowedPaths) == 0 {
+		return fmt.Errorf("该插件没有需要粘贴的回调路径")
+	}
+	if status != StatusRunning || port == 0 {
+		return fmt.Errorf("插件当前状态为 %s，请先启动插件", status)
+	}
+
+	p := path.Clean(u.Path)
+	allowed := false
+	for _, ap := range allowedPaths {
+		ap = strings.TrimRight(ap, "/")
+		if p == ap || strings.HasPrefix(p, ap+"/") {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return fmt.Errorf("回调链接路径不在插件允许范围内")
+	}
+
+	target := "http://127.0.0.1:" + strconv.Itoa(port) + u.EscapedPath()
+	if u.RawQuery != "" {
+		target += "?" + u.RawQuery
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return fmt.Errorf("构造回调请求失败: %w", err)
+	}
+	req.Header.Set("Accept", "text/html,application/json;q=0.9,*/*;q=0.8")
+
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("插件未响应，请确认插件正在运行")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("插件未接受该回调（HTTP %d），请确认链接是否完整", resp.StatusCode)
+	}
+	return nil
 }
 
 // callbackErrorPage 返回统一风格的纯文本错误页（不回显任何内部信息）。

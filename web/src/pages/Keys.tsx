@@ -1,8 +1,11 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type APIKey, type Channel } from '../lib/api'
+import { api, type APIKey, type Channel, type MCPServer } from '../lib/api'
 import { toast } from '../lib/toast'
 import { Button, Card, Empty, ErrorText, Field, Input, Loading, Modal, Switch } from '../components/ui'
+
+// Scope 密钥在某类资源上的权限范围：全部 / 仅勾选 / 禁用。
+type Scope = APIKey['channel_scope']
 
 // isPluginChannel 判断渠道是否由插件注册（source 形如 plugin:<插件id>）。
 function isPluginChannel(ch: Channel): boolean {
@@ -13,16 +16,24 @@ export default function Keys() {
   const queryClient = useQueryClient()
   const keys = useQuery({ queryKey: ['apikeys'], queryFn: api.apiKeys })
   const channels = useQuery({ queryKey: ['channels'], queryFn: api.channels })
+  // MCP 权限：密钥可访问哪些 MCP 服务器（不选表示全部）
+  const mcpServers = useQuery({ queryKey: ['mcp-servers'], queryFn: api.mcpServers })
   // 插件渠道由插件自动注册，需要知道哪些插件正在运行才能决定是否可选
   const plugins = useQuery({ queryKey: ['plugins'], queryFn: api.plugins })
 
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
+  const [channelScope, setChannelScope] = useState<Scope>('all')
   const [channelIds, setChannelIds] = useState<string[]>([])
+  const [mcpScope, setMcpScope] = useState<Scope>('all')
+  const [mcpServerIds, setMcpServerIds] = useState<string[]>([])
   const [created, setCreated] = useState<APIKey | null>(null)
   const [editing, setEditing] = useState<APIKey | null>(null)
   const [editName, setEditName] = useState('')
+  const [editChannelScope, setEditChannelScope] = useState<Scope>('all')
   const [editChannelIds, setEditChannelIds] = useState<string[]>([])
+  const [editMcpScope, setEditMcpScope] = useState<Scope>('all')
+  const [editMcpServerIds, setEditMcpServerIds] = useState<string[]>([])
   // 翻转卡片：记录当前翻到背面的密钥 id
   const [flippedId, setFlippedId] = useState<string | null>(null)
 
@@ -39,12 +50,22 @@ export default function Keys() {
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['apikeys'] })
 
   const create = useMutation({
-    mutationFn: () => api.createApiKey({ name: name.trim() || 'Unnamed', channel_ids: channelIds }),
+    mutationFn: () =>
+      api.createApiKey({
+        name: name.trim() || 'Unnamed',
+        channel_scope: channelScope,
+        channel_ids: channelScope === 'selected' ? channelIds : [],
+        mcp_scope: mcpScope,
+        mcp_server_ids: mcpScope === 'selected' ? mcpServerIds : [],
+      }),
     onSuccess: async (key) => {
       setCreated(key)
       setCreating(false)
       setName('')
+      setChannelScope('all')
       setChannelIds([])
+      setMcpScope('all')
+      setMcpServerIds([])
       await invalidate()
     },
     onError: (err: Error) => toast('err', err.message),
@@ -60,7 +81,10 @@ export default function Keys() {
     mutationFn: () =>
       api.updateApiKey(editing!.id, {
         name: editName.trim() || 'Unnamed',
-        channel_ids: editChannelIds,
+        channel_scope: editChannelScope,
+        channel_ids: editChannelScope === 'selected' ? editChannelIds : [],
+        mcp_scope: editMcpScope,
+        mcp_server_ids: editMcpScope === 'selected' ? editMcpServerIds : [],
       }),
     onSuccess: async () => {
       toast('ok', '密钥已更新')
@@ -82,14 +106,18 @@ export default function Keys() {
   const openEdit = (key: APIKey) => {
     setEditing(key)
     setEditName(key.name)
+    setEditChannelScope(key.channel_scope ?? 'all')
     setEditChannelIds(key.channel_ids)
+    setEditMcpScope(key.mcp_scope ?? 'all')
+    setEditMcpServerIds(key.mcp_server_ids ?? [])
   }
 
-  if (keys.isLoading || channels.isLoading || plugins.isLoading) return <Loading />
+  if (keys.isLoading || channels.isLoading || plugins.isLoading || mcpServers.isLoading) return <Loading />
   if (keys.isError) return <ErrorText text={(keys.error as Error).message} />
 
   const list = keys.data ?? []
   const allChannels = channels.data ?? []
+  const allMcpServers = mcpServers.data ?? []
   // 没有启动的插件不进入可选渠道，避免把密钥绑到实际不存在的上游上
   const runningPlugins = new Set(
     (plugins.data ?? []).filter((p) => p.last_status === 'running').map((p) => p.id),
@@ -99,6 +127,7 @@ export default function Keys() {
   )
   // 名称解析仍用全量渠道，否则插件停用后已绑定的渠道会显示成裸 id
   const channelName = (id: string) => allChannels.find((c) => c.id === id)?.name ?? id
+  const mcpName = (id: string) => allMcpServers.find((s) => s.id === id)?.name ?? id
 
   return (
     <div className="space-y-4">
@@ -123,10 +152,18 @@ export default function Keys() {
           <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-3">
             {list.map((key) => {
               const flipped = flippedId === key.id
-              const scope =
-                key.channel_ids.length === 0
-                  ? '全部渠道'
-                  : key.channel_ids.map(channelName).join('、')
+              const channelScopeText =
+                key.channel_scope === 'none'
+                  ? '未授权'
+                  : key.channel_scope === 'selected'
+                    ? key.channel_ids.map(channelName).join('、')
+                    : '全部渠道'
+              const mcpScopeText =
+                key.mcp_scope === 'none'
+                  ? '未授权'
+                  : key.mcp_scope === 'selected'
+                    ? (key.mcp_server_ids ?? []).map(mcpName).join('、')
+                    : '全部 MCP 服务器'
               const toggleFlip = () => setFlippedId(flipped ? null : key.id)
               return (
                 <div
@@ -151,10 +188,16 @@ export default function Keys() {
                         onCopy={() => copyKey(key.key)}
                         onToggle={() => toggle.mutate(key)}
                       />
-                      <p className="truncate text-xs text-zinc-500 dark:text-zinc-400" title={scope}>
-                        可用渠道{' '}
-                        <span className="text-zinc-700 dark:text-zinc-200">{scope}</span>
-                      </p>
+                      <div className="space-y-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                        <p className="truncate" title={channelScopeText}>
+                          可用渠道{' '}
+                          <span className="text-zinc-700 dark:text-zinc-200">{channelScopeText}</span>
+                        </p>
+                        <p className="truncate" title={mcpScopeText}>
+                          可用 MCP{' '}
+                          <span className="text-zinc-700 dark:text-zinc-200">{mcpScopeText}</span>
+                        </p>
+                      </div>
                     </div>
 
                     {/* 背面：头部与正面一致，只把「可用渠道」换成操作按钮 */}
@@ -230,9 +273,35 @@ export default function Keys() {
                 autoFocus
               />
             </Field>
-            <Field label="限定可用渠道" hint="不勾选表示可使用全部渠道">
-              <div className="max-h-52 space-y-1.5 overflow-y-auto rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-                <ChannelPicker channels={channelList} value={channelIds} onChange={setChannelIds} />
+            <Field label="渠道权限" hint="「全部」含之后新增的渠道；「禁用」表示这把密钥不能调用 /v1 接口">
+              <div className="space-y-2">
+                <ScopePicker value={channelScope} onChange={setChannelScope} />
+                {channelScope === 'selected' ? (
+                  <div className="max-h-52 space-y-1.5 overflow-y-auto rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+                    <ChannelPicker
+                      channels={channelList}
+                      value={channelIds}
+                      onChange={setChannelIds}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            </Field>
+            <Field
+              label="MCP 权限"
+              hint="「全部」含之后新增的服务器；「禁用」表示这把密钥不能调用 /mcp 接口"
+            >
+              <div className="space-y-2">
+                <ScopePicker value={mcpScope} onChange={setMcpScope} />
+                {mcpScope === 'selected' ? (
+                  <div className="max-h-52 space-y-1.5 overflow-y-auto rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+                    <McpPicker
+                      servers={allMcpServers}
+                      value={mcpServerIds}
+                      onChange={setMcpServerIds}
+                    />
+                  </div>
+                ) : null}
               </div>
             </Field>
           </div>
@@ -280,13 +349,35 @@ export default function Keys() {
             <Field label="名称">
               <Input value={editName} onChange={(e) => setEditName(e.target.value)} autoFocus />
             </Field>
-            <Field label="限定可用渠道" hint="不勾选表示可使用全部渠道">
-              <div className="max-h-52 space-y-1.5 overflow-y-auto rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
-                <ChannelPicker
-                  channels={channelList}
-                  value={editChannelIds}
-                  onChange={setEditChannelIds}
-                />
+            <Field label="渠道权限" hint="「全部」含之后新增的渠道；「禁用」表示这把密钥不能调用 /v1 接口">
+              <div className="space-y-2">
+                <ScopePicker value={editChannelScope} onChange={setEditChannelScope} />
+                {editChannelScope === 'selected' ? (
+                  <div className="max-h-52 space-y-1.5 overflow-y-auto rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+                    <ChannelPicker
+                      channels={channelList}
+                      value={editChannelIds}
+                      onChange={setEditChannelIds}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            </Field>
+            <Field
+              label="MCP 权限"
+              hint="「全部」含之后新增的服务器；「禁用」表示这把密钥不能调用 /mcp 接口"
+            >
+              <div className="space-y-2">
+                <ScopePicker value={editMcpScope} onChange={setEditMcpScope} />
+                {editMcpScope === 'selected' ? (
+                  <div className="max-h-52 space-y-1.5 overflow-y-auto rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+                    <McpPicker
+                      servers={allMcpServers}
+                      value={editMcpServerIds}
+                      onChange={setEditMcpServerIds}
+                    />
+                  </div>
+                ) : null}
               </div>
             </Field>
           </div>
@@ -351,6 +442,37 @@ function KeyCardHead({
   )
 }
 
+// ScopePicker 渲染权限范围三态：全部 / 仅勾选 / 禁用。
+// 用显式范围代替「空列表即全部」，才能真正表达「一个都不授权」。
+function ScopePicker({ value, onChange }: { value: Scope; onChange: (v: Scope) => void }) {
+  const options: { value: Scope; label: string }[] = [
+    { value: 'all', label: '全部' },
+    { value: 'selected', label: '仅勾选' },
+    { value: 'none', label: '禁用' },
+  ]
+  return (
+    <div className="flex gap-1.5">
+      {options.map((o) => {
+        const active = value === o.value
+        return (
+          <button
+            key={o.value}
+            type="button"
+            onClick={() => onChange(o.value)}
+            className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
+              active
+                ? 'border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900'
+                : 'border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
+            }`}
+          >
+            {o.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 // ChannelPicker 渲染「限定可用渠道」的多选列表（生成与编辑共用）。
 function ChannelPicker({
   channels,
@@ -379,6 +501,41 @@ function ChannelPicker({
             }
           />
           {c.name}
+        </label>
+      ))}
+    </>
+  )
+}
+
+// McpPicker 渲染「限定可用 MCP 服务器」的多选列表（生成与编辑共用）。
+function McpPicker({
+  servers,
+  value,
+  onChange,
+}: {
+  servers: MCPServer[]
+  value: string[]
+  onChange: (ids: string[]) => void
+}) {
+  if (servers.length === 0) {
+    return <p className="text-sm text-zinc-500">还没有 MCP 服务器</p>
+  }
+  return (
+    <>
+      {servers.map((s) => (
+        <label
+          key={s.id}
+          className="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300"
+        >
+          <input
+            type="checkbox"
+            checked={value.includes(s.id)}
+            onChange={(e) =>
+              onChange(e.target.checked ? [...value, s.id] : value.filter((id) => id !== s.id))
+            }
+          />
+          {s.name}
+          <span className="font-mono text-xs text-zinc-400">{s.alias}</span>
         </label>
       ))}
     </>

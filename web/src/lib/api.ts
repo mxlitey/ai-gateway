@@ -26,7 +26,11 @@ export type APIKey = {
   id: string
   name: string
   key: string
+  // 权限范围：all=全部可用，selected=仅勾选项，none=完全不授权
+  channel_scope: 'all' | 'selected' | 'none'
   channel_ids: string[]
+  mcp_scope: 'all' | 'selected' | 'none'
+  mcp_server_ids: string[]
   enabled: boolean
   created_at: number
 }
@@ -312,6 +316,27 @@ export type PythonSettingsResponse = {
   settings: PythonSettings
 }
 
+/** 管理 MCP 的运行状态：开关、写权限、令牌是否存在、可用工具清单。 */
+export type AdminMCPState = {
+  enabled: boolean
+  writable: boolean
+  has_token: boolean
+  endpoint: string
+  access_url: string
+  tool_count: number
+  tools: string[]
+}
+
+/** 保存管理 MCP 开关的响应；首次启用或重置令牌时会带回明文令牌与配置片段。 */
+export type AdminMCPSaveResult = {
+  success: boolean
+  enabled: boolean
+  writable: boolean
+  token?: string
+  config_json?: string
+  notice?: string
+}
+
 export type ModelPrice = {
   model: string
   display_name: string
@@ -591,6 +616,16 @@ export const api = {
       ...json(body),
     }),
 
+  // 管理 MCP：把网关自身能力暴露为独立 MCP 服务器（/admin/mcp）
+  adminMCPState: () => request<AdminMCPState>('/admin/api/admin-mcp'),
+  saveAdminMCP: (enabled: boolean, writable: boolean) =>
+    request<AdminMCPSaveResult>('/admin/api/admin-mcp', {
+      method: 'PUT',
+      ...json({ enabled, writable }),
+    }),
+  resetAdminMCPToken: () =>
+    request<AdminMCPSaveResult>('/admin/api/admin-mcp/token', { method: 'POST', ...json({}) }),
+
   // 上游密钥冷却
   keyCooldowns: () => request<{ items: KeyCooldown[] }>('/admin/api/key-cooldowns'),
   resetKeyCooldown: (channelId: string, keyHint: string) =>
@@ -630,10 +665,24 @@ export const api = {
 
   // 客户端密钥
   apiKeys: () => request<APIKey[]>('/admin/api/apikeys'),
-  createApiKey: (body: { name: string; channel_ids: string[] }) =>
-    request<APIKey>('/admin/api/apikeys', { method: 'POST', ...json(body) }),
-  updateApiKey: (id: string, body: { name?: string; enabled?: boolean; channel_ids?: string[] }) =>
-    request<APIKey>(`/admin/api/apikeys/${id}`, { method: 'PATCH', ...json(body) }),
+  createApiKey: (body: {
+    name: string
+    channel_scope: APIKey['channel_scope']
+    channel_ids: string[]
+    mcp_scope: APIKey['mcp_scope']
+    mcp_server_ids: string[]
+  }) => request<APIKey>('/admin/api/apikeys', { method: 'POST', ...json(body) }),
+  updateApiKey: (
+    id: string,
+    body: {
+      name?: string
+      enabled?: boolean
+      channel_scope?: APIKey['channel_scope']
+      channel_ids?: string[]
+      mcp_scope?: APIKey['mcp_scope']
+      mcp_server_ids?: string[]
+    },
+  ) => request<APIKey>(`/admin/api/apikeys/${id}`, { method: 'PATCH', ...json(body) }),
   deleteApiKey: (id: string) =>
     request<{ success: boolean }>(`/admin/api/apikeys/${id}`, { method: 'DELETE' }),
 
@@ -670,6 +719,12 @@ export const api = {
     request<PluginLoginResponse>(
       `/admin/api/plugins/${id}/console/login/${method}?state=${encodeURIComponent(state)}`,
     ),
+  // 浏览器访问不到插件回环回调（Docker 部署常见）时，把地址栏里的整条链接交给插件处理
+  pluginSubmitCallback: (id: string, url: string) =>
+    request<{ success: boolean }>(`/admin/api/plugins/${id}/callback`, {
+      method: 'POST',
+      ...json({ url }),
+    }),
   pluginDeleteAccount: (id: string, accountId: string) =>
     request<{ success: boolean }>(
       `/admin/api/plugins/${id}/console/accounts/${encodeURIComponent(accountId)}`,

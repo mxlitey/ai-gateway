@@ -39,6 +39,50 @@ export default function Settings() {
     setPyDraft(pythonSettingsQuery.data.settings)
   }
 
+  // 管理 MCP：把网关自身能力暴露为 /admin/mcp
+  const adminMCP = useQuery({ queryKey: ['admin-mcp'], queryFn: api.adminMCPState })
+  // 当前页面上已拿到明文令牌时的配置片段（只在此次会话内保留，刷新即消失）
+  const [mcpConfig, setMcpConfig] = useState<string>('')
+  const [mcpToken, setMcpToken] = useState<string>('')
+
+  const saveAdminMCP = useMutation({
+    mutationFn: (patch: { enabled?: boolean; writable?: boolean }) => {
+      const cur = adminMCP.data
+      return api.saveAdminMCP(patch.enabled ?? cur?.enabled ?? false, patch.writable ?? cur?.writable ?? false)
+    },
+    onSuccess: (res) => {
+      if (res.token && res.config_json) {
+        setMcpToken(res.token)
+        setMcpConfig(res.config_json)
+        toast('ok', res.notice || '管理 MCP 已开启')
+      } else {
+        toast('ok', '管理 MCP 设置已保存')
+      }
+      void queryClient.invalidateQueries({ queryKey: ['admin-mcp'] })
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  const resetAdminMCP = useMutation({
+    mutationFn: () => api.resetAdminMCPToken(),
+    onSuccess: (res) => {
+      if (res.token) setMcpToken(res.token)
+      if (res.config_json) setMcpConfig(res.config_json)
+      toast('ok', res.notice || '管理令牌已重置')
+      void queryClient.invalidateQueries({ queryKey: ['admin-mcp'] })
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  async function copyText(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      toast('ok', `${label}已复制到剪贴板`)
+    } catch {
+      toast('err', '复制失败，请手动选中复制')
+    }
+  }
+
   const savePythonSettings = useMutation({
     mutationFn: (body: PythonSettings) => api.updatePythonSettings(body),
     onSuccess: () => {
@@ -192,6 +236,94 @@ export default function Settings() {
         <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
           安全提示：默认仅监听本机回环地址。若改为对外监听，请自行确认网络与访问控制。
         </p>
+      </Card>
+
+      <Card title="管理 MCP">
+        {adminMCP.isError ? (
+          <div className="mb-3">
+            <ErrorText text={(adminMCP.error as Error).message} />
+          </div>
+        ) : null}
+        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
+          把网关自身的管理能力（用量、渠道、密钥冷却、插件、MCP 上游、上游诊断等）暴露为一个独立的 MCP 服务器，
+          供 AI 客户端查询与操作。它与「MCP 服务器」页聚合的上游工具互不影响，鉴权使用独立管理令牌。
+        </p>
+
+        <div className="max-w-2xl space-y-4">
+          <Field label="启用管理 MCP" hint={`端点为 ${adminMCP.data?.access_url ?? '—'}`}>
+            <Segmented
+              value={adminMCP.data?.enabled ? 'on' : 'off'}
+              onChange={(v) => saveAdminMCP.mutate({ enabled: v === 'on' })}
+              options={[
+                { value: 'on', label: '开启' },
+                { value: 'off', label: '关闭' },
+              ]}
+            />
+          </Field>
+
+          <Field
+            label="允许写操作"
+            hint="关闭时只暴露只读工具；开启后会额外提供签发密钥、新建/修改渠道、重置冷却、重启插件等操作。"
+          >
+            <Segmented
+              value={adminMCP.data?.writable ? 'on' : 'off'}
+              onChange={(v) => saveAdminMCP.mutate({ writable: v === 'on' })}
+              options={[
+                { value: 'on', label: '开启' },
+                { value: 'off', label: '关闭' },
+              ]}
+            />
+          </Field>
+
+          {adminMCP.data ? (
+            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+              当前可见工具 {adminMCP.data.tool_count} 个
+              {adminMCP.data.enabled ? '' : '（服务未启用，客户端无法连接）'}；令牌
+              {adminMCP.data.has_token ? '已生成' : '尚未生成，开启后自动生成'}。
+            </p>
+          ) : null}
+
+          {mcpConfig ? (
+            <div className="space-y-2">
+              <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
+                令牌明文只显示这一次，刷新页面后无法再查看。请立即复制保存；遗失后只能重置（旧令牌会立即失效）。
+              </p>
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+                  MCP 客户端配置
+                </span>
+                <div className="flex gap-2">
+                  <Button variant="ghost" onClick={() => void copyText(mcpConfig, '配置')}>
+                    复制配置
+                  </Button>
+                  <Button variant="ghost" onClick={() => void copyText(mcpToken, '令牌')}>
+                    复制令牌
+                  </Button>
+                </div>
+              </div>
+              <pre className="max-h-64 overflow-auto rounded-lg bg-zinc-900 p-3 text-xs leading-relaxed text-zinc-100">
+                {mcpConfig}
+              </pre>
+            </div>
+          ) : null}
+
+          <div className="flex items-center gap-3">
+            <Button
+              variant="ghost"
+              disabled={!adminMCP.data?.enabled || resetAdminMCP.isPending}
+              onClick={() => {
+                if (window.confirm('重置后旧令牌立即失效，所有已配置的客户端需要更新令牌。确定继续？')) {
+                  resetAdminMCP.mutate()
+                }
+              }}
+            >
+              重置令牌
+            </Button>
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">
+              适用于令牌泄露或遗失；重置后会重新展示配置片段。
+            </span>
+          </div>
+        </div>
       </Card>
 
       <Card title="外部访问地址">

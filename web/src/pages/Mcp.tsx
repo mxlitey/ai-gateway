@@ -1051,7 +1051,7 @@ function ClientAccessCard() {
   // 密钥留占位符，由用户替换为面板「API 密钥」页生成的 sk- 密钥。
   const snippet = `{
   "mcpServers": {
-    "ai-gateway": {
+    "mcp-hub": {
       "type": "streamableHttp",
       "url": "${origin}/mcp",
       "headers": {

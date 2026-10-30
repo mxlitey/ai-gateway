@@ -62,7 +62,7 @@ docker compose up -d --build
 # 浏览器打开 http://localhost:8788（compose 默认映射到宿主机 8788，避开桌面版的 8787）
 ```
 
-镜像内置 TRAE / WorkBuddy / ModelScope / Kilo / Cline / MiniMax / Loomy / LobsterAI / Gemini 九个插件；`/data` 与 `/plugins` 两个命名卷分别持久化数据与插件。
+镜像内置 TRAE / WorkBuddy 两个插件；`/data` 与 `/plugins` 两个命名卷分别持久化数据与插件，`/mcp` 卷用来放你自己的本地 MCP 服务器（镜像不内置示例）。
 
 ### 客户端接入
 
@@ -193,19 +193,14 @@ plugins/
 
 同一份 `main.py` 在 Windows / macOS / Linux（含 Docker）上通用，不需要编译多份。网关只支持 Python 插件：`entry` 必须是插件目录内的 `.py` 脚本。宿主会依次尝试系统 Python（`py -3` → `python3` → `python`）与 `data/runtime/python/` 下的便携 Python，并按清单声明的 `requirements` 安装依赖到插件私有目录。
 
-内置九个示例插件（`examples/`，均为纯 Python 标准库实现）：
+内置两个示例插件（`examples/`，均为纯 Python 标准库实现），安装包与镜像只打包这两个：
 
 | 插件 | 端口 | 说明 |
 |---|---|---|
 | TRAE | 20727 | TRAE 通道 → OpenAI 兼容上游，支持签到与额度查询 |
 | WorkBuddy | 20800 | 导入本机桌面端登录态 / OAuth 授权，多账号、签到、额度 |
-| ModelScope 魔搭 | 20810 | 官方 OAuth / 粘贴令牌，魔粒额度与每日任务 |
-| Kilo 免费池 | 20812 | 免密免费模型池，模型清单实时跟随上游 |
-| Cline | 20815 | WorkOS 设备码登录，余额查询 |
-| MiniMax Code | 20816 | 设备码登录，签到积分，Anthropic Messages 协议转换 |
-| Loomy（讯飞） | 20817 | 短信验证码登录，每日额度领取 |
-| LobsterAI（有道） | 20818 | 授权登录，额度查询 |
-| Gemini Code Assist | 20819 | 粘贴 Google refresh_token，额度查询 |
+
+`examples/` 里还有 ModelScope / Kilo / Cline / MiniMax / Loomy / LobsterAI / Gemini 等更多插件源码，需要时把对应目录复制到 `plugins/` 即可。
 
 账号类插件在面板「插件 → 控制台」里完成登录与签到，之后到「渠道管理」点「获取上游模型」勾选要用的模型即可。说明见 [docs/plugins-free-channels.md](docs/plugins-free-channels.md) 与 [docs/plugins-modelscope-kilo.md](docs/plugins-modelscope-kilo.md)；完整开发规范见 [docs/plugin-spec.md](docs/plugin-spec.md)。
 
@@ -221,7 +216,7 @@ mcp/
     └── requirements.txt  # 可选：有实际依赖时自动 pip 安装
 ```
 
-示例见 `examples/mcp/local-demo`（内置到安装包与镜像），完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里把该密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
+安装包与镜像只创建这个空目录，不内置任何示例。想上手可以参考仓库里的 `examples/mcp/local-demo`（最小实现）与 `examples/mcp/github-search`（真实 GitHub 搜索），把目录整个复制到 `mcp/` 下即可。完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里把该密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
 
 ## 🛠️ 从源码构建
 

@@ -9,8 +9,8 @@
 #         -v ai-gateway-data:/data \
 #         ai-gateway:v1.2.1
 #
-# 镜像内置 TRAE、WorkBuddy、ModelScope、Kilo、Cline、MiniMax Code、Loomy、
-# LobsterAI、Gemini 等插件（见阶段 3），开箱即用。
+# 镜像内置 TRAE、WorkBuddy 两个插件（见阶段 3），开箱即用；
+# /mcp 卷只作为本地 MCP 服务器的存放位置，镜像不内置示例。
 # 说明：桌面外壳（cmd/gateway-wails，Wails + WebView2）仅面向 Windows，
 # 带 //go:build windows 标签，不会参与本镜像构建。
 
@@ -67,22 +67,13 @@ RUN set -eux; \
     chown -R gateway:gateway /data /plugins /mcp
 COPY --from=go-builder /out/ai-gateway /usr/local/bin/ai-gateway
 
-# 内置 TRAE / WorkBuddy / ModelScope / Kilo / Cline / MiniMax / Loomy / LobsterAI / Gemini 插件：
-# Python 源码直接拷入，无需编译。
+# 内置 TRAE / WorkBuddy 插件：Python 源码直接拷入，无需编译。
 # /plugins 是卷挂载点，卷首次创建时会带着这些插件一起初始化；用户自己加的插件也放这里。
 COPY --chown=gateway:gateway examples/trae /plugins/trae
 COPY --chown=gateway:gateway examples/workbuddy /plugins/workbuddy
-COPY --chown=gateway:gateway examples/modelscope /plugins/modelscope
-COPY --chown=gateway:gateway examples/kilo /plugins/kilo
-COPY --chown=gateway:gateway examples/cline /plugins/cline
-COPY --chown=gateway:gateway examples/minimax /plugins/minimax
-COPY --chown=gateway:gateway examples/loomy /plugins/loomy
-COPY --chown=gateway:gateway examples/lobsterai /plugins/lobsterai
-COPY --chown=gateway:gateway examples/gemini /plugins/gemini
 
-# 本地 MCP 服务器：启动时自动扫描 /mcp 下含 mcp.json 的子目录，拉起 Python 进程。
-COPY --chown=gateway:gateway examples/mcp/local-demo /mcp/local-demo
-COPY --chown=gateway:gateway examples/mcp/github-search /mcp/github-search
+# /mcp 只作为卷挂载点，镜像不内置任何本地 MCP 示例：
+# 用户把自己的 Python MCP 服务器放进这个卷，网关启动时自动扫描登记。
 
 # 数据与插件目录固定为卷挂载点：换个容器实例也能保留配置、密钥与插件
 ENV AIGW_DATA_DIR=/data \

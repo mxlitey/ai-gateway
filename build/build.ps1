@@ -100,24 +100,48 @@ Copy-Item "build/README.txt" "dist/README.txt" -Force
 New-Item -ItemType Directory -Force -Path "dist/plugins", "dist/mcp", "dist/data" | Out-Null
 
 # 内置插件：插件一律是 Python 源码（同一份源码在 Windows / macOS / Linux 通用），
-# 整目录拷贝即可，不需要任何编译。先删旧目录，避免残留上一次的可执行产物。
-foreach ($name in @("trae", "workbuddy", "modelscope", "kilo", "cline", "minimax", "loomy", "lobsterai", "gemini")) {
+# 整目录拷贝即可，不需要任何编译。先清空 dist/plugins，避免残留上一次的其它插件。
+# 上一次的网关可能仍在运行（Python 子进程占着目录），删除失败时重试几次并给出提示。
+function Reset-Dir([string]$path) {
+    for ($i = 0; $i -lt 5; $i++) {
+        if (-not (Test-Path $path)) { break }
+        Remove-Item $path -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Test-Path $path)) { break }
+        Start-Sleep -Milliseconds 500
+    }
+    if (Test-Path $path) {
+        Write-Host "[警告] 无法清空 $path（可能有旧的网关或插件进程在运行），本次产物可能含旧内容" -ForegroundColor Yellow
+    }
+    New-Item -ItemType Directory -Force -Path $path | Out-Null
+}
+Reset-Dir "dist/plugins"
+foreach ($name in @("trae", "workbuddy")) {
     if (-not (Test-Path "examples/$name/plugin.json")) { continue }
     $dst = "dist/plugins/$name"
-    Remove-Item $dst -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
     Copy-Item "examples/$name/*.py" $dst -Force
     Copy-Item "examples/$name/plugin.json" "$dst/plugin.json" -Force
 }
 
-# 本地 MCP 服务器：同样是 Python 源码，整目录拷贝；网关启动时自动扫描登记。
-foreach ($dir in (Get-ChildItem "examples/mcp" -Directory -ErrorAction SilentlyContinue)) {
-    if (-not (Test-Path (Join-Path $dir.FullName "mcp.json"))) { continue }
-    $dst = "dist/mcp/$($dir.Name)"
-    Remove-Item $dst -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force -Path $dst | Out-Null
-    Copy-Item (Join-Path $dir.FullName "*") $dst -Recurse -Force
-}
+# 本地 MCP 服务器目录：只建空目录，不内置任何示例；
+# 用户把自己的 Python MCP 服务器放进来，网关启动时自动扫描登记。
+Reset-Dir "dist/mcp"
+# 放一个说明文件：压缩包默认不保留空目录，有这个文件才能把 mcp/ 一起打进去
+$mcpReadme = @(
+    "mcp/ 目录：本地 MCP 服务器",
+    "",
+    "每个子目录一个服务，目录内放 mcp.json 与 Python 入口脚本（可带 requirements.txt）。",
+    "网关启动时自动扫描，分配 127.0.0.1 端口、安装依赖、崩溃自动重启，",
+    "并在「MCP 服务器」页带「本地」徽章展示；删除目录后重启即从列表移除。",
+    "",
+    "最小目录结构：",
+    "  mcp/我的服务/mcp.json",
+    "  mcp/我的服务/main.py",
+    "",
+    "参考实现见仓库 examples/mcp/local-demo 与 examples/mcp/github-search。",
+    "完整规范见仓库 docs/local-mcp-spec.md。"
+) -join "`r`n"
+[IO.File]::WriteAllText((Join-Path (Get-Location) "dist/mcp/README.txt"), $mcpReadme, (New-Object Text.UTF8Encoding($false)))
 
 # ---- 5. Docker 镜像（可选）----
 if ($Docker) {

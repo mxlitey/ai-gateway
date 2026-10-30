@@ -82,6 +82,7 @@ COPY --chown=gateway:gateway examples/gemini /plugins/gemini
 
 # 本地 MCP 服务器：启动时自动扫描 /mcp 下含 mcp.json 的子目录，拉起 Python 进程。
 COPY --chown=gateway:gateway examples/mcp/local-demo /mcp/local-demo
+COPY --chown=gateway:gateway examples/mcp/github-search /mcp/github-search
 
 # 数据与插件目录固定为卷挂载点：换个容器实例也能保留配置、密钥与插件
 ENV AIGW_DATA_DIR=/data \

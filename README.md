@@ -24,6 +24,8 @@ AI Gateway 是一个运行在你自己电脑（或自己的服务器）上的 AP
 - **故障转移与冷却** — 上游返回 404/429/5xx/网络错误/无效响应时自动切下一个目标；失败的密钥进入指数递增冷却，冷却期内不再参与选路（参数可在面板调整，状态可查可重置）
 - **API 密钥** — 面板一键签发 `sk-` 客户端密钥，渠道与 MCP 权限可分别设为「全部 / 仅勾选 / 禁用」，随时停用；校验失败返回标准 OpenAI 错误格式
 - **MCP 聚合** — 对外是一个 MCP 服务器（`POST /mcp`），对内聚合多台 Streamable HTTP 上游：合并工具列表、按命名空间路由工具调用，支持密钥轮换、服务器/密钥/工具三级每日调用上限，以及按调用次数计费的口径（「成功即计费」或「响应含标记才计费」）
+- **本地 MCP 服务器** — 把自己的 Python MCP 服务器放进 `mcp/` 目录即自动登记、自动分配回环端口、自动装依赖，卡片带「本地」徽章
+- **管理 MCP** — 可选开启 `POST /admin/mcp`，把网关自身的用量、渠道、插件、MCP 上游、诊断等能力暴露为 MCP 工具，供 AI 客户端查询与操作；独立管理令牌、可单独关闭写操作
 - **用量与费用** — 按密钥/模型/渠道/端点/上游密钥记录 token 用量，内置价格表（默认同步 OpenRouter 价目）自动核算费用，价格源与刷新间隔可配置
 - **插件体系** — Python 写的本地 HTTP 服务放进 `plugins/` 目录即自动拉起、探活、注册为渠道；插件自选端口，可声明控制台能力（账号签到、额度查询），宿主统一托管登录回调
 - **管理面板** — React 19 + Vite + Tailwind 构建，内嵌进单一二进制（仪表盘 · 渠道管理 · 模型路由 · API 密钥 · MCP 服务器 · 插件 · 用量 · 价格表 · 错误日志 · 设置）；管理员密码 PBKDF2 哈希存储，会话 Token 24h 有效
@@ -219,18 +221,18 @@ mcp/
     └── requirements.txt  # 可选：有实际依赖时自动 pip 安装
 ```
 
-示例见 `examples/mcp/local-demo`（内置到安装包与镜像），完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里按服务器粒度限定该密钥可用的 MCP 服务器（不勾选表示全部）。
+示例见 `examples/mcp/local-demo`（内置到安装包与镜像），完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里把该密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
 
 ## 🛠️ 从源码构建
 
 依赖 [Go 1.26+](https://go.dev/dl/) 与 [Node.js 20+](https://nodejs.org/)（Windows，PowerShell）：
 
 ```powershell
-pwsh -File build/build.ps1 -Version 1.2.4
+pwsh -File build/build.ps1 -Version 1.2.6
 # 同时构建 Linux 镜像（默认 amd64 + arm64 双架构）
-pwsh -File build/build.ps1 -Version 1.2.4 -Docker
+pwsh -File build/build.ps1 -Version 1.2.6 -Docker
 # 只构建单架构时显式指定
-pwsh -File build/build.ps1 -Version 1.2.4 -Docker -DockerPlatforms linux/amd64
+pwsh -File build/build.ps1 -Version 1.2.6 -Docker -DockerPlatforms linux/amd64
 ```
 
 脚本会依次：构建前端（`web/`，产物经 `//go:embed` 内嵌进二进制）→ 生成 Wails bindings / 图标资源 → `go mod tidy` → 编译 `dist/ai-gateway-v<版本号>.exe` → 组装绿色版目录（含内置示例插件）→（可选）用 `docker buildx` 逐架构构建并导出 `dist/ai-gateway-v<版本号>-docker-amd64.tar` / `-arm64.tar`。构建 arm64 需要 buildx 与 QEMU 模拟（Docker Desktop 默认已启用；Linux 上执行 `docker run --privileged --rm tonistiigi/binfmt --install arm64`）。

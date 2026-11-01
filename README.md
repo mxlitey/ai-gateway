@@ -193,14 +193,14 @@ plugins/
 
 内置两个示例插件（`examples/`，均为纯 Python 标准库实现），安装包与镜像只打包这两个：
 
-| 插件 | 端口 | 说明 |
-|---|---|---|
-| TRAE | 20727 | TRAE 通道 → OpenAI 兼容上游，支持签到与额度查询 |
-| WorkBuddy | 20800 | 导入本机桌面端登录态 / OAuth 授权，多账号、签到、额度 |
+| 插件 | 说明 |
+|---|---|
+| TRAE | TRAE 通道 → OpenAI 兼容上游，支持签到与额度查询 |
+| WorkBuddy | 导入本机桌面端登录态 / OAuth 授权，多账号、签到、额度 |
 
-`examples/` 里还有 ModelScope / Kilo / Cline / MiniMax / Loomy / LobsterAI / Gemini 等更多插件源码，需要时把对应目录复制到 `plugins/` 即可。
+插件端口由宿主自动分配（`127.0.0.1` 空闲端口），清单里不需要也不能写死。`examples/` 里还有 Kilo / Cline / MiniMax / Loomy / LobsterAI / Gemini 等更多插件源码，需要时把对应目录复制到 `plugins/` 即可。
 
-账号类插件在面板「插件 → 控制台」里完成登录与签到，之后到「渠道管理」点「获取上游模型」勾选要用的模型即可。说明见 [docs/plugins-free-channels.md](docs/plugins-free-channels.md) 与 [docs/plugins-modelscope-kilo.md](docs/plugins-modelscope-kilo.md)；完整开发规范见 [docs/plugin-spec.md](docs/plugin-spec.md)。
+账号类插件在面板「插件 → 控制台」里完成登录与签到，之后到「渠道管理」点「获取上游模型」勾选要用的模型即可；完整开发规范见 [docs/plugin-spec.md](docs/plugin-spec.md)。
 
 ### 本地 MCP 服务器
 
@@ -269,8 +269,8 @@ ai-gateway-v2/
 │   ├── store/             # SQLite 存储（migrations/ 为版本化建表脚本）
 │   └── version/           # 构建期注入的版本信息
 ├── web/                   # 管理面板前端（React 19 + Vite + Tailwind，embed.go 内嵌产物）
-├── examples/              # 示例插件（hello-py / trae / workbuddy / modelscope / kilo /
-│                          #   cline / minimax / loomy / lobsterai / gemini，均为 Python）
+├── examples/              # 示例插件（hello-py / trae / workbuddy / kilo / cline /
+│                          #   minimax / loomy / lobsterai / gemini，均为 Python）
 ├── mcp/                   # 本地 MCP 服务器（每个子目录一个，启动时自动登记）
 ├── docs/                  # 插件 / 本地 MCP 开发规范与各插件说明
 ├── build/                 # 一键构建脚本与绿色版说明

@@ -532,7 +532,7 @@ def account_for_request(handler):
 **这个地址由网关提供，插件不得自己监听额外端口**（见 §3）。
 
 上游对 `redirect_uri` 的形态要求千差万别（TRAE 要求精确 `^http://127\.0\.0\.1:\d+/authorize$`，
-LobsterAI 固定 `/auth/callback`，ModelScope 用 `/oauth/<state>`），因此
+LobsterAI 固定 `/auth/callback`），因此
 **路径由插件自己决定**，网关不做任何改写，只按 `callback_paths` 做前缀匹配与原样透传：
 
 ```
@@ -604,7 +604,7 @@ Docker 部署时回调端口只在容器内，宿主机浏览器打不开。此�
    面板只轮询 `GET /console/login/{method}?state=xxx` 拿状态，不依赖回调页的内容。
 
 > 提示：把 `state` 放进回调**路径**（而非查询串）更稳妥——部分上游要求 `redirect_uri`
-> 精确匹配，路径形态的地址更容易登记进白名单（ModelScope 就是 `/oauth/<state>`）。
+> 精确匹配，路径形态的地址更容易登记进白名单（例如 `/authorize/<state>`）。
 
 ### 6.8 面板行为速览
 

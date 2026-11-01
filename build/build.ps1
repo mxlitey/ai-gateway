@@ -123,10 +123,13 @@ foreach ($name in @("trae", "workbuddy")) {
     Copy-Item "examples/$name/plugin.json" "$dst/plugin.json" -Force
 }
 
-# 本地 MCP 服务器目录：只建空目录，不内置任何示例；
-# 用户把自己的 Python MCP 服务器放进来，网关启动时自动扫描登记。
+# 本地 MCP 服务器目录：内置 github-search（纯标准库），用户也可以放自己的服务进来；
+# 网关启动时自动扫描登记。
 Reset-Dir "dist/mcp"
-# 放一个说明文件：压缩包默认不保留空目录，有这个文件才能把 mcp/ 一起打进去
+$mcpDst = "dist/mcp/github-search"
+New-Item -ItemType Directory -Force -Path $mcpDst | Out-Null
+Copy-Item "examples/mcp/github-search/*" $mcpDst -Force
+# 放一个说明文件，交代目录约定与如何加自己的服务
 $mcpReadme = @(
     "mcp/ 目录：本地 MCP 服务器",
     "",
@@ -137,6 +140,10 @@ $mcpReadme = @(
     "最小目录结构：",
     "  mcp/我的服务/mcp.json",
     "  mcp/我的服务/main.py",
+    "",
+    "内置 github-search：GitHub 仓库 / 代码 / issue / PR / 提交 / 用户搜索。",
+    "匿名调用可用（搜索 10 次/分钟，代码搜索需要令牌）；在 mcp/github-search/mcp.json 的 env 里",
+    "填 GITHUB_TOKEN 即可提升额度并解锁代码搜索。",
     "",
     "参考实现见仓库 examples/mcp/local-demo 与 examples/mcp/github-search。",
     "完整规范见仓库 docs/local-mcp-spec.md。"

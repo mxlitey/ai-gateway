@@ -134,6 +134,11 @@ func (a *App) Start() error {
 		MaxFailures:         runtime.PluginMaxFailures,
 		AutoCheckinInterval: time.Duration(runtime.PluginAutoCheckinMinutes) * time.Minute,
 	})
+	// 插件登录回调入口：固定占用「监听端口 +1」。起不来不影响网关主功能，
+	// 用户仍可在插件控制台粘贴回调链接完成登录。
+	if err := host.StartCallbackServer(); err != nil {
+		slog.Warn("插件登录回调入口启动失败，插件授权登录将只能粘贴回调链接", "err", err)
+	}
 
 	pricer := pricing.New(st)
 	if err := pricer.Reload(); err != nil {
@@ -181,7 +186,6 @@ func (a *App) Start() error {
 	router := httpapi.NewRouter(httpapi.Deps{
 		Proxy:    proxyHandler,
 		Admin:    api,
-		Host:     host,
 		MCP:      mcpHandler,
 		AdminMCP: adminMCPHandler,
 	})

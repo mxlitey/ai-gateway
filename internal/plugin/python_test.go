@@ -1,14 +1,10 @@
 package plugin
 
 import (
-	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/czg95/ai-gateway-v2/internal/config"
 )
 
 func TestValidatePythonPlugin(t *testing.T) {
@@ -90,61 +86,5 @@ func TestPipLockCache(t *testing.T) {
 	}
 	if got := cachedPipSource(lockPath, hash, "3.12.7"); got != "https://pypi.org/simple" {
 		t.Fatalf("应返回上次成功的源，实际 %q", got)
-	}
-}
-
-func TestSafeJoinRejectsEscape(t *testing.T) {
-	dest := t.TempDir()
-	if _, err := safeJoin(dest, "../evil"); err == nil {
-		t.Fatal("越界路径应被拒绝")
-	}
-	if _, err := safeJoin(dest, "python/bin/python3"); err != nil {
-		t.Fatalf("正常路径应放行: %v", err)
-	}
-}
-
-func TestPortablePythonDetected(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("便携目录布局在 Unix 上验证")
-	}
-	root := t.TempDir()
-	// 造一个假的便携解释器：/bin/python3，能响应 -c 打印版本
-	binDir := filepath.Join(root, "3.12", "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	script := "#!/bin/sh\nprintf '3.12.7'\n"
-	bin := filepath.Join(binDir, "python3")
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	h := &Host{cfg: &config.Config{DataDir: t.TempDir()}}
-	interp := h.findPortablePython(pyEnv{RuntimeDir: root})
-	if interp == nil {
-		t.Fatal("应探测到便携解释器")
-	}
-	if !interp.Portable || interp.Version != "3.12.7" {
-		t.Fatalf("解释器信息错误: %+v", interp)
-	}
-}
-
-func TestPyVersionOrder(t *testing.T) {
-	if !pyVersionLess("3.9", "3.12") {
-		t.Fatal("3.9 应低于 3.12（按数值而非字典序）")
-	}
-	if pyVersionLess("3.12", "3.9") {
-		t.Fatal("比较结果不应反转")
-	}
-}
-
-func TestPyReleaseTargetAndURL(t *testing.T) {
-	target, err := pyReleaseTarget()
-	if err != nil {
-		t.Skipf("当前平台不支持便携 Python: %v", err)
-	}
-	u := pyReleaseAssetURL("3.12", target)
-	if !strings.HasSuffix(u, "-install_only.tar.gz") || !strings.Contains(u, target) {
-		t.Fatalf("发行包地址形状错误: %s", u)
 	}
 }

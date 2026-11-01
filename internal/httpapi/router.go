@@ -10,7 +10,6 @@ import (
 	"github.com/czg95/ai-gateway-v2/internal/admin"
 	"github.com/czg95/ai-gateway-v2/internal/adminmcp"
 	"github.com/czg95/ai-gateway-v2/internal/mcp"
-	"github.com/czg95/ai-gateway-v2/internal/plugin"
 	"github.com/czg95/ai-gateway-v2/internal/proxy"
 	"github.com/czg95/ai-gateway-v2/web"
 )
@@ -19,8 +18,6 @@ import (
 type Deps struct {
 	Proxy *proxy.Handler
 	Admin *admin.API
-	// Host 插件宿主；用于免鉴权的统一登录回调入口（见 /plugin-callback/）。
-	Host *plugin.Host
 	// MCP 聚合入口；为空表示未启用 MCP 代理。
 	MCP *mcp.Handler
 	// AdminMCP 管理 MCP 入口（/admin/mcp）；为空表示未启用。
@@ -54,15 +51,7 @@ func NewRouter(d Deps) http.Handler {
 		mux.HandleFunc("/admin/mcp/", d.AdminMCP.Handle)
 	}
 
-	// 统一登录回调入口：免鉴权（浏览器重定向带不了管理员凭据），
-	// 因此只放行 GET 且只映射到插件 /console/callback/*（见 docs/plugin-spec.md §6.6）。
-	if d.Host != nil {
-		mux.HandleFunc(plugin.CallbackPathPrefix+"/", func(w http.ResponseWriter, r *http.Request) {
-			rest := strings.TrimPrefix(r.URL.Path, plugin.CallbackPathPrefix+"/")
-			pluginID, sub, _ := strings.Cut(rest, "/")
-			d.Host.ServeCallback(w, r, pluginID, sub)
-		})
-	}
+	// 登录回调走独立端口（监听端口 +1，见 internal/plugin/callback.go），不挂在主路由上。
 
 	// /admin/api/* 管理接口（鉴权在 handler 内部根据路径区分）
 	mux.HandleFunc("/admin/api/", d.Admin.Handle)

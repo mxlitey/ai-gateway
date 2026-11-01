@@ -3,7 +3,6 @@ package plugin
 import (
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,7 +18,7 @@ import (
 // TestPythonPluginLifecycle 端到端验证：宿主解析系统 Python、拉起插件、
 // 探活通过并注册渠道，最后随宿主退出被回收。
 //
-// 本机没有 Python 3 时跳过（便携运行时需要下载，不适合放在单测里）。
+// 本机没有 Python 3 时跳过。
 func TestPythonPluginLifecycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("端到端用例，-short 下跳过")
@@ -34,11 +33,9 @@ func TestPythonPluginLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	port := freePort(t)
 	manifest := `{
   "name": "PyLife",
   "entry": "main.py",
-  "port": ` + strconv.Itoa(port) + `,
   "startup_timeout_ms": 30000
 }`
 	script := `import json, os
@@ -100,6 +97,17 @@ HTTPServer(("127.0.0.1", int(os.environ["AI_GATEWAY_PLUGIN_PORT"])), H).serve_fo
 		t.Fatal("插件未在 30 秒内进入 running")
 	}
 
+	// 记录宿主分配到的端口，后面用它验证渠道地址与探活
+	port := 0
+	for _, p := range host.List() {
+		if p.ID == "pylife" {
+			port = p.Port
+		}
+	}
+	if port == 0 {
+		t.Fatal("宿主应为运行中的插件分配端口")
+	}
+
 	// 渠道已注册且指向插件端口
 	channels, err := st.ListChannels()
 	if err != nil {
@@ -143,17 +151,6 @@ HTTPServer(("127.0.0.1", int(os.environ["AI_GATEWAY_PLUGIN_PORT"])), H).serve_fo
 			t.Fatal("插件停止后渠道应被停用")
 		}
 	}
-}
-
-// freePort 返回一个当前空闲的回环端口。
-func freePort(t *testing.T) int {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("取空闲端口失败: %v", err)
-	}
-	defer func() { _ = ln.Close() }()
-	return ln.Addr().(*net.TCPAddr).Port
 }
 
 // TestPythonCandidatesPreferLauncher Windows 上必须优先用 py 启动器，避免命中应用商店占位。

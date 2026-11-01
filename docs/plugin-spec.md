@@ -54,18 +54,17 @@ plugins/
 ```json
 {
   "name": "Hello 示例插件",
-  "entry": "main.py",
-  "port": 20723
+  "entry": "main.py"
 }
 ```
 
-必填只有三个：`name` / `entry` / `port`。其余都是可选的（见 §3）。
+必填只有两个：`name` / `entry`。其余都是可选的（见 §3）。
 
 固定约定（不用声明）：
 
 | 约定 | 值 |
 |---|---|
-| 监听地址 | `127.0.0.1:<port>` |
+| 监听地址 | `127.0.0.1:<AI_GATEWAY_PLUGIN_PORT>`（端口由宿主分配） |
 | 上游根路径 | `/v1`（对话 `POST /v1/chat/completions`，模型列表 `GET /v1/models`） |
 | 探活 | `GET /health` |
 | 控制台前缀 | `/console`（声明 `"console": true` 后才有） |
@@ -114,7 +113,6 @@ plugins/
 |---|---|---|---|---|
 | `name` | string | ✅ | — | 展示名，同时也是渠道名 |
 | `entry` | string | ✅ | — | 入口脚本，**必须是插件目录内的 `.py` 文件**（相对路径，不允许绝对路径或 `..` 逃逸） |
-| `port` | int | ✅ | — | **插件自己监听的端口**（1–65535），由你选定；被别的程序占用时会在面板上报错 |
 | `version` | string | | `""` | 仅用于展示 |
 | `description` | string | | `""` | 仅用于展示 |
 | `args` | string[] | | `[]` | 传给入口脚本的额外参数，支持 `{{port}}` |
@@ -128,17 +126,16 @@ plugins/
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `startup_timeout_ms` | int | `20000` | 启动后等待探活通过的最长时间，慢启动的程序可以调大 |
-| `python_version` | string | `3.12` | 期望的便携 Python 版本（仅用于下载；不满足也不会阻止用系统 Python 启动） |
 
-**端口规则**：`port` 由你自己选定并写死在清单里（1–65535）。网关只做两件事：把它注入到
-`AI_GATEWAY_PLUGIN_PORT` 和 `{{port}}`，以及启动前确认它没被别的程序占用——被占用时插件会以
-`failed` 停在面板上并给出提示，换一个端口即可。不存在「自动分配」。
+**端口规则**：端口**由宿主自动分配**（`127.0.0.1` 上的空闲端口），每次启动前重新分配，
+通过 `AI_GATEWAY_PLUGIN_PORT` 与 `{{port}}` 注入给你。清单里**不需要也不能**写死端口，
+所以多个插件之间、插件与本机其它软件之间都不会撞车；插件重启后端口可能变化，
+因此**不要把它持久化到任何地方**——需要对外暴露的地址请用 `AI_GATEWAY_PLUGIN_PORT` 现取。
 
-`port` 是**主服务端口**，网关只会往它发探活、`/v1/*` 与控制台请求。
+`AI_GATEWAY_PLUGIN_PORT` 是**主服务端口**，网关只会往它发探活、`/v1/*` 与控制台请求。
 
-**插件不得再监听任何额外端口。** 典型场景「`link` 类登录需要本机 OAuth 回调页」已由网关统一托管：
-网关开放了一个统一回调入口 `/plugin-callback/<插件id>/...`，插件把回调地址拼出来即可，无需自己监听
-（见 §6.7）。插件只应监听清单里的 `port` 这一个端口。
+**插件只监听这一个端口。** 「`link` 类登录需要本机 OAuth 回调页」由网关在
+**监听端口 + 1** 上提供回调入口，按插件声明的 `callback_paths` 把请求原样透传到插件主端口（见 §6.7）。
 
 ---
 
@@ -149,10 +146,10 @@ plugins/
 | 变量 | 含义 |
 |---|---|
 | `AI_GATEWAY_PLUGIN_ID` | 插件 id（= 目录名） |
-| `AI_GATEWAY_PLUGIN_PORT` | 你清单里选的端口，**直接监听这个端口** |
+| `AI_GATEWAY_PLUGIN_PORT` | 宿主分配的端口，**直接监听这个端口**（每次启动可能不同） |
 | `AI_GATEWAY_PLUGIN_DIR` | 插件目录的绝对路径（只读，升级会被整体覆盖） |
 | `AI_GATEWAY_PLUGIN_DATA` | 插件私有数据目录（可写，放凭据/缓存；不要写进插件目录） |
-| `AI_GATEWAY_CALLBACK_BASE` | **统一登录回调入口**的基址（不含 method/state），见 §6.7 |
+| `AI_GATEWAY_CALLBACK_BASE` | 登录回调入口的基址（`http://127.0.0.1:<网关监听端口+1>`），见 §6.7 |
 
 > 建议：端口读 `AI_GATEWAY_PLUGIN_PORT`，数据一律落 `AI_GATEWAY_PLUGIN_DATA`。
 > `{{port}}` 占位符只在 `args` / `env` 里可用，等价于 `AI_GATEWAY_PLUGIN_PORT`。
@@ -160,10 +157,9 @@ plugins/
 > 补充：插件进程的**工作目录（CWD）就是插件目录本身**，所以「相对路径」是相对插件目录解析的；
 > 但不要把插件目录当成可写盘——可写内容一律放 `AI_GATEWAY_PLUGIN_DATA`（见 §10）。
 
-`AI_GATEWAY_CALLBACK_BASE` 形如 `http://127.0.0.1:8787/plugin-callback/<你的插件id>`。
+`AI_GATEWAY_CALLBACK_BASE` 形如 `http://127.0.0.1:8788`（网关监听 8787 时）。
 它是**进程启动时**算出来的，进程运行期间不会变；但每次登录请求还会用请求头
-`X-Gateway-Callback-Base` 覆盖它（见 §6.7）——**请优先读请求头**，这样改了外部域名、
-换了访问入口都不需要重启插件。
+`X-Gateway-Callback-Base` 带上同样的值——**请优先读请求头**，这样网关换端口后无需重启插件。
 
 `AI_GATEWAY_PLUGIN_DATA` 是唯一**不会被升级覆盖**的目录，凭据与缓存都放这里。
 如果你在数据目录里存了自定义结构，建议自己放一个 schema 版本标记（例如 `state.json` 里的 `"schema": 2`），
@@ -524,22 +520,26 @@ def account_for_request(handler):
    - 少量文本输入（token / Cookie / 备注名）→ 声明 `fields`，面板直接渲染表单（见上），
      用户不用离开面板；
    - 更复杂的输入（验证码交互、需要在目标站页面里操作才能拿到的东西）→ 走 `link`，
-     回调地址用网关的统一回调入口（见 §6.7），让用户在浏览器里完成输入。
+     回调地址用网关的回调入口（见 §6.7），让用户在浏览器里完成输入。
    两种都不需要用户开终端敲 curl。
 3. **面板同一时间只跟踪一个登录会话**：`link` 发起后若用户又点了另一个登录按钮，
    新会话会**替换**旧的——旧 `state` 立即停止轮询（其授权链接也随之失效）。
    所以不要设计"同时进行多个登录"的流程；被替换掉的会话请靠你自己的超时机制回收（见第 1 点）。
 
-### 6.7 统一登录回调入口（`link` 类登录必读）
+### 6.7 登录回调入口（`link` 类登录必读）
 
 `link` 类登录需要「用户在浏览器里完成授权 → 浏览器跳回本机某个地址」。
-**这个地址由网关统一提供，插件不得自己监听额外端口**（见 §3）。
+**这个地址由网关提供，插件不得自己监听额外端口**（见 §3）。
+
+上游对 `redirect_uri` 的形态要求千差万别（TRAE 要求精确 `^http://127\.0\.0\.1:\d+/authorize$`，
+LobsterAI 固定 `/auth/callback`，ModelScope 用 `/oauth/<state>`），因此
+**路径由插件自己决定**，网关不做任何改写，只按 `callback_paths` 做前缀匹配与原样透传：
 
 ```
-浏览器 ── GET /plugin-callback/<插件id>/<method>/<state> ──▶ 网关（免鉴权，只放行 GET）
-                                                              │ 只映射到 /console/callback/*
-                                                              ▼
-                                        插件进程 http://127.0.0.1:<port>/console/callback/<method>/<state>
+浏览器 ── GET http://127.0.0.1:<网关端口+1>/<你自定的回调路径> ──▶ 网关（免鉴权，只放行 GET）
+                                                                    │ 路径 + 查询串原样透传
+                                                                    ▼
+                                              插件进程 http://127.0.0.1:<插件端口>/<同一路径>
 ```
 
 #### 回调地址怎么拼
@@ -547,32 +547,52 @@ def account_for_request(handler):
 宿主在**每次登录请求**里都会带一个请求头：
 
 ```
-X-Gateway-Callback-Base: https://gw.example.com/plugin-callback/<你的插件id>
+X-Gateway-Callback-Base: http://127.0.0.1:8788
 ```
 
-你在 `POST /console/login/{method}` 里读它，拼上 `/<method>/<state>` 就是回调地址：
+你在 `POST /console/login/{method}` 里读它，拼上你自己要的路径即可：
 
+```python
+base = headers.get("X-Gateway-Callback-Base") or os.environ["AI_GATEWAY_CALLBACK_BASE"]
+redirect_uri = base.rstrip("/") + "/oauth/" + state     # 也可以是 /authorize、/auth/callback…
 ```
-https://gw.example.com/plugin-callback/<插件id>/<method>/<state>
-```
 
-读取优先级（务必按此顺序，否则反代 / 隧道场景会拼错地址）：
+读取优先级：
 
-1. **请求头 `X-Gateway-Callback-Base`**（推荐；每次登录现算，改域名无需重启插件）；
+1. **请求头 `X-Gateway-Callback-Base`**（推荐；每次登录现算，网关换端口无需重启插件）；
 2. 环境变量 `AI_GATEWAY_CALLBACK_BASE`（进程启动时算好的兜底）；
-3. 两者都没有（例如你单独调试插件、不经网关启动）→ 退回自己起临时监听。
+3. 两者都没有（单独调试、不经网关启动）→ 退回插件自身端口的回环地址。
 
-> 第 3 条只是**直连调试的退路**：正常由网关拉起的插件，前两条一定有值。
-> 单独调试时你仍可临时监听一个回环端口，但**不要把它当成正式方案**——正式运行不得额外监听。
+> 主机名固定是 `127.0.0.1`：多数上游对 `redirect_uri` 做回环硬校验，换成局域网 IP / 域名会被直接
+> 拒绝。代价是**远程访问面板或 Docker 部署时，授权后浏览器打不开这个地址**——属于预期现象，
+> 用户在地址栏复制完整链接、粘贴回面板登录卡片即可（见下方「粘贴回调」）。
+
+#### 必须声明 `callback_paths`
+
+```json
+{ "callback_paths": ["/authorize"] }
+```
+
+- 网关只把**落在这些前缀下**的路径转发给该插件，其余一律 404，不会成为通往插件其它端点的跳板；
+- 路径**只在网关侧匹配**，插件仍然只监听宿主分配的那个端口（见 §3）；
+- 多个插件的声明不能重叠（`/oauth` 与 `/oauth2` 视为不重叠，`/oauth` 与 `/oauth/x` 视为重叠），
+  冲突时后启动的插件会以 `failed` 停下并提示；
+- 没声明 `callback_paths` 的插件不能用 `link` 类登录。
+
+#### 粘贴回调（Docker / 远程访问）
+
+Docker 部署时回调端口只在容器内，宿主机浏览器打不开。此时用户在浏览器地址栏复制整条回调链接，
+粘贴到面板登录卡片，网关按路径找到对应插件并转交
+（`POST /admin/api/plugins/<id>/callback`；只接受回环地址、只放行 `callback_paths` 里的路径）。
 
 #### 网关侧收到的请求长什么样
 
 - 方法**只放行 `GET`**，其余一律 `405`；
-- 路径原样透传到你的 `/console/callback/<method>/<state>`，查询串一并带上；
+- 路径与查询串**原样**透传给插件，不做前缀改写；
 - 网关会透传 `X-Forwarded-Proto` / `X-Forwarded-Host` / `X-Forwarded-Prefix`，
   供你在返回 HTML 时生成绝对跳转地址；
 - 你的响应体（HTML 或 JSON）**原样返回给浏览器**，状态码也照搬；响应体上限 1 MB；
-- 插件不存在 / 未运行 / 未声明 `console` 时，网关返回**自己的**错误页（不转发）。
+- 没有插件认领该路径 / 插件未运行时，网关返回**自己的**错误页（不转发）。
 
 #### 三条硬要求
 
@@ -584,31 +604,7 @@ https://gw.example.com/plugin-callback/<插件id>/<method>/<state>
    面板只轮询 `GET /console/login/{method}?state=xxx` 拿状态，不依赖回调页的内容。
 
 > 提示：把 `state` 放进回调**路径**（而非查询串）更稳妥——部分上游要求 `redirect_uri`
-> 精确匹配，路径形态的地址更容易登记进白名单。
-
-#### 上游强制固定回调地址时（`callback_paths`）
-
-个别上游（如 TRAE、LobsterAI）只接受 `http://127.0.0.1:<端口>/...` 形式的 `redirect_uri`，
-无法使用网关的统一回调入口。这类插件可以在 `plugin.json` 声明自己监听的回调路径：
-
-```json
-{ "callback_paths": ["/authorize"] }
-```
-
-- 这些路径由插件**在自身端口上**处理（与 §3「不得监听额外端口」不冲突）；
-- 桌面版可直接访问；**Docker 部署时该端口只在容器内，宿主机浏览器打不开**，属于预期现象；
-- 此时用户把浏览器地址栏里的完整回调链接粘贴到面板登录卡片，网关校验后转发给插件
-  （`POST /admin/api/plugins/<id>/callback`；只接受回环地址、只放行 `callback_paths` 里的路径）。
-
-#### 反代 / 隧道场景
-
-网关支持把面板与回调一起暴露到公网（nginx、frp、Cloudflare Tunnel 等）。此时：
-
-- 面板「设置」里填 **外部访问地址**（如 `https://gw.example.com`）。填了它就以它为准；
-- 未填时，网关会**按登录请求的转发头自动推导**（仅采信直连方为回环的 `X-Forwarded-*`），
-  所以你即便不填，只要反代正确转发了 `X-Forwarded-Proto` / `X-Forwarded-Host` 也能工作；
-- **反代必须把路径原样透传到网关根路径**（例如 nginx `proxy_pass http://127.0.0.1:8787/;`
-  带结尾斜杠）。网关**不支持**挂在 `/gw/` 之类的路径前缀下——不要在外部地址里带路径。
+> 精确匹配，路径形态的地址更容易登记进白名单（ModelScope 就是 `/oauth/<state>`）。
 
 ### 6.8 面板行为速览
 
@@ -680,8 +676,8 @@ for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGBREAK", signal.SI
 
 - `entry` 不允许绝对路径，也不允许 `..` 逃逸出插件目录（校验失败插件不会启动）
 - 插件凭据不进入网关数据库；日志与控制台接口中不出现明文凭据（含 `last_error`）
-- 插件只应监听 `127.0.0.1` 的 `port` 一个端口，**不得监听任何额外端口**（登录回调由网关统一入口托管，见 §6.7）
-- 统一回调入口 `/plugin-callback/*` **免鉴权**且可能暴露到公网，因此 `state` 校验是硬要求（见 §6.7）
+- 插件只应监听 `127.0.0.1` 上宿主分配的 `AI_GATEWAY_PLUGIN_PORT`，**不得监听任何额外端口**（登录回调由网关的回调入口透传，见 §6.7）
+- 回调入口 `http://127.0.0.1:<网关端口+1>` **免鉴权**，因此 `state` 校验是硬要求（见 §6.7）
 - 请只使用你**本人账号的正当额度**；不要实现任何绕过上游额度或风控的功能
 
 ---
@@ -699,10 +695,10 @@ for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGBREAK", signal.SI
 |---|---|
 | 面板里看不到插件 | 目录名不合规（2–32 位、首字符须为字母/数字，其余为小写字母/数字/`-`/`_`）；或缺 `plugin.json`；或校验失败（看日志） |
 | 状态一直 `starting` | 探活没过：没监听 `AI_GATEWAY_PLUGIN_PORT`、没实现 `GET /health`、启动太慢（调大 `startup_timeout_ms`） |
-| 状态 `failed` 且 `last_error` 提示端口被占用 | `port` 与别的程序冲突，改 `plugin.json` 里的 `port` 后点「启动」 |
+| 状态 `failed` 且 `last_error` 提示端口分配失败 | 本机可用回环端口耗尽或临时被抢占；重启插件会重新分配 |
 | 状态 `failed` | 连续 5 次失败已放弃；看面板 `last_error` 与日志，修好后点「启动」 |
 | 渠道里没有模型 | 模型不自动填充。插件需实现 `GET /v1/models`（形状见 §2），再在「渠道管理」编辑该渠道、点「获取上游模型」后勾选 |
-| 转发报 502 | 插件进程没起来，或没监听清单里写的 `port` |
+| 转发报 502 | 插件进程没起来，或没监听 `AI_GATEWAY_PLUGIN_PORT` |
 | 一个坏模型把渠道里所有账号都试了一遍 | 你把该错误映射成了 `404` / `429` / `5xx` 之一。请求本身的问题请返回 `400`（见 §5.2） |
 | 客户端看到的报错只有半句话 | OpenAI 入口只透传你响应体的**前 300 字节**，把错误文案压到 300 字节内（见 §5.3） |
 | 插件反复重启，最终 `failed` | `/health` 跟着上游状态一起失败了（见 §7）。`/health` 只应反映插件进程自身，账号/上游状态放 `/console/accounts` |
@@ -710,7 +706,9 @@ for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGBREAK", signal.SI
 | 控制台请求 404 | 实际路由与约定接口不匹配（见 §6.3）；若来自插件本身，则是插件侧没实现该端点 |
 | 面板没有「签到 / 额度」按钮 | 清单里 `capabilities` 没声明 `checkin` / `quota` |
 | 控制台一直「正在等待授权…」 | 登录接口一直返回 `pending`。给 `state` 设过期时间、超时返回 `expired`（见 §6.6） |
-| 反代 / 隧道下授权后回调一直不通 | 回调地址拼成了 `127.0.0.1`。请在面板「设置」填外部访问地址，或让反代转发 `X-Forwarded-Proto` / `X-Forwarded-Host`；反代还需把 `/plugin-callback/` 原样透传到网关根路径（见 §6.7） |
+| 授权后浏览器打不开回调页 / 报连接被拒 | 回调地址是 `127.0.0.1:<网关端口+1>`，只在网关所在机器上可直达。Docker 或远程访问面板时属预期，把地址栏里的完整链接粘贴回面板即可（见 §6.7） |
+| 回调入口 404「没有插件认领这个回调路径」 | 插件没把该路径写进 `plugin.json` 的 `callback_paths`，或插件未运行（见 §6.7） |
+| 插件启动报「回调路径已被插件 X 占用」 | 两个插件的 `callback_paths` 重叠，改成互不包含的前缀 |
 | 回调页报「插件当前不可用」 | 插件未运行 / 未声明 `console`，网关没有转发。回面板确认插件状态后重试 |
 | 回调请求返回 405 | 上游重定向用了 POST 或其它方法。网关只放行 `GET`，请改用授权码模式的 `GET` 重定向 |
 | 面板上加不了账号 | 插件只实现了 `POST /accounts`，但没返回 `login_methods`——面板没有表单入口（见 §6.3 / §6.6） |
@@ -744,7 +742,6 @@ for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGBREAK", signal.SI
 {
   "name": "Hello Python",
   "entry": "main.py",
-  "port": 20801,
   "requirements": ["httpx>=0.27"]
 }
 ```
@@ -754,20 +751,12 @@ for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGBREAK", signal.SI
 
 ### 11.1 解释器从哪来
 
-宿主按顺序解析，找到即用：
+宿主只解析**系统 Python**：Windows 依次尝试 `py -3` → `python3` → `python`（会自动跳过应用商店的占位程序）；
+macOS / Linux 依次尝试 `python3` → `python`。只接受 Python 3。
 
-1. **系统 Python**：Windows 依次尝试 `py -3` → `python3` → `python`（会自动跳过应用商店的占位程序）；
-   macOS / Linux 依次尝试 `python3` → `python`。只接受 Python 3。
-2. **便携 Python**：`<数据目录>/runtime/python/<版本>/`（可在面板「设置 → 便携 Python 目录」改位置，
-   或设置环境变量 `AIGW_PYTHON_RUNTIME_DIR`）。
-3. 都没有 → 插件以 `failed` 停下，`last_error` 给出安装指引。**宿主不会在启动流程里自动下载**。
-
-便携 Python 由用户在面板「设置 → Python 插件运行时」点「下载便携 Python」显式获取：
-默认从 python-build-standalone 官方发布地址下载，下载完成后校验、解压到便携目录（临时目录 + 原子改名）。
-国内或内网可自行转存一份，并把「便携 Python 下载地址」填成镜像前缀（**文件名与官方保持一致**）。
-也可以手工解压后放进便携目录，宿主会直接识别。
-
-> 便携 Python 不随网关安装包分发，安装包体积不变；只有真正用 Python 插件的机器才需要这一份运行时。
+1. Docker 镜像的基础镜像已内置 python3 / pip，开箱可用；
+2. Windows 桌面版需用户自行安装 Python 3（建议从 python.org 安装并勾选 Add to PATH）；
+3. 找不到 → 插件以 `failed` 停下，`last_error` 给出安装指引。
 
 ### 11.2 依赖安装
 
@@ -802,8 +791,5 @@ for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGBREAK", signal.SI
 
 - **停止信号**：Unix 收 `SIGTERM`，Windows 收 `Ctrl-Break`（Python 里的 `signal.SIGBREAK`）。
   桌面 GUI 无控制台时会退化为强杀，所以账号与状态**必须原子落盘**（写临时文件再 rename）。
-- **只监听一个端口**：与其它插件一致，登录回调走网关的 `/plugin-callback/<id>/...`。
-- **macOS Gatekeeper**：宿主会自动清理便携 Python 的 quarantine 属性；手工放入的可执行文件如被拦截，
-  执行 `xattr -dr com.apple.quarantine <目录>`。
-- **Alpine / musl**：便携 Python 默认取 glibc 版本；Alpine 基础镜像本身通常已带 `python3`，
-  会走系统 Python，无需下载。
+- **只监听一个端口**：与其它插件一致，登录回调由网关回调入口透传到你的 `callback_paths`。
+- **Alpine / musl**：Alpine 基础镜像本身通常已带 `python3`，走系统 Python 即可。

@@ -45,14 +45,27 @@ def handle_account_delete(plugin, account_id):
 def handle_login_start(plugin, method, payload, headers):
     if method != "oauth":
         return 400, {"error": "未知的登录方式：" + str(method)}
-    if not plugin.port:
-        return 500, {"error": "插件端口未知，无法生成回环回调地址"}
+    base = _callback_base(headers)
+    if not base:
+        return 500, {"error": "缺少网关回调基址（X-Gateway-Callback-Base），请从网关面板发起登录"}
     try:
-        return 200, plugin.login.start()
+        return 200, plugin.login.start(base)
     except UpstreamError as err:
         return err.status, {"error": truncate_runes(err.msg, 120)}
     except Exception as exc:
         return 502, {"error": truncate_runes(as_upstream_error(exc).msg, 120)}
+
+
+def _callback_base(headers):
+    """回调基址：优先读本次登录请求的注入头，其次读进程启动时注入的环境变量。"""
+    import os
+
+    for name in ("X-Gateway-Callback-Base", "x-gateway-callback-base"):
+        value = ((headers or {}).get(name) or "").strip()
+        if value:
+            return value.rstrip("/")
+    value = (os.environ.get("AI_GATEWAY_CALLBACK_BASE") or "").strip()
+    return value.rstrip("/") if value else ""
 
 
 def handle_login_status(plugin, method, query):

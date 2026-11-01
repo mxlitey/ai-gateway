@@ -28,7 +28,6 @@ const validManifest = `{
   "name": "Hello",
   "version": "1.0.0",
   "entry": "main.py",
-  "port": 20800,
   "console": true,
   "capabilities": ["quota", "unknown-cap", "checkin"]
 }`
@@ -68,7 +67,7 @@ func TestUpstreamBaseURL(t *testing.T) {
 }
 
 func TestValidateRejectsBadID(t *testing.T) {
-	dir := writePlugin(t, t.TempDir(), "Hello", `{"name":"H","entry":"main.py","port":20800}`, "main.py")
+	dir := writePlugin(t, t.TempDir(), "Hello", `{"name":"H","entry":"main.py"}`, "main.py")
 	manifest, err := LoadManifest(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -116,14 +115,15 @@ func TestValidateRejectsMissingEntry(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsBadPort(t *testing.T) {
+// TestPortNotRequired 端口由宿主分配，清单里不写 port 也能通过校验。
+func TestPortNotRequired(t *testing.T) {
 	dir := writePlugin(t, t.TempDir(), "hello", `{"name":"H","entry":"main.py"}`, "main.py")
 	manifest, err := LoadManifest(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Validate(dir, manifest); err == nil {
-		t.Fatal("未声明 port 时应报错")
+	if err := Validate(dir, manifest); err != nil {
+		t.Fatalf("未声明 port 时应校验通过，实际: %v", err)
 	}
 }
 

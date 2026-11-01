@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -486,7 +485,7 @@ func safeLocalJoin(root, rel string) (string, bool) {
 
 // ---- Python 与依赖 ----
 
-// findPython 依次尝试 AIGW_MCP_PYTHON、便携 Python、系统 Python，并缓存结果。
+// findPython 依次尝试 AIGW_MCP_PYTHON、系统 Python，并缓存结果。
 func (lm *localManager) findPython() (*localPython, error) {
 	lm.pyMu.Lock()
 	defer lm.pyMu.Unlock()
@@ -499,27 +498,6 @@ func (lm *localManager) findPython() (*localPython, error) {
 			return py, nil
 		}
 	}
-	root := filepath.Join(lm.dataDir, "runtime", "python")
-	if entries, err := os.ReadDir(root); err == nil {
-		versions := make([]string, 0, len(entries))
-		for _, e := range entries {
-			if e.IsDir() {
-				versions = append(versions, e.Name())
-			}
-		}
-		sort.Slice(versions, func(i, j int) bool { return pyVersionLess(versions[j], versions[i]) })
-		for _, v := range versions {
-			for _, p := range portablePythonPaths(root, v) {
-				if info, err := os.Stat(p); err != nil || info.IsDir() {
-					continue
-				}
-				if py, err := probePython(p, nil); err == nil {
-					lm.pyFound = py
-					return py, nil
-				}
-			}
-		}
-	}
 	for _, cand := range systemPythonCandidates() {
 		path, err := exec.LookPath(cand[0])
 		if err != nil || isStorePython(path) {
@@ -530,7 +508,7 @@ func (lm *localManager) findPython() (*localPython, error) {
 			return py, nil
 		}
 	}
-	return nil, fmt.Errorf("未找到可用的 Python 3，请安装 Python 或使用插件页的便携运行时")
+	return nil, fmt.Errorf("未找到可用的 Python 3，请先安装 Python 3（或用 AIGW_MCP_PYTHON 指定解释器）")
 }
 
 func systemPythonCandidates() [][]string {
@@ -546,37 +524,6 @@ func isStorePython(path string) bool {
 	}
 	lower := strings.ToLower(path)
 	return strings.Contains(lower, `\windowsapps\`) && strings.HasSuffix(lower, ".exe")
-}
-
-func portablePythonPaths(root, version string) []string {
-	dir := filepath.Join(root, version)
-	if runtime.GOOS == "windows" {
-		return []string{filepath.Join(dir, "python", "python.exe"), filepath.Join(dir, "python.exe")}
-	}
-	return []string{filepath.Join(dir, "bin", "python3"), filepath.Join(dir, "python", "bin", "python3")}
-}
-
-// pyVersionLess 按数值比较 Python 版本号（3.9 小于 3.12）。
-func pyVersionLess(a, b string) bool {
-	as := strings.Split(a, ".")
-	bs := strings.Split(b, ".")
-	n := len(as)
-	if len(bs) > n {
-		n = len(bs)
-	}
-	for i := 0; i < n; i++ {
-		av, bv := 0, 0
-		if i < len(as) {
-			av, _ = strconv.Atoi(as[i])
-		}
-		if i < len(bs) {
-			bv, _ = strconv.Atoi(bs[i])
-		}
-		if av != bv {
-			return av < bv
-		}
-	}
-	return false
 }
 
 func probePython(bin string, pre []string) (*localPython, error) {

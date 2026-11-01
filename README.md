@@ -27,7 +27,7 @@ AI Gateway 是一个运行在你自己电脑（或自己的服务器）上的 AP
 - **本地 MCP 服务器** — 把自己的 Python MCP 服务器放进 `mcp/` 目录即自动登记、自动分配回环端口、自动装依赖，卡片带「本地」徽章
 - **管理 MCP** — 可选开启 `POST /admin/mcp`，把网关自身的用量、渠道、插件、MCP 上游、诊断等能力暴露为 MCP 工具，供 AI 客户端查询与操作；独立管理令牌、可单独关闭写操作
 - **用量与费用** — 按密钥/模型/渠道/端点/上游密钥记录 token 用量，内置价格表（默认同步 OpenRouter 价目）自动核算费用，价格源与刷新间隔可配置
-- **插件体系** — Python 写的本地 HTTP 服务放进 `plugins/` 目录即自动拉起、探活、注册为渠道；插件自选端口，可声明控制台能力（账号签到、额度查询），宿主统一托管登录回调
+- **插件体系** — Python 写的本地 HTTP 服务放进 `plugins/` 目录即自动拉起、探活、注册为渠道；插件自选端口，可声明控制台能力（账号签到、额度查询），登录回调由网关在「监听端口 +1」上按插件的 `callback_paths` 原样透传
 - **管理面板** — React 19 + Vite + Tailwind 构建，内嵌进单一二进制（仪表盘 · 渠道管理 · 模型路由 · API 密钥 · MCP 服务器 · 插件 · 用量 · 价格表 · 错误日志 · 设置）；管理员密码 PBKDF2 哈希存储，会话 Token 24h 有效
 - **桌面 GUI** — Wails v3 + WebView2 原生窗口（Windows），自绘界面：启停网关、改端口、切换「仅本机 / 局域网」、管理插件、查看实时日志；系统托盘常驻，单实例锁，关窗不退出、托盘退出即停服
 - **无界面部署** — 另有纯命令行入口与 Linux 镜像，适合服务器 / Docker / 反代部署
@@ -62,7 +62,7 @@ docker compose up -d --build
 # 浏览器打开 http://localhost:8788（compose 默认映射到宿主机 8788，避开桌面版的 8787）
 ```
 
-镜像内置 TRAE / WorkBuddy 两个插件；`/data` 与 `/plugins` 两个命名卷分别持久化数据与插件，`/mcp` 卷用来放你自己的本地 MCP 服务器（镜像不内置示例）。
+镜像内置 TRAE / WorkBuddy 两个插件与 `mcp/github-search` 本地 MCP 服务器；`/data` 与 `/plugins` 两个命名卷分别持久化数据与插件，`/mcp` 卷用来放本地 MCP 服务器（自带 github-search，也可以加自己的）。
 
 ### 客户端接入
 
@@ -172,13 +172,11 @@ Header : Authorization: Bearer sk-你的密钥
 | 环境变量 | 说明 |
 |---|---|
 | `AIGW_PRICE_ENDPOINT` | 价格清单地址，默认 `https://openrouter.ai/api/v1/models` |
-| `AIGW_PYTHON_RUNTIME_DIR` | 便携 Python 根目录（离线部署用） |
-| `AIGW_PYTHON_MIRROR` | 便携 Python 下载镜像前缀 |
 | `AIGW_PIP_INDEX_URLS` | 追加的 pip 源（逗号分隔，留空用内置顺序：官方源 → 清华 → 阿里云 → 腾讯 → 中科大） |
 
-面板「设置」页可热改的运行期设置：日志级别、价格源地址与刷新间隔、插件探活间隔/超时/不健康阈值/最大重启次数、自动签到间隔、上游密钥冷却开关与基础/上限时长、便携 Python 目录与镜像、外部访问地址（反代/隧道场景下用于生成插件登录回调基址）。
+面板「设置」页可热改的运行期设置：日志级别、价格源地址与刷新间隔、插件探活间隔/超时/不健康阈值/最大重启次数、自动签到间隔、上游密钥冷却开关与基础/上限时长、pip 源。
 
-端口与访问范围在桌面版中会持久化到数据库，下次启动沿用。插件端口由插件自己写在 `plugin.json` 的 `port` 里（插件只监听这一个端口）；网关启动前会确认它没被其他程序占用，被占用时在面板上明确提示。插件登录所需的本机 OAuth 回调页由网关统一入口 `/plugin-callback/<插件id>/...` 托管，详情见 [插件开发规范](docs/plugin-spec.md)。
+端口与访问范围在桌面版中会持久化到数据库，下次启动沿用。插件端口由宿主自动分配（`127.0.0.1` 上的空闲端口，通过 `AI_GATEWAY_PLUGIN_PORT` 注入），插件只监听这一个端口，因此不受本机其它软件占用影响。插件登录所需的本机 OAuth 回调页由网关在「监听端口 + 1」上提供入口（默认 8788），按插件声明的 `callback_paths` 原样透传；Docker 或远程访问时浏览器打不开该地址，把地址栏链接粘回面板即可。详情见 [插件开发规范](docs/plugin-spec.md)。
 
 ## 🔌 插件系统
 
@@ -187,11 +185,11 @@ Header : Authorization: Bearer sk-你的密钥
 ```
 plugins/
 └── hello/
-    ├── plugin.json      # 清单：name / entry / port（+ 可选 console / capabilities / requirements）
+    ├── plugin.json      # 清单：name / entry（+ 可选 console / capabilities / requirements）
     └── main.py          # 你的程序（实现 OpenAI 兼容上游即可）
 ```
 
-同一份 `main.py` 在 Windows / macOS / Linux（含 Docker）上通用，不需要编译多份。网关只支持 Python 插件：`entry` 必须是插件目录内的 `.py` 脚本。宿主会依次尝试系统 Python（`py -3` → `python3` → `python`）与 `data/runtime/python/` 下的便携 Python，并按清单声明的 `requirements` 安装依赖到插件私有目录。
+同一份 `main.py` 在 Windows / macOS / Linux（含 Docker）上通用，不需要编译多份。网关只支持 Python 插件：`entry` 必须是插件目录内的 `.py` 脚本。宿主用系统 Python（`py -3` → `python3` → `python`）拉起插件，并按清单声明的 `requirements` 安装依赖到插件私有目录；Docker 镜像已内置 Python，Windows 桌面版需自行安装 Python 3。
 
 内置两个示例插件（`examples/`，均为纯 Python 标准库实现），安装包与镜像只打包这两个：
 
@@ -216,7 +214,7 @@ mcp/
     └── requirements.txt  # 可选：有实际依赖时自动 pip 安装
 ```
 
-安装包与镜像只创建这个空目录，不内置任何示例。想上手可以参考仓库里的 `examples/mcp/local-demo`（最小实现）与 `examples/mcp/github-search`（真实 GitHub 搜索），把目录整个复制到 `mcp/` 下即可。完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里把该密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
+安装包与镜像都内置了 `mcp/github-search`（GitHub 仓库 / 代码 / issue / PR / 提交 / 用户搜索，纯标准库，匿名即可用；在它的 `mcp.json` 的 `env` 里填 `GITHUB_TOKEN` 可提升额度并解锁代码搜索）。想加自己的服务，参考仓库里的 `examples/mcp/local-demo`（最小实现），把目录整个复制到 `mcp/` 下即可。完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里把该密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
 
 ## 🛠️ 从源码构建
 
@@ -258,7 +256,7 @@ ai-gateway-v2/
 │   ├── channel/           # 渠道自定义请求头占位符与上游端点路径推导
 │   ├── claudeapi/         # Claude ⇄ OpenAI 协议转换
 │   ├── config/            # CLI 参数与环境变量
-│   ├── httpapi/           # 路由分发（/v1 · /mcp · /admin/api · 插件回调 · SPA 静态资源）
+│   ├── httpapi/           # 路由分发（/v1 · /mcp · /admin/api · SPA 静态资源）
 │   ├── id/                # 随机 ID / UUID 生成
 │   ├── mcp/               # MCP 聚合：工具缓存与路由、配额、探活、JSON-RPC 处理
 │   ├── model/             # 领域模型（渠道 / 密钥 / 路由 / 价格 / 日志 / MCP）

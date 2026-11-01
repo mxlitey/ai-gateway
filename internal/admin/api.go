@@ -140,9 +140,6 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 	case path == "/password" && method == http.MethodPost:
 		a.changePassword(w, r)
 
-	case path == "/external-base" && method == http.MethodPut:
-		a.setExternalBase(w, r)
-
 	// ---- 运行期设置（面板可改，多数立即生效） ----
 	case path == "/settings" && method == http.MethodGet:
 		a.getSettings(w)
@@ -152,8 +149,6 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 	// ---- Python 插件运行时 ----
 	case path == "/python/status" && method == http.MethodGet:
 		a.pythonStatus(w)
-	case path == "/python/download" && method == http.MethodPost:
-		a.downloadPythonRuntime(w, r)
 	case path == "/python/settings" && method == http.MethodGet:
 		a.getPythonSettings(w)
 	case path == "/python/settings" && method == http.MethodPut:
@@ -207,11 +202,11 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 
 	// ---- 管理 MCP（/admin/mcp 的配置接口） ----
 	case path == "/admin-mcp" && method == http.MethodGet:
-		a.adminMCPState(w)
+		a.adminMCPState(w, r)
 	case path == "/admin-mcp" && method == http.MethodPut:
 		a.saveAdminMCP(w, r)
 	case path == "/admin-mcp/token" && method == http.MethodPost:
-		a.resetAdminMCPTokenAPI(w)
+		a.resetAdminMCPTokenAPI(w, r)
 
 	// ---- 用量与费用 ----
 	case path == "/usage/summary" && method == http.MethodGet:
@@ -743,56 +738,13 @@ func (a *API) runtimeInfo(w http.ResponseWriter) {
 	}
 	base := fmt.Sprintf("http://%s:%d", host, cfg.Port)
 	jsonOK(w, map[string]any{
-		"lan":           lan,
-		"listen_host":   cfg.Host,
-		"port":          cfg.Port,
-		"access_url":    base,
-		"api_url":       base + "/v1",
-		"data_dir":      cfg.DataDir,
-		"external_base": a.externalBaseURL(),
+		"lan":         lan,
+		"listen_host": cfg.Host,
+		"port":        cfg.Port,
+		"access_url":  base,
+		"api_url":     base + "/v1",
+		"data_dir":    cfg.DataDir,
 	})
-}
-
-// externalBaseURL 读取面板配置的「外部访问地址」（反代 / 隧道场景），未配置返回空串。
-func (a *API) externalBaseURL() string {
-	v, ok, err := a.store.GetSetting(store.SettingExternalBaseURL)
-	if err != nil || !ok {
-		return ""
-	}
-	return strings.TrimSpace(v)
-}
-
-// setExternalBase 保存「外部访问地址」。留空表示清除配置，回调基址回退为按监听地址推导。
-func (a *API) setExternalBase(w http.ResponseWriter, r *http.Request) {
-	var body struct {
-		ExternalBase string `json:"external_base"`
-	}
-	if !decodeBody(w, r, &body) {
-		return
-	}
-	value := strings.TrimRight(strings.TrimSpace(body.ExternalBase), "/")
-	if value != "" {
-		// 只接受「协议 + 主机[:端口]」，路径前缀由反代剥离（见 docs/plugin-spec.md §6.6）
-		var rest string
-		switch {
-		case strings.HasPrefix(value, "https://"):
-			rest = value[len("https://"):]
-		case strings.HasPrefix(value, "http://"):
-			rest = value[len("http://"):]
-		default:
-			jsonErr(w, http.StatusBadRequest, "外部访问地址需以 http:// 或 https:// 开头")
-			return
-		}
-		if rest == "" || strings.ContainsAny(rest, " \t/?#@") {
-			jsonErr(w, http.StatusBadRequest, "外部访问地址只能填到域名（可带端口），不要带路径或查询串")
-			return
-		}
-	}
-	if err := a.store.SetSetting(store.SettingExternalBaseURL, value); err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	jsonOK(w, map[string]any{"success": true, "external_base": value})
 }
 
 // ---------- 运行期设置 ----------
@@ -914,31 +866,13 @@ func (a *API) priceEndpointDefault() string {
 
 // ---------- Python 插件运行时 ----------
 
-// pythonStatus 返回 Python 运行时的探测结果（系统 Python / 便携 Python / 未找到）。
+// pythonStatus 返回 Python 运行时的探测结果（系统 Python / 未找到）。
 func (a *API) pythonStatus(w http.ResponseWriter) {
 	if a.host == nil {
 		jsonErr(w, http.StatusNotImplemented, "插件宿主未启用")
 		return
 	}
 	jsonOK(w, a.host.PythonStatus())
-}
-
-// downloadPythonRuntime 下载便携 Python（显式操作，可能需要数十秒到数分钟）。
-func (a *API) downloadPythonRuntime(w http.ResponseWriter, r *http.Request) {
-	if a.host == nil {
-		jsonErr(w, http.StatusNotImplemented, "插件宿主未启用")
-		return
-	}
-	var body struct {
-		Version string `json:"version"`
-	}
-	_ = json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&body)
-	path, err := a.host.DownloadPortablePython(r.Context(), body.Version)
-	if err != nil {
-		jsonErr(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	jsonOK(w, map[string]any{"success": true, "path": path, "status": a.host.PythonStatus()})
 }
 
 // getPythonSettings 返回 Python 插件的运行时设置（均为可选覆盖项）。
@@ -952,9 +886,7 @@ func (a *API) getPythonSettings(w http.ResponseWriter) {
 	}
 	jsonOK(w, map[string]any{
 		"settings": map[string]string{
-			"python_runtime_dir": get(store.SettingPythonRuntimeDir),
-			"python_mirror":      get(store.SettingPythonMirror),
-			"pip_index_urls":     get(store.SettingPipIndexURLs),
+			"pip_index_urls": get(store.SettingPipIndexURLs),
 		},
 	})
 }
@@ -962,16 +894,9 @@ func (a *API) getPythonSettings(w http.ResponseWriter) {
 // updatePythonSettings 保存 Python 插件运行时设置；留空表示恢复默认行为。
 func (a *API) updatePythonSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		PythonRuntimeDir string `json:"python_runtime_dir"`
-		PythonMirror     string `json:"python_mirror"`
-		PipIndexURLs     string `json:"pip_index_urls"`
+		PipIndexURLs string `json:"pip_index_urls"`
 	}
 	if !decodeBody(w, r, &body) {
-		return
-	}
-	mirror := strings.TrimSpace(body.PythonMirror)
-	if mirror != "" && !strings.HasPrefix(mirror, "http://") && !strings.HasPrefix(mirror, "https://") {
-		jsonErr(w, http.StatusBadRequest, "便携 Python 下载地址需以 http:// 或 https:// 开头")
 		return
 	}
 	// pip 源逐条校验，避免把明显写错的地址存进去
@@ -988,21 +913,13 @@ func (a *API) updatePythonSettings(w http.ResponseWriter, r *http.Request) {
 		sources = append(sources, s)
 	}
 
-	pairs := map[string]string{
-		store.SettingPythonRuntimeDir: strings.TrimSpace(body.PythonRuntimeDir),
-		store.SettingPythonMirror:     strings.TrimRight(mirror, "/"),
-		store.SettingPipIndexURLs:     strings.Join(sources, ","),
-	}
-	for k, v := range pairs {
-		if err := a.store.SetSetting(k, v); err != nil {
-			jsonErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
+	value := strings.Join(sources, ",")
+	if err := a.store.SetSetting(store.SettingPipIndexURLs, value); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	jsonOK(w, map[string]any{"success": true, "settings": map[string]string{
-		"python_runtime_dir": pairs[store.SettingPythonRuntimeDir],
-		"python_mirror":      pairs[store.SettingPythonMirror],
-		"pip_index_urls":     pairs[store.SettingPipIndexURLs],
+		"pip_index_urls": value,
 	}})
 }
 
@@ -1591,10 +1508,10 @@ func (a *API) pluginConsole(w http.ResponseWriter, r *http.Request, pluginID, su
 	}
 	req.Header.Set("Accept", "application/json")
 
-	// 登录请求：注入本次推导出的回调基址，插件据此拼授权链接的回调地址。
-	// 改隧道域名 / 换访问入口后无需重启插件即可生效（见 docs/plugin-spec.md §6.6）。
+	// 登录请求：注入回调入口基址，插件据此拼授权链接的回调地址。
+	// 路径完全由插件自己决定（见 docs/plugin-spec.md §6.7）。
 	if strings.HasPrefix(sub, "login/") {
-		if base := a.host.CallbackBaseForPlugin(pluginID, r); base != "" {
+		if base := a.host.CallbackBase(); base != "" {
 			req.Header.Set(plugin.CallbackHeader, base)
 		}
 	}

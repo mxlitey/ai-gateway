@@ -72,8 +72,9 @@ COPY --from=go-builder /out/ai-gateway /usr/local/bin/ai-gateway
 COPY --chown=gateway:gateway examples/trae /plugins/trae
 COPY --chown=gateway:gateway examples/workbuddy /plugins/workbuddy
 
-# /mcp 只作为卷挂载点，镜像不内置任何本地 MCP 示例：
-# 用户把自己的 Python MCP 服务器放进这个卷，网关启动时自动扫描登记。
+# 内置 GitHub 搜索本地 MCP 服务器：纯标准库 Python 源码，开箱即用。
+# /mcp 是卷挂载点，卷首次创建时会带着它一起初始化；用户自己加的服务器也放这里。
+COPY --chown=gateway:gateway examples/mcp/github-search /mcp/github-search
 
 # 数据与插件目录固定为卷挂载点：换个容器实例也能保留配置、密钥与插件
 ENV AIGW_DATA_DIR=/data \
@@ -85,6 +86,8 @@ VOLUME ["/data", "/plugins", "/mcp"]
 
 USER gateway
 EXPOSE 8787
+# 8788 = 插件登录回调入口（监听端口 +1），Docker 里需单独映射到宿主机
+EXPOSE 8788
 
 # debian-slim 自带 busybox，没有 wget/curl，用 python3 探活（镜像内已有解释器）
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

@@ -11,17 +11,9 @@ export default function Settings() {
   const [confirm, setConfirm] = useState('')
   // 清理旧记录：保留最近多少天（0 = 连当天一起清理）
   const [cleanupDays, setCleanupDays] = useState('90')
-  // 外部访问地址（反代 / 隧道场景下插件登录回调使用的基址）
-  const [externalBase, setExternalBase] = useState('')
 
   const runtime = useQuery({ queryKey: ['runtime'], queryFn: api.runtimeInfo })
   const info = runtime.data
-  // 首次拉到配置后回填输入框；之后用户编辑不受影响
-  const [externalBaseLoaded, setExternalBaseLoaded] = useState(false)
-  if (info && !externalBaseLoaded) {
-    setExternalBase(info.external_base ?? '')
-    setExternalBaseLoaded(true)
-  }
 
   // 运行期设置（日志级别 / 价格源 / 插件监管策略）
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.settings })
@@ -31,7 +23,7 @@ export default function Settings() {
   }
   const defaults = settingsQuery.data?.defaults
 
-  // Python 插件运行时：探测结果 + 可选覆盖项（便携目录 / 下载镜像 / pip 源）
+  // Python 插件运行时：探测结果 + 可选覆盖项（pip 源）
   const python = useQuery({ queryKey: ['python-status'], queryFn: api.pythonStatus })
   const pythonSettingsQuery = useQuery({ queryKey: ['python-settings'], queryFn: api.pythonSettings })
   const [pyDraft, setPyDraft] = useState<PythonSettings | null>(null)
@@ -93,15 +85,6 @@ export default function Settings() {
     onError: (err: Error) => toast('err', err.message),
   })
 
-  const downloadPython = useMutation({
-    mutationFn: () => api.downloadPython(''),
-    onSuccess: (res) => {
-      toast('ok', `便携 Python 已就绪：${res.path}`)
-      void queryClient.invalidateQueries({ queryKey: ['python-status'] })
-    },
-    onError: (err: Error) => toast('err', err.message),
-  })
-
   const saveSettings = useMutation({
     mutationFn: (body: RuntimeSettings) => api.updateSettings(body),
     onSuccess: () => {
@@ -125,15 +108,6 @@ export default function Settings() {
       setOldPassword('')
       setNewPassword('')
       setConfirm('')
-    },
-    onError: (err: Error) => toast('err', err.message),
-  })
-
-  const saveExternalBase = useMutation({
-    mutationFn: () => api.setExternalBase(externalBase.trim()),
-    onSuccess: (res) => {
-      toast('ok', res.external_base ? '外部访问地址已保存' : '已清除外部访问地址')
-      void queryClient.invalidateQueries({ queryKey: ['runtime'] })
     },
     onError: (err: Error) => toast('err', err.message),
   })
@@ -326,32 +300,6 @@ export default function Settings() {
         </div>
       </Card>
 
-      <Card title="外部访问地址">
-        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
-          用反向代理 / 隧道（nginx、frp、Cloudflare Tunnel 等）把网关暴露到公网时，填这里的外部域名。
-          插件登录授权完成后，浏览器会跳回这个地址下的统一回调入口；留空则按监听地址推导（仅本机 / 局域网可用）。
-        </p>
-        <div className="max-w-md space-y-4">
-          <Field
-            label="外部访问地址"
-            hint="只填到域名（可带端口），如 https://gw.example.com；不要带路径。反代需把路径原样透传到网关根路径。"
-          >
-            <Input
-              value={externalBase}
-              onChange={(e) => setExternalBase(e.target.value)}
-              placeholder="https://gw.example.com"
-            />
-          </Field>
-          <Button
-            variant="primary"
-            disabled={saveExternalBase.isPending || externalBase.trim() === (info?.external_base ?? '')}
-            onClick={() => saveExternalBase.mutate()}
-          >
-            {saveExternalBase.isPending ? '保存中…' : '保存'}
-          </Button>
-        </div>
-      </Card>
-
       <Card title="运行期设置">
         {settingsQuery.isError ? (
           <div className="mb-3">
@@ -525,8 +473,8 @@ export default function Settings() {
       <Card title="Python 插件运行时">
         <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
           插件一律是 Python 源码（入口为 <code className="text-xs">.py</code> 脚本），
-          同一份源码可在
-          Windows / macOS / Linux 通用。宿主优先使用系统 Python；没有时可用这里的便携 Python（下载到数据目录，不随安装包分发）。
+          同一份源码可在 Windows / macOS / Linux 通用。Docker 镜像已内置 python3 / pip；
+          Windows 桌面版需自行安装 Python 3（建议从 python.org 安装并勾选 Add to PATH）。
         </p>
         {python.isError ? (
           <div className="mb-3">
@@ -540,9 +488,6 @@ export default function Settings() {
               python.data.found ? (
                 <span>
                   {python.data.version}
-                  <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
-                    {python.data.portable ? '便携' : '系统'}
-                  </span>
                   <div className="mt-1 font-mono text-xs break-all text-zinc-500">{python.data.path}</div>
                 </span>
               ) : (
@@ -551,10 +496,6 @@ export default function Settings() {
             ) : (
               '探测中…'
             )}
-          </dd>
-          <dt className="text-zinc-500 dark:text-zinc-400">便携目录</dt>
-          <dd className="font-mono text-xs break-all text-zinc-700 dark:text-zinc-300">
-            {python.data?.runtime_dir ?? '—'}
           </dd>
           <dt className="text-zinc-500 dark:text-zinc-400">pip 源顺序</dt>
           <dd className="text-xs break-all text-zinc-600 dark:text-zinc-300">
@@ -566,41 +507,9 @@ export default function Settings() {
             {python.data.error}
           </p>
         ) : null}
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button
-            variant="primary"
-            disabled={downloadPython.isPending}
-            onClick={() => downloadPython.mutate()}
-          >
-            {downloadPython.isPending ? '下载中…（可能需要数分钟）' : '下载便携 Python'}
-          </Button>
-          <span className="text-xs text-zinc-500 dark:text-zinc-400">
-            下载后会自动解压到便携目录；重复点击不会重复下载已就绪的版本。
-          </span>
-        </div>
 
         {pyDraft ? (
           <div className="mt-5 max-w-2xl space-y-4">
-            <Field
-              label="便携 Python 下载地址（镜像前缀）"
-              hint="留空使用官方发布地址；内网/国内加速时可填自建镜像前缀，文件名保持与官方一致。"
-            >
-              <Input
-                value={pyDraft.python_mirror}
-                onChange={(e) => setPyDraft({ ...pyDraft, python_mirror: e.target.value })}
-                placeholder="https://your-mirror.example.com/python-build-standalone"
-              />
-            </Field>
-            <Field
-              label="便携 Python 目录"
-              hint="留空使用数据目录下的 runtime/python；也可以把已解压的 Python 目录手动放到这里。"
-            >
-              <Input
-                value={pyDraft.python_runtime_dir}
-                onChange={(e) => setPyDraft({ ...pyDraft, python_runtime_dir: e.target.value })}
-                placeholder={python.data?.runtime_dir ?? ''}
-              />
-            </Field>
             <Field
               label="pip 源（按顺序退避）"
               hint="留空使用内置顺序：官方源优先，失败后依次尝试清华、阿里云、腾讯云、中科大镜像。多条用逗号分隔。"

@@ -71,7 +71,10 @@ func DefaultPolicy() Policy {
 type instance struct {
 	manifest *Manifest
 	dir      string
-	port     int
+	// port 由宿主在每次启动前分配（回环随机端口），停止后保留最后使用的值。
+	port int
+	// invalid 清单校验失败（目录/入口不合规），此类插件不能启动。
+	invalid bool
 
 	status    string
 	lastErr   string
@@ -112,6 +115,9 @@ type Host struct {
 	shutdown bool
 	// policy 监管策略（探活 / 重启 / 签到节奏），可在面板中热更新。
 	policy Policy
+	// cbSrv / cbLn 登录回调透传入口（监听端口 +1，见 callback.go）。
+	cbSrv *http.Server
+	cbLn  net.Listener
 }
 
 // New 创建插件宿主。
@@ -281,13 +287,9 @@ func (h *Host) register(manifest *Manifest) {
 	}
 	h.mu.Unlock()
 
-	// 端口由插件作者在 plugin.json 里指定，宿主不再代为分配
-	port := manifest.Port
-
 	inst := &instance{
 		manifest:  manifest,
 		dir:       manifest.Dir,
-		port:      port,
 		status:    StatusDiscovered,
 		enabled:   true,
 		autostart: true,
@@ -308,7 +310,6 @@ func (h *Host) register(manifest *Manifest) {
 		Name:        manifest.Name,
 		Version:     manifest.Version,
 		Dir:         manifest.Dir,
-		Port:        port,
 		Enabled:     inst.enabled,
 		Autostart:   inst.autostart,
 		LastStatus:  StatusDiscovered,
@@ -335,6 +336,7 @@ func (h *Host) registerInvalid(dir string, manifest *Manifest, cause error) {
 		status:   StatusFailed,
 		lastErr:  cause.Error(),
 		enabled:  false,
+		invalid:  true,
 	}
 
 	h.mu.Lock()
@@ -510,7 +512,13 @@ func (h *Host) Shutdown() {
 	for pid := range h.items {
 		ids = append(ids, pid)
 	}
+	cbSrv := h.cbSrv
 	h.mu.Unlock()
+
+	// 回调入口先停：它只是登录链路的旁路，越早释放端口越好
+	if cbSrv != nil {
+		_ = cbSrv.Close()
+	}
 
 	for _, pid := range ids {
 		_ = h.stopInternal(pid, true)
@@ -544,7 +552,7 @@ func (h *Host) startInternal(pluginID string, persist bool) error {
 		h.mu.Unlock()
 		return fmt.Errorf("插件不存在: %s", pluginID)
 	}
-	if inst.status == StatusFailed && inst.port == 0 {
+	if inst.invalid {
 		h.mu.Unlock()
 		return fmt.Errorf("插件清单非法，无法启动: %s", pluginID)
 	}
@@ -552,13 +560,17 @@ func (h *Host) startInternal(pluginID string, persist bool) error {
 		h.mu.Unlock()
 		return nil
 	}
+	if msg := h.callbackConflictLocked(inst); msg != "" {
+		h.mu.Unlock()
+		h.setStatus(inst, StatusFailed, msg)
+		return fmt.Errorf("%s", msg)
+	}
 	inst.enabled = true
 	inst.failures = 0
 	inst.stop = make(chan struct{})
 	inst.done = make(chan struct{})
 	inst.active = true
 	autostart := inst.autostart
-	port := inst.port
 	h.mu.Unlock()
 
 	if persist {
@@ -567,7 +579,7 @@ func (h *Host) startInternal(pluginID string, persist bool) error {
 		}
 	}
 
-	h.log.Info("启动插件", "plugin", pluginID, "port", port)
+	h.log.Info("启动插件", "plugin", pluginID)
 	go h.supervise(inst)
 	return nil
 }
@@ -721,10 +733,16 @@ func (h *Host) sleepOrStop(inst *instance, d time.Duration) bool {
 // ---------- 内部：进程 ----------
 
 func (h *Host) spawn(inst *instance) error {
-	// 端口由插件自己在 plugin.json 里指定，占用即视为配置错误，直接给出可操作的提示
-	if !portAvailable(inst.port) {
-		return fmt.Errorf("端口 %d 已被占用，请在 plugin.json 里换一个端口", inst.port)
+	// 端口由宿主分配：回环随机端口，与本地 MCP 服务器一致，
+	// 插件作者不必再在 plugin.json 里写死端口（见 docs/plugin-spec.md §3）。
+	port, err := freePort()
+	if err != nil {
+		return fmt.Errorf("分配插件端口失败: %w", err)
 	}
+	h.mu.Lock()
+	inst.port = port
+	h.mu.Unlock()
+
 	vars := h.vars(inst)
 	if err := os.MkdirAll(vars.Data, 0o755); err != nil {
 		return fmt.Errorf("创建插件数据目录失败: %w", err)
@@ -739,7 +757,7 @@ func (h *Host) spawn(inst *instance) error {
 	// 插件一律由宿主解析 Python 解释器、安装声明依赖，再用它执行入口脚本。
 	// 同一份 main.py 在 Windows / macOS / Linux 上无需改动（见 docs/plugin-spec.md §2）。
 	pyEnvCfg := h.pythonEnv()
-	interp, err := h.resolvePython(pyEnvCfg)
+	interp, err := h.resolvePython()
 	if err != nil {
 		return err
 	}
@@ -751,7 +769,7 @@ func (h *Host) spawn(inst *instance) error {
 		}
 	}
 	h.logger().Info("使用 Python 解释器", "plugin", inst.manifest.ID,
-		"path", interp.Path, "version", interp.Version, "portable", interp.Portable)
+		"path", interp.Path, "version", interp.Version)
 	bin, pre := interp.Command(append([]string{entry}, args...)...)
 
 	cmd := exec.Command(bin, pre...)
@@ -776,7 +794,7 @@ func (h *Host) spawn(inst *instance) error {
 		"AI_GATEWAY_PLUGIN_DIR="+inst.dir,
 		"AI_GATEWAY_PLUGIN_DATA="+vars.Data,
 		// 统一登录回调入口的基址（见 callback.go）；登录时还会用请求头覆盖它
-		CallbackEnvVar+"="+h.CallbackBase(inst),
+		CallbackEnvVar+"="+h.CallbackBase(),
 	)
 	cmd.Env = childEnv
 
@@ -1198,14 +1216,15 @@ func (h *Host) checkinAccount(inst *instance, accountID string) (string, error) 
 	return strings.TrimSpace(doc.Message), nil
 }
 
-// portAvailable 判断端口是否可绑定。
-func portAvailable(port int) bool {
-	ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+// freePort 分配一个当前空闲的回环端口。释放后再由插件绑定，
+// 存在极小概率被其它进程抢占；插件因此起不来时会按退避重试，下次重新分配。
+func freePort() (int, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return false
+		return 0, err
 	}
-	_ = ln.Close()
-	return true
+	defer func() { _ = ln.Close() }()
+	return ln.Addr().(*net.TCPAddr).Port, nil
 }
 
 func minInt(a, b int) int {

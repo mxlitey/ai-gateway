@@ -241,8 +241,6 @@ export type RuntimeInfo = {
   access_url: string
   api_url: string
   data_dir: string
-  /** 面板配置的外部访问地址（反代 / 隧道场景），未配置为空串 */
-  external_base: string
 }
 
 /** 可在面板调整的运行期设置；字符串项为空表示沿用启动参数 / 环境变量。 */
@@ -291,14 +289,6 @@ export type PythonStatus = {
   found: boolean
   path: string
   version: string
-  /** 是否来自便携目录（false 表示系统 Python） */
-  portable: boolean
-  /** 便携 Python 存放根目录 */
-  runtime_dir: string
-  /** 便携 Python 下载镜像前缀 */
-  mirror: string
-  /** 当前平台会使用的官方下载地址 */
-  download_url: string
   /** 生效的 pip 源尝试顺序 */
   index_urls: string[]
   error: string
@@ -306,8 +296,6 @@ export type PythonStatus = {
 
 /** Python 插件运行时相关设置（字符串留空表示沿用默认）。 */
 export type PythonSettings = {
-  python_runtime_dir: string
-  python_mirror: string
   pip_index_urls: string
 }
 
@@ -587,13 +575,6 @@ export const api = {
   // 运行信息（监听地址、端口、数据目录，按访问范围给出访问/API 地址）
   runtimeInfo: () => request<RuntimeInfo>('/admin/api/runtime'),
 
-  // 外部访问地址：反代 / 隧道场景下插件登录回调使用的基址；留空即清除
-  setExternalBase: (externalBase: string) =>
-    request<{ success: boolean; external_base: string }>('/admin/api/external-base', {
-      method: 'PUT',
-      ...json({ external_base: externalBase }),
-    }),
-
   // 运行期设置：日志级别、价格源与刷新间隔、插件探活与签到节奏
   settings: () => request<SettingsResponse>('/admin/api/settings'),
   updateSettings: (body: RuntimeSettings) =>
@@ -602,13 +583,8 @@ export const api = {
       ...json(body),
     }),
 
-  // Python 插件运行时：探测状态与便携 Python 下载
+  // Python 插件运行时：探测状态与 pip 源设置
   pythonStatus: () => request<PythonStatus>('/admin/api/python/status'),
-  downloadPython: (version: string) =>
-    request<{ success: boolean; path: string; status: PythonStatus }>('/admin/api/python/download', {
-      method: 'POST',
-      ...json({ version }),
-    }),
   pythonSettings: () => request<PythonSettingsResponse>('/admin/api/python/settings'),
   updatePythonSettings: (body: PythonSettings) =>
     request<{ success: boolean; settings: PythonSettings }>('/admin/api/python/settings', {

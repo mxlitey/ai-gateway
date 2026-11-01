@@ -4,6 +4,8 @@
 目标是：把目录丢进 `mcp/`、重启网关，就能在「MCP 服务器」页看到它、被客户端通过统一入口调用，无需改网关代码。
 
 参考实现：[examples/mcp/local-demo](../examples/mcp/local-demo)（纯标准库，无第三方依赖，可直接复制改名）。
+安装包与镜像另外内置了 [examples/mcp/github-search](../examples/mcp/github-search)（GitHub 搜索，匿名可用；
+在它的 `mcp.json` 的 `env` 里填 `GITHUB_TOKEN` 可提升额度并解锁代码搜索）。
 
 ---
 
@@ -100,7 +102,7 @@ mcp/
 - `requirements.txt` / `requirements` 中**有实际依赖**时，网关在每次启动前执行 `pip install --target data/mcp/<目录>/deps`，并把该目录加入 `PYTHONPATH`；纯注释或空文件会被跳过。
 - 依赖安装按文件修改时间缓存，部署时改动依赖需更新文件（或删除 `data/mcp/<目录>/.stamp`）。
 - pip 源默认按 PyPI → 清华 → 阿里 → 腾讯 → 中科大 的顺序回退，可用 `AIGW_PIP_INDEX_URLS` 覆盖（逗号分隔）。
-- 解释器选择顺序：`AIGW_MCP_PYTHON` → 插件页下载的便携运行时（`data/runtime/python`）→ 系统 `py -3` / `python3` / `python`。
+- 解释器选择顺序：`AIGW_MCP_PYTHON` → 系统 `py -3` / `python3` / `python`。
 - 推荐只用 Python 3.10+ 标准库或纯 Python 依赖；避免需要编译的包（Windows 下没有编译器时安装会失败）。
 
 ## 5. 生命周期与配额

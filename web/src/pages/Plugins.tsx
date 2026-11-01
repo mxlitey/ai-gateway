@@ -146,7 +146,9 @@ export default function Plugins() {
 
                   <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                     <dt className="text-zinc-500">端口</dt>
-                    <dd className="font-mono text-zinc-700 dark:text-zinc-300">{plugin.port || '—'}</dd>
+                    <dd className="font-mono text-zinc-700 dark:text-zinc-300">
+                      {plugin.port || '启动后分配'}
+                    </dd>
                     <dt className="text-zinc-500">最后探活</dt>
                     <dd className="text-zinc-700 dark:text-zinc-300">
                       {plugin.last_seen_at
@@ -182,7 +184,7 @@ export default function Plugins() {
                     ) : (
                       <Button
                         variant="primary"
-                        disabled={busy || plugin.port === 0}
+                        disabled={busy}
                         onClick={() => action.mutate({ id: plugin.id, kind: 'start' })}
                       >
                         启动
@@ -520,7 +522,7 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
             {login.status === 'pending' ? (
               <div className="space-y-1.5 border-t border-emerald-200 pt-2 dark:border-emerald-900">
                 <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                  Docker 部署时浏览器访问不到上面的回调页，授权后页面打不开属正常现象：
+                  Docker 部署时回调端口只在容器内，浏览器打不开属正常现象：
                   把地址栏里的完整链接粘贴到下面，由网关转交给插件处理。
                 </p>
                 <div className="flex items-center gap-2">

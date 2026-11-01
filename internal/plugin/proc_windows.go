@@ -142,9 +142,3 @@ func hideWindow(cmd *exec.Cmd) {
 	}
 	cmd.SysProcAttr.HideWindow = true
 }
-
-// clearQuarantine Windows 没有 macOS 的 quarantine 属性。
-func clearQuarantine(string) {}
-
-// postInstallPython Windows 无需补可执行位。
-func postInstallPython(string) {}

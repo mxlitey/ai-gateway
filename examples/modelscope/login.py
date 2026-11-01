@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """登录：OAuth 授权（link 类）+ 粘贴令牌 / Cookie（fields 类）。
 
-OAuth 回调不自己监听端口，走网关统一入口
-    <X-Gateway-Callback-Base>/oauth/<state>  ->  /console/callback/oauth/<state>
+OAuth 回调不自己监听端口，走网关回调入口（监听端口+1）
+    <X-Gateway-Callback-Base>/oauth/<state>  ->  插件 /oauth/<state>
 state 一次性、带 TTL、不可猜；不认识或已过期的 state 绝不产生任何副作用。
 """
 
@@ -97,7 +97,11 @@ class LoginBroker:
             self.sessions.pop(oldest.state, None)
 
     def start(self, callback_base):
-        """发起 OAuth：动态注册 → 生成授权链接。callback_base 由网关请求头给出。"""
+        """发起 OAuth：动态注册 → 生成授权链接。callback_base 由网关请求头给出。
+
+        回调地址 = <网关回调入口>/oauth/<state>，路径由本插件自行决定，
+        网关按 plugin.json 的 callback_paths 原样透传到插件的 /oauth/<state>。
+        """
         state = util.new_state()
         redirect_uri = callback_base.rstrip("/") + "/oauth/" + state
         client_id, client_secret = self.plugin.upstream.register_client(redirect_uri)
@@ -127,7 +131,7 @@ class LoginBroker:
     # ---------- 回调 ----------
 
     def handle_callback(self, state, query):
-        """处理 /console/callback/oauth/<state>?code=...&state=... 并返回 HTML。"""
+        """处理 /oauth/<state>?code=...&state=... 并返回 HTML。"""
         with self.mu:
             session = self.sessions.get(state)
         if session is None:

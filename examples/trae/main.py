@@ -50,7 +50,7 @@ class Plugin:
         self.eps = eps
         self.store = store
         self.data_dir = data_dir
-        # 监听端口：登录回调地址要用它拼 http://127.0.0.1:<port>/authorize
+        # 插件监听端口：直连调试时用于拼回调地址（正式运行时用网关注入的基址）
         self.port = port
         self.upstream = Upstream(eps)
         self.login = login.LoginBroker(self)
@@ -346,7 +346,7 @@ class Handler(BaseHTTPRequestHandler):
             status, body = console.handle_login_status(plugin, parts[2], self.query())
             return self.send_json(status, body)
         # TRAE 官方授权页只接受 http://127.0.0.1:<port>/authorize 作为回调，
-        # 因此回调落点挂在插件主端口上（不是网关的 /plugin-callback）。
+        # 网关回调入口（监听端口+1）按 callback_paths 把 /authorize 原样透传到这里。
         if self.path.split("?", 1)[0] == "/authorize":
             raw_query = self.path.split("?", 1)[1] if "?" in self.path else ""
             ok, message = plugin.login.handle_callback("", self.path, raw_query)

@@ -162,9 +162,9 @@ class Handler(BaseHTTPRequestHandler):
         if parts[:2] == ["console", "login"] and len(parts) == 3:
             status, body = console.handle_login_status(plugin, parts[2], self.query())
             return self.send_json(status, body)
-        # 网关统一回调入口转发到这里：/console/callback/oauth/<state>
-        if parts[:3] == ["console", "callback", "oauth"] and len(parts) == 4:
-            page = console.handle_callback(plugin, parts[3], self.query())
+        # 网关回调入口按 callback_paths 原样透传到这里：/oauth/<state>
+        if parts[:1] == ["oauth"] and len(parts) == 2:
+            page = console.handle_callback(plugin, parts[1], self.query())
             return self.send_html(200, page)
         return self.send_json(404, {"error": "not found"})
 

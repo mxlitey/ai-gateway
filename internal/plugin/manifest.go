@@ -30,8 +30,6 @@ type Manifest struct {
 	Entry string            `json:"entry"`
 	Args  []string          `json:"args"`
 	Env   map[string]string `json:"env"`
-	// Port 由插件作者自己指定，宿主不再代为分配
-	Port int `json:"port"`
 	// Console 是否提供控制台（实现 /console/* 约定接口）
 	Console bool `json:"console"`
 	// Capabilities 控制台能力，取值见 CapCheckin / CapQuota
@@ -40,8 +38,6 @@ type Manifest struct {
 	StartupTimeoutMS int `json:"startup_timeout_ms"`
 	// Requirements 需要预先安装的 Python 依赖（格式同 requirements.txt）。
 	Requirements []string `json:"requirements"`
-	// PythonVersion 期望的 Python 版本（可选，仅用于便携解释器下载与提示）。
-	PythonVersion string `json:"python_version"`
 	// CallbackPaths 插件自行监听、且必须由浏览器直达的回调路径（如 TRAE 的 /authorize）。
 	// 仅在这些路径上允许「粘贴回调链接」；Docker 中回调端口无法从宿主机访问时使用。
 	CallbackPaths []string `json:"callback_paths"`
@@ -144,9 +140,6 @@ func Validate(dir string, m *Manifest) error {
 	}
 	if strings.TrimSpace(m.Name) == "" {
 		return fmt.Errorf("name 不能为空")
-	}
-	if m.Port <= 0 || m.Port > 65535 {
-		return fmt.Errorf("port 非法（需 1-65535，由插件自己指定）: %d", m.Port)
 	}
 
 	// 入口必须是插件目录内的 .py 脚本：网关只支持 Python 插件（见 docs/plugin-spec.md §2）。

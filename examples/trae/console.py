@@ -274,13 +274,14 @@ def handle_login_start(plugin, method, headers):
     """发起登录：POST /console/login/web → {"status","message","url","state"}。
 
     响应体里**同时有 url 与 state**，面板据此判定为 link 类并轮询。
-    回调地址固定为 http://127.0.0.1:<插件端口>/authorize（官方授权页硬校验该形态）。
+    回调地址的基址优先用网关注入的 X-Gateway-Callback-Base（即 http://127.0.0.1:<监听端口+1>），
+    路径固定为 /authorize —— 官方授权页硬校验该形态，网关按 callback_paths 原样透传。
     """
     from login import loopback_base
 
     if method != "web":
         return 400, {"error": "未知的登录方式：" + method}
-    base = loopback_base(plugin.port)
+    base = loopback_base(headers, plugin.port)
     try:
         session = plugin.login.start(base)
     except Exception as exc:

@@ -136,7 +136,6 @@ func scanPluginRows(cfg *config.Config) []pluginRow {
 			Name:    m.Name,
 			Version: m.Version,
 			Status:  "已停止",
-			Port:    m.Port,
 			Dir:     dir,
 		})
 	}

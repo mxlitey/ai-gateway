@@ -8,7 +8,7 @@
     POST   /console/accounts/{id}/quota    刷新额度
     POST   /console/login/{method}         发起登录
     GET    /console/login/{method}?state=  轮询登录结果（link 类）
-    GET    /console/callback/oauth/{state} 统一回调入口转发到这里
+    GET    /oauth/{state}                 网关回调入口透传到这里
 
 账号响应里绝不含任何凭据（token / refresh_token / cookie）。
 """
@@ -120,7 +120,7 @@ def handle_login_status(plugin, method, query):
 
 
 def handle_callback(plugin, state, query):
-    """GET /console/callback/oauth/{state}：返回 HTML（成功 / 失败都给人看）。"""
+    """GET /oauth/<state>：返回 HTML（成功 / 失败都给人看）。"""
     return plugin.login.handle_callback(state, query)
 
 

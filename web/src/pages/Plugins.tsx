@@ -235,6 +235,10 @@ export default function Plugins() {
 
 /* ---------- 插件控制台（约定接口 + 宿主统一渲染） ---------- */
 
+// 授权登录等待上限：与网关的 plugin.LoginTTL（90 秒）保持一致，
+// 到点后面板停止轮询（网关也会把轮询直接判为 expired）
+const LOGIN_TIMEOUT_SECONDS = 90
+
 type LoginFlow = {
   method: string
   url: string
@@ -247,6 +251,8 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
   const queryClient = useQueryClient()
   const [login, setLogin] = useState<LoginFlow | null>(null)
   const loginRef = useRef<LoginFlow | null>(null)
+  // 取消按钮上的倒计时（剩余秒数）
+  const [remaining, setRemaining] = useState(0)
   // 粘贴回调链接（Docker 下浏览器访问不到容器内回环回调时使用）
   const [callbackURL, setCallbackURL] = useState('')
   // 打开控制台时自动刷新一轮额度与签到状态（只跑一次，见下方 effect）
@@ -266,7 +272,10 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
   const keepLogin = (next: LoginFlow | null) => {
     loginRef.current = next
     setLogin(next)
-    if (!next) setCallbackURL('')
+    if (!next) {
+      setCallbackURL('')
+      setRemaining(0)
+    }
   }
 
   const submitCallback = useMutation({
@@ -279,7 +288,7 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
   })
 
   // link 类登录（OAuth）：发起后拿到授权链接，随后每 2 秒问一次结果
-  // action 类（例如从本机桌面端导入）：插件直接返回 ok，无需轮询
+  // action 类：插件当场返回 ok，不需要轮询
   const startLogin = useMutation({
     mutationFn: (input: { method: string; values?: Record<string, string> }) =>
       api.pluginLoginStart(plugin.id, input.method, input.values),
@@ -290,6 +299,7 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
         void reload()
         return
       }
+      setRemaining(LOGIN_TIMEOUT_SECONDS)
       keepLogin({
         method: input.method,
         url: res.url,
@@ -327,11 +337,16 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
       try {
         const res = await api.pluginLoginPoll(plugin.id, cur.method, cur.state)
         const status = res.status ?? cur.status
+        if (status === 'expired') {
+          // 网关计时到点：与手动点「取消」等价，直接收起登录框
+          keepLogin(null)
+          return
+        }
         keepLogin({ ...cur, status, message: res.message ?? cur.message })
         if (status === 'ok') {
           toast('ok', res.message ?? '授权成功')
           await reload()
-        } else if (status === 'error' || status === 'expired') {
+        } else if (status === 'error') {
           toast('err', res.message ?? '授权失败')
         }
       } catch {
@@ -340,6 +355,19 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
     }, 2000)
     return () => clearInterval(timer)
   }, [plugin.id])
+
+  // 授权等待倒计时：每秒递减，与上面的轮询独立（轮询失败也照样走完 90 秒）
+  useEffect(() => {
+    if (!login || login.status !== 'pending') return
+    const timer = setInterval(() => setRemaining((n) => Math.max(0, n - 1)), 1000)
+    return () => clearInterval(timer)
+  }, [login?.status])
+
+  // 倒计时归零仍未授权：与手动点「取消」等价，直接收起登录框
+  useEffect(() => {
+    if (!login || login.status !== 'pending' || remaining > 0) return
+    keepLogin(null)
+  }, [login, remaining])
 
   const checkin = useMutation({
     mutationFn: (id: string) => api.pluginCheckin(plugin.id, id),
@@ -516,7 +544,7 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
                 {login.url}
               </a>
               <Button className="py-1 text-xs" onClick={() => keepLogin(null)}>
-                取消
+                {login.status === 'pending' ? `取消(${remaining})` : '取消'}
               </Button>
             </div>
             {login.status === 'pending' ? (

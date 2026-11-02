@@ -8,13 +8,12 @@
     DELETE /console/accounts/{id}                 删除账号
     POST   /console/accounts/{id}/checkin         签到
     POST   /console/accounts/{id}/quota           刷新额度
-    POST   /console/login/{method}                发起登录（method=desktop | oauth-cn | oauth-intl）
+    POST   /console/login/{method}                发起登录（method=oauth-cn | oauth-intl）
     GET    /console/login/oauth-{cn,intl}?state=x 轮询授权结果
 """
 
 import json
 import threading
-import time
 
 from accounts import Account
 from chat import fetch_models, model_list_payload
@@ -26,8 +25,6 @@ from upstream import (
 from util import (
     as_str, clamp_bytes, first_non_empty, now_millis, sanitize_error, short_uid,
 )
-
-LOGIN_TTL = 10 * 60  # 授权会话有效期（秒）
 
 # 面板只按方式 id 调用，所以「国内站 / 国际站」用两个方法 id 来表达。
 OAUTH_REALM_BY_METHOD = {"oauth-cn": "cn", "oauth-intl": "intl"}
@@ -57,26 +54,21 @@ def account_view_list(accounts):
 
 
 def login_methods(oauth_enabled):
-    """可用登录方式：desktop 恒有；OAuth 由插件是否启用决定。"""
-    methods = [{
-        "id": "desktop",
-        "label": "从本机桌面端导入",
-        "hint": "读取本机 WorkBuddy 的登录态，需要桌面端正在运行",
-    }]
-    if oauth_enabled:
-        methods.extend([
-            {
-                "id": "oauth-cn",
-                "label": "OAuth 授权登录（国内站）",
-                "hint": "在本机浏览器打开授权链接登录国内站（codebuddy.cn），完成后账号自动入库",
-            },
-            {
-                "id": "oauth-intl",
-                "label": "OAuth 授权登录（国际站）",
-                "hint": "在本机浏览器打开授权链接登录国际站（workbuddy.ai），完成后账号自动入库",
-            },
-        ])
-    return methods
+    """可用登录方式：OAuth 由插件是否启用决定（桌面端导入已下线）。"""
+    if not oauth_enabled:
+        return []
+    return [
+        {
+            "id": "oauth-cn",
+            "label": "OAuth 授权登录（国内站）",
+            "hint": "在本机浏览器打开授权链接登录国内站（codebuddy.cn），完成后账号自动入库",
+        },
+        {
+            "id": "oauth-intl",
+            "label": "OAuth 授权登录（国际站）",
+            "hint": "在本机浏览器打开授权链接登录国际站（workbuddy.ai），完成后账号自动入库",
+        },
+    ]
 
 
 # ---------- 账号接口 ----------
@@ -89,7 +81,7 @@ def handle_accounts_list(plugin):
         "login_methods": login_methods(plugin.oauth is not None),
     }
     if not accounts:
-        out["notice"] = "还没有账号：可以点「从本机桌面端导入」，或用 OAuth 授权登录"
+        out["notice"] = "还没有账号：用下面的 OAuth 授权登录添加"
     return 200, out
 
 
@@ -188,9 +180,7 @@ def handle_quota(plugin, account_id):
 
 
 def handle_login_start(plugin, method, body):
-    """发起登录：action 类（desktop）当场完成，link 类（oauth-*）返回授权链接。"""
-    if method == "desktop":
-        return login_from_desktop(plugin)
+    """发起登录：link 类（oauth-*）返回授权链接。"""
     realm = OAUTH_REALM_BY_METHOD.get(method)
     if realm is None:
         return 400, {"error": "未知的登录方式：" + method}
@@ -225,26 +215,6 @@ def handle_login_status(plugin, method, query):
         return 400, {"error": "缺少 state"}
     status, message = plugin.oauth.status(state)
     return 200, {"status": status, "message": message}
-
-
-def login_from_desktop(plugin):
-    """从本机桌面端读取登录态导入账号（action 类登录）。"""
-    import desktop
-
-    accounts, notes, err = desktop.import_from_desktop()
-    if err is not None:
-        msg = "；".join(notes) if notes else str(err)
-        return 502, {"error": msg}
-    created = 0
-    for acc in accounts:
-        _saved, is_new = plugin.store.upsert(acc)
-        if is_new:
-            created += 1
-        plugin.spawn_refresh(acc)
-    msg = "已导入 %d 个账号" % len(accounts)
-    if created != len(accounts):
-        msg = "已更新 %d 个账号（其中 %d 个新增）" % (len(accounts), created)
-    return 200, {"status": "ok", "message": msg}
 
 
 # ---------- 后台刷新 ----------
@@ -294,7 +264,7 @@ def handle_models(plugin, headers):
 
 
 class OAuthSession:
-    __slots__ = ("state", "auth_url", "realm", "status", "message", "created")
+    __slots__ = ("state", "auth_url", "realm", "status", "message")
 
     def __init__(self, state, auth_url, realm):
         self.state = state
@@ -302,7 +272,6 @@ class OAuthSession:
         self.realm = realm
         self.status = "pending"
         self.message = "请在浏览器中完成授权"
-        self.created = time.time()
 
 
 class OAuthManager:
@@ -338,13 +307,11 @@ class OAuthManager:
         return "cn"
 
     def status(self, state):
+        """登录状态：有效期由网关计时（90 秒），插件只如实回报会话状态。"""
         with self.mu:
             session = self.sessions.get(state)
         if session is None:
             return "error", "授权会话不存在，请重新发起"
-        if time.time() - session.created > LOGIN_TTL:
-            session.status = "expired"
-            session.message = "授权窗口已过期，请重新发起"
         if session.status == "pending":
             self._poll(session)
         return session.status, session.message

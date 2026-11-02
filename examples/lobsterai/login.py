@@ -8,7 +8,6 @@ LobsterAI 登录门户要求 `redirect_uri` 是 `http://127.0.0.1:<端口>/auth/
 """
 
 import threading
-import time
 import urllib.parse
 import uuid
 
@@ -16,13 +15,11 @@ import util
 from accounts import Credential
 from upstream import UpstreamError, as_upstream_error, resolve_uid
 
-SESSION_TTL = 10 * 60
 CALLBACK_PATH = "/auth/callback"
 
 
 class LoginSession:
-    __slots__ = ("state", "uuid", "first_keyfrom", "url", "status", "message",
-                 "created", "deadline")
+    __slots__ = ("state", "uuid", "first_keyfrom", "url", "status", "message")
 
     def __init__(self, state, flow_uuid, first_keyfrom, url):
         self.state = state
@@ -31,8 +28,6 @@ class LoginSession:
         self.url = url
         self.status = "pending"
         self.message = "请在浏览器中完成授权"
-        self.created = time.time()
-        self.deadline = self.created + SESSION_TTL
 
 
 class LoginBroker:
@@ -68,13 +63,11 @@ class LoginBroker:
         }
 
     def status(self, state):
+        """登录状态：有效期由网关计时（90 秒），插件只如实回报会话状态。"""
         with self.mu:
             session = self.sessions.get(state)
         if session is None:
             return "expired", "登录会话不存在或已过期，请重新发起"
-        if session.status == "pending" and time.time() > session.deadline:
-            session.status = "expired"
-            session.message = "授权等待超时，请重新发起登录"
         return session.status, session.message
 
     def handle_callback(self, state, query):
@@ -85,10 +78,6 @@ class LoginBroker:
             return False, "登录会话不存在或已过期，请回到面板重新发起"
         if session.status != "pending":
             return session.status == "ok", session.message
-        if time.time() > session.deadline:
-            session.status = "expired"
-            session.message = "授权等待超时，请重新发起登录"
-            return False, session.message
 
         values = query.get("code") or [""]
         code = (values[0] or "").strip()

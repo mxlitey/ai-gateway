@@ -2,7 +2,40 @@ package plugin
 
 import (
 	"testing"
+	"time"
 )
+
+// TestLoginExpiry 网关计时的登记、超时与结束。
+func TestLoginExpiry(t *testing.T) {
+	h := &Host{}
+	if h.LoginExpired("trae") {
+		t.Fatal("未登记过的插件不应判定超时")
+	}
+
+	h.TrackLogin("trae")
+	if h.LoginExpired("trae") {
+		t.Fatal("刚登记的登录不应判定超时")
+	}
+
+	// 把截止时间拨到过去，模拟 90 秒已到
+	h.mu.Lock()
+	h.logins["trae"] = loginTimer{deadline: time.Now().Add(-time.Second)}
+	h.mu.Unlock()
+	if !h.LoginExpired("trae") {
+		t.Fatal("超过有效期后应判定超时")
+	}
+
+	h.FinishLogin("trae")
+	if h.LoginExpired("trae") {
+		t.Fatal("结束后的登录不应再判定超时")
+	}
+
+	// 重新发起会重置计时
+	h.TrackLogin("trae")
+	if h.LoginExpired("trae") {
+		t.Fatal("重新发起后应重新计时")
+	}
+}
 
 // TestCallbackPort 回调端口固定为监听端口 +1，越界时返回 0。
 func TestCallbackPort(t *testing.T) {

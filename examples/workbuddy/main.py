@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""WorkBuddy (CodeBuddy) 插件：把本机桌面端账号接进网关面板。
+"""WorkBuddy (CodeBuddy) 插件：把 WorkBuddy 账号接进网关面板。
 
 能力：
-  - 从本机桌面端导入账号（解密其 at-rest 加密的登录态）
   - OAuth 授权登录（浏览器授权，完成后账号自动入库）
   - 多账号、签到、额度查询
   - 对话转发（上游只接受流式：客户端要流式就透传，要非流式就在本地聚合）
 
 用法：
     python main.py serve --port <AI_GATEWAY_PLUGIN_PORT> --data <插件数据目录>
-    python main.py import --data <插件数据目录>     # 命令行导入一次，便于排查
-    python main.py probe                            # 诊断内存扫描
     python main.py ask --prompt hi                  # 最小实测
     python main.py version
 
@@ -33,15 +30,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import chat  # noqa: E402
 import console  # noqa: E402
-import desktop  # noqa: E402
-import procscan  # noqa: E402
 import reasoning  # noqa: E402
 import upstream  # noqa: E402
 from accounts import AccountStore  # noqa: E402
 from config import (  # noqa: E402
     default_config_path, default_data_dir, env_int, load_endpoints, plugin_dir,
 )
-from util import first_non_empty, format_time, mask_token, site_label, short_uid  # noqa: E402
 
 PLUGIN_VERSION = "0.4.0"
 
@@ -344,44 +338,6 @@ def run_serve(args):
     return 0
 
 
-def run_import(args):
-    parser = argparse.ArgumentParser(prog="import", add_help=True)
-    parser.add_argument("--data", default="")
-    opts = parser.parse_args(args)
-
-    data_dir = opts.data or default_data_dir()
-    accounts, notes, err = desktop.import_from_desktop()
-    for note in notes:
-        sys.stderr.write("[workbuddy] 提示：%s\n" % note)
-    if err is not None:
-        sys.stderr.write("[workbuddy] 退出：%s\n" % err)
-        return 1
-
-    store = AccountStore(data_dir)
-    for acc in accounts:
-        _saved, created = store.upsert(acc)
-        action = "新增" if created else "更新"
-        sys.stdout.write("[workbuddy] %s账号 %s（%s，uid=%s）token=%s 到期=%s\n" % (
-            action, acc.name, site_label(acc.site), short_uid(acc.uid),
-            mask_token(acc.access_token), format_time(acc.token_expires_at)))
-    return 0
-
-
-def run_probe(args):
-    parser = argparse.ArgumentParser(prog="probe", add_help=True)
-    parser.parse_args(args)
-    try:
-        blob = desktop.find_key_blob()
-        key_id = blob.protector_key_id()
-        sys.stdout.write("[workbuddy] 目标 protectorKeyId=%s（来自 %s）\n" % (key_id, blob.path))
-        for line in procscan.probe_processes(key_id):
-            sys.stdout.write("[workbuddy] %s\n" % line)
-    except Exception as exc:
-        sys.stderr.write("[workbuddy] 退出：%s\n" % exc)
-        return 1
-    return 0
-
-
 def run_ask(args):
     """排错用的最小实测：拿第一个账号向上游发一次对话，打印原始响应。"""
     parser = argparse.ArgumentParser(prog="ask", add_help=True)
@@ -432,16 +388,12 @@ def main():
     try:
         if cmd in ("serve", "run"):
             return run_serve(args)
-        if cmd == "import":
-            return run_import(args)
-        if cmd == "probe":
-            return run_probe(args)
         if cmd == "ask":
             return run_ask(args)
         if cmd in ("version", "-v", "--version"):
             print("workbuddy plugin " + PLUGIN_VERSION)
             return 0
-        raise RuntimeError("未知命令 %r，可用：serve | import | probe | ask | version" % cmd)
+        raise RuntimeError("未知命令 %r，可用：serve | ask | version" % cmd)
     except Exception as exc:
         sys.stderr.write("[workbuddy] 退出：%s\n" % exc)
         return 1

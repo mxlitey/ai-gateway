@@ -1479,6 +1479,19 @@ func (a *API) pluginConsole(w http.ResponseWriter, r *http.Request, pluginID, su
 		return
 	}
 
+	loginSub := strings.HasPrefix(sub, "login/")
+	loginStart := loginSub && r.Method == http.MethodPost
+	loginPoll := loginSub && r.Method == http.MethodGet
+
+	// 授权登录由网关计时（plugin.LoginTTL，90 秒）：超时后不再把轮询打到插件，
+	// 直接给出终态，面板据此停止轮询并提示重新发起。
+	if loginPoll && a.host.LoginExpired(pluginID) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"status":"expired","message":"授权超时（90 秒），请重新发起登录"}`)
+		return
+	}
+
 	target := base
 	if sub != "" {
 		target += "/" + sub
@@ -1523,13 +1536,56 @@ func (a *API) pluginConsole(w http.ResponseWriter, r *http.Request, pluginID, su
 	}
 	defer func() { _ = resp.Body.Close() }()
 
+	// 登录接口要读回来判断类型（link 才计时）与终态（ok/error/expired 结束计时），
+	// 其余控制台接口仍然流式透传。
+	var raw []byte
+	if loginStart || loginPoll {
+		raw, _ = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	}
+
 	ct := resp.Header.Get("Content-Type")
 	if ct == "" {
 		ct = "application/json"
 	}
+	// 插件控制台的 401 表示「插件侧账号登录态失效」这类业务错误，不能原样透传：
+	// 面板（web/src/lib/api.ts）把 admin 接口的 401 一律当作管理员会话过期，
+	// 会清空本地登录态并退回登录页（TRAE 签到遇到令牌过期时就会这样被踢出去）。
+	status := resp.StatusCode
+	if status == http.StatusUnauthorized {
+		status = http.StatusBadRequest
+	}
 	w.Header().Set("Content-Type", ct)
-	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, io.LimitReader(resp.Body, 8<<20))
+	w.WriteHeader(status)
+	if raw != nil {
+		_, _ = w.Write(raw)
+	} else {
+		_, _ = io.Copy(w, io.LimitReader(resp.Body, 8<<20))
+	}
+
+	// 网关计时（见 plugin.LoginTTL）：link 类登录（返回 url + state）开始计时，
+	// 轮询到终态即结束。插件自己不必再实现 TTL（docs/plugin-spec.md §6.7）。
+	if raw != nil && resp.StatusCode < 300 {
+		if loginStart {
+			var doc struct {
+				URL   string `json:"url"`
+				State string `json:"state"`
+			}
+			if json.Unmarshal(raw, &doc) == nil && doc.URL != "" && doc.State != "" {
+				a.host.TrackLogin(pluginID)
+			}
+		}
+		if loginPoll {
+			var doc struct {
+				Status string `json:"status"`
+			}
+			if json.Unmarshal(raw, &doc) == nil {
+				switch doc.Status {
+				case "ok", "error", "expired":
+					a.host.FinishLogin(pluginID)
+				}
+			}
+		}
+	}
 
 	// 账号增删或登录完成后，插件渠道的密钥要跟着刷新（轮询/故障转移的对象就是账号）
 	if resp.StatusCode < 300 && pluginAccountsChanged(r.Method, sub) {

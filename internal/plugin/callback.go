@@ -43,6 +43,54 @@ func CallbackPort(gatewayPort int) int {
 	return gatewayPort + 1
 }
 
+// LoginTTL 授权登录会话的有效期：由网关计时（面板轮询与回调入口都以它为准）。
+//
+// 从插件在 POST /console/login/{method} 返回 url + state 起算。到点后面板停止转发轮询，
+// 并像用户点了「取消」一样收起登录框；迟到的回调（含粘贴回调）也会被拒绝。插件因此不必再自己
+// 实现超时，但仍要校验 state——网关重启后计时登记会丢失，此时回调会照常转发（见 docs/plugin-spec.md §6.7）。
+const LoginTTL = 90 * time.Second
+
+// loginTimer 一次授权登录的计时状态（每个插件同时只跟踪一个会话，与面板行为一致）。
+type loginTimer struct {
+	deadline time.Time
+}
+
+// TrackLogin 开始（或重新开始）一次授权登录的计时。
+func (h *Host) TrackLogin(pluginID string) {
+	if pluginID == "" {
+		return
+	}
+	now := time.Now()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.logins == nil {
+		h.logins = map[string]loginTimer{}
+	}
+	// 顺手清掉早已结束的登记，避免长时间运行后无限增长
+	for id, t := range h.logins {
+		if now.Sub(t.deadline) > 10*time.Minute {
+			delete(h.logins, id)
+		}
+	}
+	h.logins[pluginID] = loginTimer{deadline: now.Add(LoginTTL)}
+}
+
+// LoginExpired 报告该插件当前的授权登录是否已被网关判定超时。
+// 没有登记（从未发起过、已结束、或网关重启过）时返回 false。
+func (h *Host) LoginExpired(pluginID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	t, ok := h.logins[pluginID]
+	return ok && time.Now().After(t.deadline)
+}
+
+// FinishLogin 结束一次授权登录（成功 / 失败 / 过期），之后不再计时。
+func (h *Host) FinishLogin(pluginID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.logins, pluginID)
+}
+
 // CallbackBase 返回注入给插件的回调基址（形如 http://127.0.0.1:8788）。
 //
 // 主机名固定为 127.0.0.1：多数上游（如 TRAE）对 redirect_uri 做 `^http://127\.0\.0\.1:\d+/...$`
@@ -133,6 +181,12 @@ func (h *Host) ServeCallback(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		callbackErrorPage(w, http.StatusNotFound,
 			"没有插件认领这个回调路径，请回到网关控制台重新发起登录")
+		return
+	}
+	// 网关计时已过：迟到的授权回调不再转发（见 LoginTTL）
+	if h.LoginExpired(inst.manifest.ID) {
+		callbackErrorPage(w, http.StatusGone,
+			"授权链接已超过 90 秒有效期，请回到网关面板重新发起登录")
 		return
 	}
 
@@ -266,6 +320,9 @@ func (h *Host) SubmitCallback(pluginID, raw string) error {
 	}
 	if status != StatusRunning || port == 0 {
 		return fmt.Errorf("插件当前状态为 %s，请先启动插件", status)
+	}
+	if h.LoginExpired(pluginID) {
+		return fmt.Errorf("授权链接已超过 90 秒有效期，请回到网关面板重新发起登录")
 	}
 
 	p := u.EscapedPath()

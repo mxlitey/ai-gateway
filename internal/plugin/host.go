@@ -118,6 +118,8 @@ type Host struct {
 	// cbSrv / cbLn 登录回调透传入口（监听端口 +1，见 callback.go）。
 	cbSrv *http.Server
 	cbLn  net.Listener
+	// logins 授权登录的计时登记（网关计时 90 秒，见 callback.go 的 LoginTTL）。
+	logins map[string]loginTimer
 }
 
 // New 创建插件宿主。

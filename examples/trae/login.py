@@ -16,17 +16,16 @@ TRAE 官方授权页（www.trae.cn/authorization）对 auth_callback_url 做硬�
   ④ 回调里取 refreshToken → ExchangeToken → GetUserInfo → 原子落盘 → 会话标记 ok
   ⑤ 面板轮询 GET /console/login/web?state=xxx 拿到 ok → 自动刷新账号列表
 
+授权有效期由网关计时（90 秒，见 docs/plugin-spec.md §6.7），插件不再自己设 TTL。
+
 插件只监听清单里的那一个端口，不新增额外端口。
 """
 
 import threading
-import time
 
 from accounts import Account
 from upstream import as_upstream_error, build_login_url, parse_callback
 from util import new_checkin_device_id, random_hex, random_state, truncate_runes
-
-LOGIN_TTL = 10 * 60  # 10 分钟
 
 
 def loopback_base(headers=None, port=0):
@@ -49,14 +48,13 @@ def loopback_base(headers=None, port=0):
 
 
 class LoginSession:
-    __slots__ = ("state", "auth_url", "status", "message", "created", "machine_id", "device_id")
+    __slots__ = ("state", "auth_url", "status", "message", "machine_id", "device_id")
 
     def __init__(self, state, auth_url, machine_id, device_id):
         self.state = state
         self.auth_url = auth_url
         self.status = "pending"
         self.message = "请在浏览器中完成授权"
-        self.created = time.time()
         self.machine_id = machine_id
         self.device_id = device_id
 
@@ -93,12 +91,11 @@ class LoginBroker:
         return session
 
     def status(self, state):
+        """登录状态：有效期由网关计时（90 秒），插件只如实回报会话状态。"""
         with self.mu:
             session = self.by_state.get(state)
         if session is None:
             return "error", "登录会话不存在，请重新发起"
-        if session.status == "pending" and time.time() - session.created > LOGIN_TTL:
-            session.set_status("expired", "授权窗口已过期，请重新发起登录")
         return session.status, session.message
 
     def lookup(self, state):
@@ -124,9 +121,6 @@ class LoginBroker:
         session = self.lookup((state or "").strip()) if (state or "").strip() else self.current()
         if session is None:
             return False, "登录会话不存在或已过期，请回到网关控制台重试"
-        if time.time() - session.created > LOGIN_TTL:
-            session.set_status("expired", "授权窗口已过期，请重新发起登录")
-            return False, "授权窗口已过期，请回到网关控制台重新发起"
 
         if "refreshToken" not in (raw_query or "") and "userJwt" not in (raw_query or ""):
             # 可能是浏览器预取 /favicon.ico 之类，直接忽略

@@ -400,13 +400,13 @@ def fetch_quota(eps, acc):
 def ensure_token(eps, acc, store):
     """保证账号有可用的 accessToken。
 
-    关键约束：从桌面端导入的账号**不主动刷新**——refreshToken 是独占的，
+    关键约束：历史桌面端导入的账号**不主动刷新**——refreshToken 是独占的，
     我们一刷，桌面端就被踢下线；OAuth 登录的账号自己刷。
     """
     if acc.token_alive():
         return
     if acc.source == "desktop":
-        raise UpstreamError("登录态已过期：请打开一次桌面端让它自动刷新，然后重新导入")
+        raise UpstreamError("该账号由桌面端导入（导入功能已下线），登录态过期后请用 OAuth 重新授权登录")
     if not acc.refresh_token:
         raise UpstreamError("登录态已过期且没有 refreshToken，请重新授权登录")
     refresh_token(eps, acc, store)

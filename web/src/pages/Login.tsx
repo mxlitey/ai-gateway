@@ -7,6 +7,7 @@ import { Button, Card, Field, Input } from '../components/ui'
 export default function Login() {
   const { signIn } = useAuth()
   const [credential, setCredential] = useState('')
+  const [remember, setRemember] = useState(true)
   const [busy, setBusy] = useState(false)
 
   async function submit(e: FormEvent) {
@@ -14,7 +15,7 @@ export default function Login() {
     if (!credential.trim()) return
     setBusy(true)
     try {
-      const { token } = await api.login(credential.trim())
+      const { token } = await api.login(credential.trim(), remember)
       signIn(token)
       toast('ok', '登录成功')
     } catch (err) {
@@ -43,6 +44,15 @@ export default function Login() {
                 autoFocus
               />
             </Field>
+            <label className="flex cursor-pointer items-center gap-2 text-sm text-zinc-600 dark:text-zinc-400">
+              <input
+                type="checkbox"
+                checked={remember}
+                onChange={(e) => setRemember(e.target.checked)}
+                className="size-4 rounded border-zinc-300 accent-emerald-600 dark:border-zinc-600"
+              />
+              记住此设备（30 天内免登录）
+            </label>
             <Button type="submit" variant="primary" className="w-full" disabled={busy}>
               {busy ? '登录中…' : '登录'}
             </Button>

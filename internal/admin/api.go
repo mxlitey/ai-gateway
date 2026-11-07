@@ -92,7 +92,7 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, status, err.Error())
 			return
 		}
-		token, ok, err := a.svc.Login(body.Password)
+		token, ok, err := a.svc.Login(body.Password, false)
 		if err != nil || !ok {
 			jsonOK(w, map[string]any{"success": true})
 			return
@@ -103,6 +103,7 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 	case path == "/login" && method == http.MethodPost:
 		var body struct {
 			Password string `json:"password"`
+			Remember bool   `json:"remember"`
 		}
 		if !decodeBody(w, r, &body) {
 			return
@@ -111,7 +112,7 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 			jsonErr(w, http.StatusBadRequest, "Password is required")
 			return
 		}
-		token, ok, err := a.svc.Login(body.Password)
+		token, ok, err := a.svc.Login(body.Password, body.Remember)
 		if err != nil {
 			jsonErr(w, http.StatusInternalServerError, err.Error())
 			return

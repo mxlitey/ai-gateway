@@ -19,11 +19,15 @@ import (
 )
 
 const (
-	pbkdf2Iter    = 210000
-	pbkdf2KeyLen  = 32
-	saltLen       = 16
-	sessionTTL    = 24 * time.Hour
+	pbkdf2Iter     = 210000
+	pbkdf2KeyLen   = 32
+	saltLen        = 16
 	passwordMinLen = 8
+
+	// sessionTTL 普通登录的会话有效期。
+	sessionTTL = 24 * time.Hour
+	// rememberedTTL 「记住此设备」时的会话有效期（30 天）。
+	rememberedTTL = 30 * 24 * time.Hour
 )
 
 // Service 管理端服务。
@@ -95,7 +99,8 @@ func (a *Service) setPassword(password string) error {
 // Login 校验管理员密码，成功时返回会话 Token。
 //
 // 仅接受管理员密码；客户端 API Key 不得用于登录管理面板。
-func (a *Service) Login(credential string) (string, bool, error) {
+// remember 为 true 时会话有效期延长到 30 天（面板上的「记住此设备」），否则为 24 小时。
+func (a *Service) Login(credential string, remember bool) (string, bool, error) {
 	encoded, ok, err := a.store.GetSetting(store.SettingAdminPasswordHash)
 	if err != nil {
 		return "", false, err
@@ -107,7 +112,11 @@ func (a *Service) Login(credential string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	token, err := CreateToken(secret, sessionTTL)
+	ttl := sessionTTL
+	if remember {
+		ttl = rememberedTTL
+	}
+	token, err := CreateToken(secret, ttl)
 	if err != nil {
 		return "", false, err
 	}

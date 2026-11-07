@@ -563,8 +563,11 @@ export const api = {
   setup: (password: string) =>
     request<{ token?: string }>('/admin/api/setup', { method: 'POST', ...json({ password }) }),
 
-  login: (password: string) =>
-    request<{ token: string }>('/admin/api/login', { method: 'POST', ...json({ password }) }),
+  login: (password: string, remember = false) =>
+    request<{ token: string }>('/admin/api/login', {
+      method: 'POST',
+      ...json({ password, remember }),
+    }),
 
   changePassword: (oldPassword: string, newPassword: string) =>
     request<{ success: boolean }>('/admin/api/password', {

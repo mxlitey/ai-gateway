@@ -22,9 +22,9 @@ type Recorder struct {
 	store  *store.Store
 	pricer *pricing.Resolver
 
-	mu   sync.Mutex
-	row  model.RequestLog
-	done bool
+	mu    sync.Mutex
+	row   model.RequestLog
+	done  bool
 	start time.Time
 }
 
@@ -258,6 +258,8 @@ func endpointOf(path string) string {
 		return "responses"
 	case strings.HasSuffix(path, "/embeddings"):
 		return "embeddings"
+	case strings.HasSuffix(path, "/images/generations"):
+		return "images"
 	case strings.HasSuffix(path, "/models"):
 		return "models"
 	default:

@@ -1,0 +1,13 @@
+{
+  "name": "生图",
+  "alias": "image-gen",
+  "entry": "main.py",
+  "path": "/mcp",
+  "startup_timeout_ms": 30000,
+  "env": {
+    "AIGW_IMAGE_BASE_URL": "http://127.0.0.1:8787",
+    "AIGW_IMAGE_API_KEY": "",
+    "AIGW_IMAGE_MODEL": "",
+    "AIGW_IMAGE_TIMEOUT_SECONDS": "600"
+  }
+}

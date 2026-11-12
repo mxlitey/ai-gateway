@@ -123,12 +123,22 @@ foreach ($name in @("trae", "workbuddy")) {
     Copy-Item "examples/$name/plugin.json" "$dst/plugin.json" -Force
 }
 
-# 本地 MCP 服务器目录：内置 github-search（纯标准库），用户也可以放自己的服务进来；
-# 网关启动时自动扫描登记。
+# 本地 MCP 服务器目录：内置 github-search（纯标准库）与 image-generation（生图），
+# 用户也可以放自己的服务进来；网关启动时自动扫描登记。
 Reset-Dir "dist/mcp"
-$mcpDst = "dist/mcp/github-search"
-New-Item -ItemType Directory -Force -Path $mcpDst | Out-Null
-Copy-Item "examples/mcp/github-search/*" $mcpDst -Force
+$mcpBuiltin = @{
+    "github-search"    = "examples/mcp/github-search"
+    "image-generation" = "mcp/image-generation"
+}
+foreach ($name in $mcpBuiltin.Keys) {
+    $src = $mcpBuiltin[$name]
+    if (-not (Test-Path $src)) { continue }
+    $dst = "dist/mcp/$name"
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Copy-Item "$src/*" $dst -Force -Recurse
+    # 别把本地运行产生的字节码带进安装包
+    Remove-Item "$dst/__pycache__" -Recurse -Force -ErrorAction SilentlyContinue
+}
 # 放一个说明文件，交代目录约定与如何加自己的服务
 $mcpReadme = @(
     "mcp/ 目录：本地 MCP 服务器",
@@ -144,6 +154,12 @@ $mcpReadme = @(
     "内置 github-search：GitHub 仓库 / 代码 / issue / PR / 提交 / 用户搜索。",
     "匿名调用可用（搜索 10 次/分钟，代码搜索需要令牌）；在 mcp/github-search/mcp.json 的 env 里",
     "填 GITHUB_TOKEN 即可提升额度并解锁代码搜索。",
+    "",
+    "内置 image-generation（别名 image-gen）：调用网关 /v1/images/generations 生成图片，",
+    "支持文生图、参考图（公网 URL / data URI / 纯 base64 / 本机文件路径）、尺寸与数量。",
+    "生图通常需要 1-3 分钟，工具会先返回 running + job_id，再用 get_image_job 轮询结果。",
+    "使用前在 mcp/image-generation/mcp.json 的 env 里填写 AIGW_IMAGE_API_KEY（面板签发的 sk- 密钥），",
+    "并按需填 AIGW_IMAGE_MODEL 作为默认模型。",
     "",
     "参考实现见仓库 examples/mcp/local-demo 与 examples/mcp/github-search。",
     "完整规范见仓库 docs/local-mcp-spec.md。"

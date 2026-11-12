@@ -32,6 +32,21 @@ type FormState = {
   modelsText: string
   modelMap: MapRow[]
   headers: HeaderRow[]
+  // 生图：模型标记 + 渠道级同步/异步配置
+  imageModelsText: string
+  imageMode: '' | 'sync' | 'async'
+  imagePath: string
+  imagePollPath: string
+  imageIntervalSec: string
+  imageTimeoutSec: string
+  imageSubmitHeaders: HeaderRow[]
+  imagePollHeaders: HeaderRow[]
+  imageTaskIDField: string
+  imageStatusField: string
+  imageSuccessStatus: string
+  imageFailedStatus: string
+  imageImagesField: string
+  imageErrorField: string
   keyStrategy: string
   enabled: boolean
   // 插件渠道：密钥由插件账号同步而来，面板只允许启停与排序，不允许增删改
@@ -53,10 +68,31 @@ const emptyForm: FormState = {
   modelsText: '',
   modelMap: [],
   headers: [],
+  imageModelsText: '',
+  imageMode: '',
+  imagePath: '',
+  imagePollPath: '',
+  imageIntervalSec: '5',
+  imageTimeoutSec: '300',
+  imageSubmitHeaders: [],
+  imagePollHeaders: [],
+  imageTaskIDField: '',
+  imageStatusField: '',
+  imageSuccessStatus: '',
+  imageFailedStatus: '',
+  imageImagesField: '',
+  imageErrorField: '',
   keyStrategy: 'rotate',
   enabled: true,
   isPlugin: false,
 }
+
+// 生图模式，与后端 model.ImageGenSync / ImageGenAsync 对应
+const IMAGE_MODES = [
+  { value: '', label: '关闭' },
+  { value: 'sync', label: '同步' },
+  { value: 'async', label: '异步任务' },
+] as const
 
 // isPluginChannel 判断渠道是否由插件注册（source 形如 plugin:<插件id>）。
 function isPluginChannel(ch: Channel): boolean {
@@ -96,9 +132,23 @@ export default function Channels() {
             .map((r) => [r.pub.trim(), r.upstream.trim()] as const)
             .filter(([pub]) => pub !== ''),
         ),
-        headers: state.headers
-          .map((h) => ({ name: h.name.trim(), value: h.value }))
-          .filter((h) => h.name !== ''),
+        headers: toHeaders(state.headers),
+        image_models: splitLines(state.imageModelsText),
+        image_generation: {
+          mode: state.imageMode,
+          path: state.imagePath.trim(),
+          poll_path: state.imagePollPath.trim(),
+          submit_headers: toHeaders(state.imageSubmitHeaders),
+          poll_headers: toHeaders(state.imagePollHeaders),
+          poll_interval_ms: secondsToMS(state.imageIntervalSec),
+          timeout_ms: secondsToMS(state.imageTimeoutSec),
+          task_id_field: state.imageTaskIDField.trim(),
+          status_field: state.imageStatusField.trim(),
+          success_status: state.imageSuccessStatus.trim(),
+          failed_status: state.imageFailedStatus.trim(),
+          images_field: state.imageImagesField.trim(),
+          error_field: state.imageErrorField.trim(),
+        },
         key_strategy: state.keyStrategy,
         enabled: state.enabled,
       }
@@ -233,7 +283,8 @@ export default function Channels() {
           <div className="grid gap-3 sm:grid-cols-2 sm:gap-4 xl:grid-cols-3">
             {list.map((ch) => {
               const enabledKeys = ch.keys.filter((k) => k.enabled).length
-              const modelCount = Object.keys(ch.model_map).length + ch.models.length
+              const modelCount =
+                Object.keys(ch.model_map).length + ch.models.length + ch.image_models.length
               const flipped = flippedId === ch.id
               return (
                 <div
@@ -547,6 +598,153 @@ export default function Channels() {
               </div>
             </Field>
 
+            <Field
+              label="生图模型"
+              hint="每行一个；标记后只能走 /v1/images/generations，不会进入对话路由"
+            >
+              <Textarea
+                rows={3}
+                value={form.imageModelsText}
+                onChange={(e) => setForm({ ...form, imageModelsText: e.target.value })}
+                placeholder={'Qwen/Qwen-Image-2.1-Turbo'}
+              />
+            </Field>
+
+            <div className="space-y-3 rounded-lg border border-zinc-200 p-3 dark:border-zinc-800">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                  生图调用配置
+                </span>
+                <Segmented
+                  value={form.imageMode}
+                  onChange={(v) => setForm({ ...form, imageMode: v as FormState['imageMode'] })}
+                  options={IMAGE_MODES.map((m) => ({ value: m.value, label: m.label }))}
+                />
+                <span className="text-xs text-zinc-400 dark:text-zinc-500">
+                  同步=一次请求直接返回图片；异步=提交任务后轮询 task_id
+                </span>
+              </div>
+
+              {form.imageMode ? (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="block space-y-1.5">
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        提交路径（留空默认 /images/generations）
+                      </span>
+                      <Input
+                        value={form.imagePath}
+                        onChange={(e) => setForm({ ...form, imagePath: e.target.value })}
+                        placeholder="/images/generations"
+                      />
+                    </label>
+                    {form.imageMode === 'async' ? (
+                      <>
+                        <label className="block space-y-1.5">
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                            轮询路径（留空默认 /tasks/&#123;task_id&#125;）
+                          </span>
+                          <Input
+                            value={form.imagePollPath}
+                            onChange={(e) => setForm({ ...form, imagePollPath: e.target.value })}
+                            placeholder="/tasks/{task_id}"
+                          />
+                        </label>
+                        <label className="block space-y-1.5">
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                            轮询间隔（秒，默认 5）
+                          </span>
+                          <Input
+                            type="number"
+                            value={form.imageIntervalSec}
+                            onChange={(e) => setForm({ ...form, imageIntervalSec: e.target.value })}
+                          />
+                        </label>
+                      </>
+                    ) : null}
+                    <label className="block space-y-1.5">
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        任务超时（秒，默认 300）
+                      </span>
+                      <Input
+                        type="number"
+                        value={form.imageTimeoutSec}
+                        onChange={(e) => setForm({ ...form, imageTimeoutSec: e.target.value })}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      提交附加请求头（如异步模式需要 X-ModelScope-Async-Mode: true）
+                    </span>
+                    <HeaderRows
+                      rows={form.imageSubmitHeaders}
+                      onChange={(rows) => setForm({ ...form, imageSubmitHeaders: rows })}
+                    />
+                  </div>
+
+                  {form.imageMode === 'async' ? (
+                    <>
+                      <div className="space-y-1.5">
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                          轮询附加请求头（如 X-ModelScope-Task-Type: image_generation）
+                        </span>
+                        <HeaderRows
+                          rows={form.imagePollHeaders}
+                          onChange={(rows) => setForm({ ...form, imagePollHeaders: rows })}
+                        />
+                      </div>
+
+                      <details className="text-xs text-zinc-500 dark:text-zinc-400">
+                        <summary className="cursor-pointer select-none">
+                          高级：任务字段映射（留空使用 ModelScope 异步任务协议默认值）
+                        </summary>
+                        <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                          <ImageFieldInput
+                            label="任务 ID 字段"
+                            value={form.imageTaskIDField}
+                            placeholder="task_id"
+                            onChange={(v) => setForm({ ...form, imageTaskIDField: v })}
+                          />
+                          <ImageFieldInput
+                            label="状态字段"
+                            value={form.imageStatusField}
+                            placeholder="task_status"
+                            onChange={(v) => setForm({ ...form, imageStatusField: v })}
+                          />
+                          <ImageFieldInput
+                            label="成功状态值"
+                            value={form.imageSuccessStatus}
+                            placeholder="SUCCEED"
+                            onChange={(v) => setForm({ ...form, imageSuccessStatus: v })}
+                          />
+                          <ImageFieldInput
+                            label="失败状态值"
+                            value={form.imageFailedStatus}
+                            placeholder="FAILED"
+                            onChange={(v) => setForm({ ...form, imageFailedStatus: v })}
+                          />
+                          <ImageFieldInput
+                            label="图片列表字段"
+                            value={form.imageImagesField}
+                            placeholder="output_images"
+                            onChange={(v) => setForm({ ...form, imageImagesField: v })}
+                          />
+                          <ImageFieldInput
+                            label="失败原因字段"
+                            value={form.imageErrorField}
+                            placeholder="error"
+                            onChange={(v) => setForm({ ...form, imageErrorField: v })}
+                          />
+                        </div>
+                      </details>
+                    </>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+
             <Field label="模型映射" hint="公开模型名 → 上游模型名，优先于模型列表">
               <div className="space-y-2">
                 {form.modelMap.map((row, i) => (
@@ -655,6 +853,7 @@ function ChannelCardHead({ ch, onToggle }: { ch: Channel; onToggle: () => void }
             {ch.name}
           </span>
           {isPluginChannel(ch) ? <Badge tone="info">插件</Badge> : null}
+          {ch.image_generation?.mode ? <Badge tone="ok">生图</Badge> : null}
         </div>
         <p
           className="mt-1 line-clamp-2 font-mono text-xs break-all text-zinc-500 dark:text-zinc-400"
@@ -685,10 +884,100 @@ function openEdit(ch: Channel, setForm: (f: FormState) => void) {
     modelsText: ch.models.join('\n'),
     modelMap: Object.entries(ch.model_map).map(([pub, upstream]) => ({ pub, upstream })),
     headers: ch.headers.map((h) => ({ name: h.name, value: h.value })),
+    imageModelsText: (ch.image_models ?? []).join('\n'),
+    imageMode: (ch.image_generation?.mode ?? '') as FormState['imageMode'],
+    imagePath: ch.image_generation?.path ?? '',
+    imagePollPath: ch.image_generation?.poll_path ?? '',
+    imageIntervalSec: String(
+      ch.image_generation?.poll_interval_ms ? ch.image_generation.poll_interval_ms / 1000 : 5,
+    ),
+    imageTimeoutSec: String(
+      ch.image_generation?.timeout_ms ? ch.image_generation.timeout_ms / 1000 : 300,
+    ),
+    imageSubmitHeaders: (ch.image_generation?.submit_headers ?? []).map((h) => ({
+      name: h.name,
+      value: h.value,
+    })),
+    imagePollHeaders: (ch.image_generation?.poll_headers ?? []).map((h) => ({
+      name: h.name,
+      value: h.value,
+    })),
+    imageTaskIDField: ch.image_generation?.task_id_field ?? '',
+    imageStatusField: ch.image_generation?.status_field ?? '',
+    imageSuccessStatus: ch.image_generation?.success_status ?? '',
+    imageFailedStatus: ch.image_generation?.failed_status ?? '',
+    imageImagesField: ch.image_generation?.images_field ?? '',
+    imageErrorField: ch.image_generation?.error_field ?? '',
     keyStrategy: ch.key_strategy || 'rotate',
     enabled: ch.enabled,
     isPlugin: isPluginChannel(ch),
   })
+}
+
+function toHeaders(rows: HeaderRow[]) {
+  return rows.map((h) => ({ name: h.name.trim(), value: h.value })).filter((h) => h.name !== '')
+}
+
+// secondsToMS 把表单里的秒转换成后端使用的毫秒；非法值返回 0 让后端使用默认值。
+function secondsToMS(text: string): number {
+  const n = Number(text)
+  if (!Number.isFinite(n) || n <= 0) return 0
+  return Math.round(n * 1000)
+}
+
+// HeaderRows 生图附加请求头的简易编辑器。
+function HeaderRows({ rows, onChange }: { rows: HeaderRow[]; onChange: (rows: HeaderRow[]) => void }) {
+  return (
+    <div className="space-y-2">
+      {rows.map((row, i) => (
+        <div key={i} className="flex flex-wrap items-center gap-2">
+          <Input
+            className="min-w-0 flex-1 basis-36"
+            value={row.name}
+            onChange={(e) => {
+              const next = [...rows]
+              next[i] = { ...next[i], name: e.target.value }
+              onChange(next)
+            }}
+            placeholder="X-ModelScope-Async-Mode"
+          />
+          <Input
+            className="min-w-0 flex-1 basis-36"
+            value={row.value}
+            onChange={(e) => {
+              const next = [...rows]
+              next[i] = { ...next[i], value: e.target.value }
+              onChange(next)
+            }}
+            placeholder="true"
+          />
+          <IconButton title="移除请求头" onClick={() => onChange(rows.filter((_, idx) => idx !== i))}>
+            <CrossIcon />
+          </IconButton>
+        </div>
+      ))}
+      <Button onClick={() => onChange([...rows, { name: '', value: '' }])}>添加请求头</Button>
+    </div>
+  )
+}
+
+function ImageFieldInput({
+  label,
+  value,
+  placeholder,
+  onChange,
+}: {
+  label: string
+  value: string
+  placeholder: string
+  onChange: (v: string) => void
+}) {
+  return (
+    <label className="block space-y-1.5">
+      <span className="text-xs text-zinc-500 dark:text-zinc-400">{label}</span>
+      <Input value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+    </label>
+  )
 }
 
 function splitLines(text: string): string[] {

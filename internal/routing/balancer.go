@@ -53,7 +53,7 @@ func (b *Balancer) nextCounter(channelID string) uint64 {
 	return v
 }
 
-// SelectTarget 按公开模型名解析有序目标列表。
+// SelectTarget 按公开模型名解析有序对话目标列表。
 //
 // 规则：
 //  1. 跳过停用渠道、无启用密钥的渠道、以及不在 allowedChannelIDs 内的渠道
@@ -62,8 +62,19 @@ func (b *Balancer) nextCounter(channelID string) uint64 {
 //  4. 渠道内密钥按 key_strategy 展开（轮询=按渠道计数器依次轮换，故障转移=保持配置顺序），
 //     按 channelId:key:上游模型 去重
 //
+// 被标记为生图模型的公开模型不参与对话路由。
 // allowedChannelIDs 为空表示不限制。返回空切片表示无可用目标。
 func (b *Balancer) SelectTarget(publicModel string, allowedChannelIDs []string) ([]Target, error) {
+	return b.selectTargets(publicModel, allowedChannelIDs, false)
+}
+
+// SelectImageTarget 按公开模型名解析有序生图目标列表。
+// 只返回「模型被标记为生图」且「渠道已配置生图模式」的目标。
+func (b *Balancer) SelectImageTarget(publicModel string, allowedChannelIDs []string) ([]Target, error) {
+	return b.selectTargets(publicModel, allowedChannelIDs, true)
+}
+
+func (b *Balancer) selectTargets(publicModel string, allowedChannelIDs []string, image bool) ([]Target, error) {
 	channels, err := b.store.ListChannels()
 	if err != nil {
 		return nil, err
@@ -87,6 +98,15 @@ func (b *Balancer) SelectTarget(publicModel string, allowedChannelIDs []string) 
 			continue
 		}
 		if allowed != nil && !allowed[ch.ID] {
+			continue
+		}
+		isImage := ch.IsImageModel(publicModel)
+		if image {
+			if !isImage || !ch.SupportsImageGen() {
+				continue
+			}
+		} else if isImage {
+			// 生图模型只走 /v1/images/generations，避免被误当聊天模型转发
 			continue
 		}
 		um, ok := ch.ResolveUpstreamModel(publicModel)

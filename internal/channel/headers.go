@@ -117,7 +117,12 @@ func ApplyChannelHeaders(h http.Header, ch *model.Channel, r *http.Request) {
 	if ch == nil {
 		return
 	}
-	for _, hd := range NormalizeHeaders(ch.Headers) {
+	ApplyHeaderList(h, ch.Headers, r)
+}
+
+// ApplyHeaderList 把一组自定义请求头写入 headers（支持占位符，同名覆盖）。
+func ApplyHeaderList(h http.Header, list []model.Header, r *http.Request) {
+	for _, hd := range NormalizeHeaders(list) {
 		h.Set(hd.Name, ResolveHeaderValue(hd.Value, r))
 	}
 }

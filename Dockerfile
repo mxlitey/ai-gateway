@@ -9,8 +9,8 @@
 #         -v ai-gateway-data:/data \
 #         ai-gateway:v1.2.1
 #
-# 镜像内置 TRAE、WorkBuddy 两个插件（见阶段 3），开箱即用；
-# /mcp 卷只作为本地 MCP 服务器的存放位置，镜像不内置示例。
+# 镜像内置 TRAE、WorkBuddy 两个插件（见阶段 3），以及 github-search / image-generation
+# 两个本地 MCP 服务器，开箱即用。
 # 说明：桌面外壳（cmd/gateway-wails，Wails + WebView2）仅面向 Windows，
 # 带 //go:build windows 标签，不会参与本镜像构建。
 
@@ -72,9 +72,10 @@ COPY --from=go-builder /out/ai-gateway /usr/local/bin/ai-gateway
 COPY --chown=gateway:gateway examples/trae /plugins/trae
 COPY --chown=gateway:gateway examples/workbuddy /plugins/workbuddy
 
-# 内置 GitHub 搜索本地 MCP 服务器：纯标准库 Python 源码，开箱即用。
-# /mcp 是卷挂载点，卷首次创建时会带着它一起初始化；用户自己加的服务器也放这里。
+# 内置 GitHub 搜索 / 生图两个本地 MCP 服务器：纯标准库 Python 源码，开箱即用。
+# /mcp 是卷挂载点，卷首次创建时会带着它们一起初始化；用户自己加的服务器也放这里。
 COPY --chown=gateway:gateway examples/mcp/github-search /mcp/github-search
+COPY --chown=gateway:gateway mcp/image-generation /mcp/image-generation
 
 # 数据与插件目录固定为卷挂载点：换个容器实例也能保留配置、密钥与插件
 ENV AIGW_DATA_DIR=/data \

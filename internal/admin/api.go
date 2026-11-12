@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/czg95/ai-gateway-v2/internal/channel"
 	"github.com/czg95/ai-gateway-v2/internal/adminmcp"
+	"github.com/czg95/ai-gateway-v2/internal/channel"
 	"github.com/czg95/ai-gateway-v2/internal/config"
 	"github.com/czg95/ai-gateway-v2/internal/id"
 	"github.com/czg95/ai-gateway-v2/internal/mcp"
@@ -279,20 +279,23 @@ func (a *API) createChannel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ch := &model.Channel{
-		ID:            id.UUID(),
-		Name:          strings.TrimSpace(in.Name),
-		BaseURL:       strings.TrimSpace(in.BaseURL),
-		Path:          strings.TrimSpace(in.Path),
-		Keys:          sanitizeKeys(in.Keys),
-		Models:        sanitizeStrings(in.Models),
-		ModelMap:      normalizeModelMap(in.ModelMap),
-		ModelPriority: map[string]int{},
-		Headers:       channel.NormalizeHeaders(in.Headers),
-		KeyStrategy:   model.NormalizeKeyStrategy(in.KeyStrategy),
-		Enabled:       in.Enabled == nil || *in.Enabled,
-		Source:        "manual",
-		SortOrder:     order,
-		CreatedAt:     time.Now().UnixMilli(),
+		ID:             id.UUID(),
+		Name:           strings.TrimSpace(in.Name),
+		BaseURL:        strings.TrimSpace(in.BaseURL),
+		Path:           strings.TrimSpace(in.Path),
+		Keys:           sanitizeKeys(in.Keys),
+		Models:         sanitizeStrings(in.Models),
+		ModelMap:       normalizeModelMap(in.ModelMap),
+		ModelPriority:  map[string]int{},
+		DisabledModels: []string{},
+		Headers:        channel.NormalizeHeaders(in.Headers),
+		ImageModels:    sanitizeStrings(in.ImageModels),
+		ImageGen:       normalizeImageGen(in.ImageGen),
+		KeyStrategy:    model.NormalizeKeyStrategy(in.KeyStrategy),
+		Enabled:        in.Enabled == nil || *in.Enabled,
+		Source:         "manual",
+		SortOrder:      order,
+		CreatedAt:      time.Now().UnixMilli(),
 	}
 	if err := a.store.CreateChannel(ch); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
@@ -387,6 +390,12 @@ func (a *API) updateChannel(w http.ResponseWriter, r *http.Request, channelID st
 	}
 	if in.Headers != nil {
 		next.Headers = channel.NormalizeHeaders(in.Headers)
+	}
+	if in.ImageModels != nil {
+		next.ImageModels = sanitizeStrings(in.ImageModels)
+	}
+	if in.ImageGen != nil {
+		next.ImageGen = normalizeImageGen(in.ImageGen)
 	}
 	if s := strings.TrimSpace(in.KeyStrategy); s != "" {
 		next.KeyStrategy = model.NormalizeKeyStrategy(s)
@@ -1161,6 +1170,11 @@ func (a *API) probeUpstream(ch *model.Channel, key, upstreamModel, publicModel s
 		KeyHint:   model.KeyHint(key),
 	}
 
+	// 生图模型不能走对话端点，否则上游只会返回“模型无可用服务商”这类误导性 400
+	if ch.IsImageModel(publicModel) {
+		return a.probeImageUpstream(ch, key, upstreamModel, publicModel, res)
+	}
+
 	// 上游 SOLO 通道只接受流式请求：非流式会被判为异常调用，回业务码 4011（插件把它
 	// 翻译成 429「触发上游限流」）。诊断必须与真实客户端一致地发流式，否则永远误报。
 	payload, _ := json.Marshal(map[string]any{
@@ -1229,6 +1243,43 @@ func (a *API) probeUpstream(ch *model.Channel, key, upstreamModel, publicModel s
 	return res
 }
 
+// probeImageUpstream 诊断生图模型：按渠道配置走同步/异步上游，复用真实转发逻辑。
+func (a *API) probeImageUpstream(ch *model.Channel, key, upstreamModel, publicModel string, res probeResult) probeResult {
+	payload := map[string]any{
+		"model":  publicModel,
+		"prompt": "a small red apple on a white background",
+	}
+	if !ch.SupportsImageGen() {
+		res.Status = http.StatusBadRequest
+		res.Error = "渠道未配置生图能力（请在渠道配置中设置生图模式）"
+		a.logDiagnoseError(ch, key, publicModel, res.Status, res.Error)
+		return res
+	}
+
+	// 生图任务可能持续数分钟，诊断客户端不能沿用管理接口的 60 秒总超时
+	client := &http.Client{}
+	if a.client != nil {
+		client.Transport = a.client.Transport
+	}
+	start := time.Now()
+	out := proxy.GenerateImage(context.Background(), client, ch, key, payload, publicModel, nil)
+	res.DurationMS = time.Since(start).Milliseconds()
+	if out.StatusCode >= 200 && out.StatusCode < 300 {
+		res.Status = http.StatusOK
+		res.Body = truncateStr(string(out.Body), 300)
+		a.recordDiagnoseUsage(ch, key, publicModel, upstreamModel, res.Status, res.DurationMS, out.Body, "")
+		return res
+	}
+
+	res.Status = out.UpstreamStatus
+	if res.Status == 0 {
+		res.Status = out.StatusCode
+	}
+	res.Error = out.Error
+	a.logDiagnoseError(ch, key, publicModel, res.Status, "生图诊断失败: "+out.Error)
+	return res
+}
+
 // recordDiagnoseUsage 把一次诊断请求写入用量明细，与 /v1 转发口径保持一致。
 func (a *API) recordDiagnoseUsage(ch *model.Channel, key, publicModel, upstreamModel string, status int, durationMS int64, raw []byte, errMsg string) {
 	row := model.RequestLog{
@@ -1285,6 +1336,8 @@ func (a *API) publicModels(w http.ResponseWriter) {
 		ModelDisabled bool `json:"model_disabled"`
 		// Direct 表示该公开模型未做重命名映射、按同名透传到上游。
 		Direct bool `json:"direct"`
+		// Image 表示该模型在此渠道被标记为生图模型。
+		Image bool `json:"image"`
 	}
 	grouped := map[string][]route{}
 
@@ -1295,6 +1348,9 @@ func (a *API) publicModels(w http.ResponseWriter) {
 			names[strings.TrimSpace(pub)] = true
 		}
 		for _, m := range ch.Models {
+			names[strings.TrimSpace(m)] = true
+		}
+		for _, m := range ch.ImageModels {
 			names[strings.TrimSpace(m)] = true
 		}
 		for pub := range names {
@@ -1314,6 +1370,7 @@ func (a *API) publicModels(w http.ResponseWriter) {
 				Upstream:      um,
 				ModelDisabled: ch.IsModelDisabled(pub),
 				Direct:        !mapped,
+				Image:         ch.IsImageModel(pub),
 			})
 		}
 	}
@@ -1891,15 +1948,28 @@ func (a *API) reloadPrices() {
 // ---------- 输入模型与工具 ----------
 
 type channelInput struct {
-	Name        string             `json:"name"`
-	BaseURL     string             `json:"base_url"`
-	Path        string             `json:"path"`
-	Keys        []model.ChannelKey `json:"keys"`
-	Models      []string           `json:"models"`
-	ModelMap    map[string]string  `json:"model_map"`
-	Headers     []model.Header     `json:"headers"`
-	KeyStrategy string             `json:"key_strategy"`
-	Enabled     *bool              `json:"enabled"`
+	Name        string                `json:"name"`
+	BaseURL     string                `json:"base_url"`
+	Path        string                `json:"path"`
+	Keys        []model.ChannelKey    `json:"keys"`
+	Models      []string              `json:"models"`
+	ModelMap    map[string]string     `json:"model_map"`
+	Headers     []model.Header        `json:"headers"`
+	ImageModels []string              `json:"image_models"`
+	ImageGen    *model.ImageGenConfig `json:"image_generation"`
+	KeyStrategy string                `json:"key_strategy"`
+	Enabled     *bool                 `json:"enabled"`
+}
+
+// normalizeImageGen 规范化渠道生图配置：补齐默认值并清洗请求头。
+func normalizeImageGen(in *model.ImageGenConfig) model.ImageGenConfig {
+	if in == nil {
+		return model.ImageGenConfig{}.Normalized()
+	}
+	out := in.Normalized()
+	out.SubmitHeaders = channel.NormalizeHeaders(in.SubmitHeaders)
+	out.PollHeaders = channel.NormalizeHeaders(in.PollHeaders)
+	return out
 }
 
 func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {

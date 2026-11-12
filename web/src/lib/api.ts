@@ -3,6 +3,23 @@
 export type ChannelKey = { key: string; enabled: boolean; label?: string }
 export type HeaderItem = { name: string; value: string }
 
+/** 渠道级生图配置：mode 为空表示不支持生图，sync=同步返回，async=异步任务轮询。 */
+export type ImageGenConfig = {
+  mode: '' | 'sync' | 'async'
+  path: string
+  poll_path: string
+  submit_headers: HeaderItem[]
+  poll_headers: HeaderItem[]
+  poll_interval_ms: number
+  timeout_ms: number
+  task_id_field: string
+  status_field: string
+  success_status: string
+  failed_status: string
+  images_field: string
+  error_field: string
+}
+
 export type Channel = {
   id: string
   name: string
@@ -15,6 +32,9 @@ export type Channel = {
   /** 在本渠道上被单独停用的公开模型名 */
   disabled_models: string[]
   headers: HeaderItem[]
+  /** 本渠道上被标记为生图的公开模型名 */
+  image_models: string[]
+  image_generation: ImageGenConfig
   key_strategy: string
   enabled: boolean
   source: string
@@ -63,6 +83,8 @@ export type RouteEntry = {
   /** 该公开模型在本渠道上被单独停用 */
   model_disabled: boolean
   direct: boolean
+  /** 该公开模型在此渠道被标记为生图模型 */
+  image: boolean
 }
 
 export type RouteGroup = { model: string; routes: RouteEntry[] }
@@ -352,6 +374,8 @@ export type ChannelInput = {
   models: string[]
   model_map: Record<string, string>
   headers: HeaderItem[]
+  image_models: string[]
+  image_generation: ImageGenConfig
   key_strategy: string
   enabled: boolean
 }

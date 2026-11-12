@@ -28,7 +28,8 @@ data/      数据库与日志（ai-gateway.db、logs/），请勿删除
 plugins/   插件目录；可在桌面窗口里增删，也可手动放目录后点「重新扫描」
 mcp/       本地 MCP 服务器目录；每个子目录一个服务（放 mcp.json 与 Python 入口），
            网关启动时自动登记到「MCP 服务器」页，删除目录后重启即移除
-           安装包内置 mcp\github-search（GitHub 搜索）；最小实现可参考仓库 examples/mcp/local-demo
+           安装包内置 mcp\github-search（GitHub 搜索）与 mcp\image-generation（生图）；
+           最小实现可参考仓库 examples/mcp/local-demo
 
 本地 MCP 服务器
 ---------------
@@ -39,6 +40,11 @@ MCP 服务器整个目录放进来即可（每个子目录一个服务），
 客户端只连网关的 MCP 聚合入口，不会看到本地服务器的端口；可在「API 密钥」里
 把某把密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
 完整开发规范见仓库 docs/local-mcp-spec.md。
+
+mcp\image-generation（别名 image-gen）调用网关的 /v1/images/generations 生图，
+支持文生图与参考图（公网 URL、data URI、纯 base64、本机文件路径）。生图约 1-3 分钟，
+工具先返回 running + job_id，再用 get_image_job 轮询。使用前在它的 mcp.json 的 env 里
+填 AIGW_IMAGE_API_KEY（面板签发的 sk- 密钥），按需填 AIGW_IMAGE_MODEL 作为默认模型。
 
 管理 MCP（可选）
 ----------------

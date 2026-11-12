@@ -134,6 +134,10 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		h.handleClaude(w, r, body, allowed, rec)
 		return
 	}
+	if strings.HasSuffix(path, "/images/generations") {
+		h.handleImages(w, r, body, allowed, rec)
+		return
+	}
 	h.handleOpenAI(w, r, body, allowed, rec)
 }
 
@@ -312,6 +316,64 @@ func (h *Handler) validateUpstreamResult(raw []byte, t routing.Target, publicMod
 
 // ---------- OpenAI 透传 ----------
 
+// handleImages 处理 /v1/images/generations：按渠道配置走同步或异步生图上游。
+func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[string]any, allowed []string, rec *Recorder) {
+	modelName, _ := body["model"].(string)
+	if strings.TrimSpace(modelName) == "" {
+		msg := "缺少 model 参数"
+		h.logGatewayError("", http.StatusBadRequest, "生图请求被拒绝: "+msg)
+		rec.Finish(http.StatusBadRequest, msg)
+		jsonError(w, http.StatusBadRequest, msg, "invalid_request_error")
+		return
+	}
+
+	targets, err := h.balancer.SelectImageTarget(modelName, allowed)
+	if err != nil {
+		slog.Error("选择生图渠道失败", "err", err)
+		h.logGatewayError(modelName, http.StatusInternalServerError, "选择渠道失败: "+err.Error())
+		rec.Finish(http.StatusInternalServerError, "select target failed: "+err.Error())
+		jsonError(w, http.StatusInternalServerError, "Internal Server Error", "server_error")
+		return
+	}
+	if len(targets) == 0 {
+		msg := "模型 " + modelName + " 没有被标记为生图模型，或没有支持生图的可用渠道"
+		// 模型只在聊天渠道里注册时，明确告诉调用方走错了端点，避免把上游 400 当成根因
+		if chatTargets, _ := h.balancer.SelectTarget(modelName, allowed); len(chatTargets) > 0 {
+			msg = "模型 " + modelName + " 是对话模型，当前渠道未将其标记为生图模型；请在渠道配置中添加生图模型并设置生图模式"
+		}
+		h.logGatewayError(modelName, http.StatusBadRequest, "生图请求被拒绝: "+msg)
+		rec.Finish(http.StatusBadRequest, msg)
+		jsonError(w, http.StatusBadRequest, msg, "invalid_request_error")
+		return
+	}
+
+	cdCfg := h.coolerConfig()
+	var lastErr string
+	for _, t := range targets {
+		rec.Attempt()
+		res := GenerateImage(r.Context(), h.client, t.Channel, t.Key, body, modelName, r)
+		if res.StatusCode >= 200 && res.StatusCode < 300 {
+			h.cooler.Success(t.Channel.ID, t.Key)
+			rec.Served(t)
+			rec.Finish(res.StatusCode, "")
+			writeRawJSON(w, res.StatusCode, res.Body)
+			return
+		}
+
+		lastErr = res.Error
+		failStatus := res.UpstreamStatus
+		if failStatus == 0 {
+			failStatus = http.StatusBadGateway
+		}
+		h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, failStatus)
+		h.logError(t, modelName, failStatus, "生图请求失败: "+res.Error)
+	}
+
+	rec.Finish(http.StatusBadGateway, lastErr)
+	jsonError(w, http.StatusBadGateway,
+		"所有生图渠道均失败。最后错误: "+lastErr, "server_error")
+}
+
 func (h *Handler) handleOpenAI(w http.ResponseWriter, r *http.Request, body map[string]any, allowed []string, rec *Recorder) {
 	modelName, _ := body["model"].(string)
 
@@ -324,6 +386,14 @@ func (h *Handler) handleOpenAI(w http.ResponseWriter, r *http.Request, body map[
 		return
 	}
 	if len(targets) == 0 {
+		// 生图模型误走对话端点时给出明确提示，而不是只看到上游 400
+		if imgTargets, _ := h.balancer.SelectImageTarget(modelName, allowed); len(imgTargets) > 0 {
+			msg := "模型 " + modelName + " 是生图模型，请调用 /v1/images/generations"
+			h.logGatewayError(modelName, http.StatusBadRequest, msg)
+			rec.Finish(http.StatusBadRequest, msg)
+			jsonError(w, http.StatusBadRequest, msg, "invalid_request_error")
+			return
+		}
 		h.logGatewayError(modelName, http.StatusServiceUnavailable, "没有可用渠道（渠道被停用、密钥全在冷却中或该模型未映射）")
 		rec.Finish(http.StatusServiceUnavailable, "No available channel for model: "+modelName)
 		jsonError(w, http.StatusServiceUnavailable, "No available channel for model: "+modelName, "server_error")
@@ -500,6 +570,9 @@ func (h *Handler) handleModels(w http.ResponseWriter, allowed []string) {
 		for _, m := range ch.Models {
 			add(strings.TrimSpace(m), owner)
 		}
+		for _, m := range ch.ImageModels {
+			add(strings.TrimSpace(m), owner)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": data})
@@ -621,6 +694,14 @@ func jsonResponse(status int, v any) *http.Response {
 	h.Set("Content-Type", "application/json")
 	h.Set("Access-Control-Allow-Origin", "*")
 	return &http.Response{StatusCode: status, Header: h, Body: io.NopCloser(bytes.NewReader(b))}
+}
+
+// writeRawJSON 直接写出 JSON 响应体。
+func writeRawJSON(w http.ResponseWriter, status int, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }
 
 func bytesResponse(status int, header http.Header, body []byte) *http.Response {

@@ -33,6 +33,126 @@ type Header struct {
 	Value string `json:"value"`
 }
 
+// 生图渠道的工作模式。
+const (
+	// ImageGenSync 同步型：一次请求直接返回图片。
+	ImageGenSync = "sync"
+	// ImageGenAsync 异步型：先提交任务拿到 task_id，再轮询任务结果。
+	ImageGenAsync = "async"
+)
+
+// ImageGenConfig 渠道级生图配置。
+//
+// 生图与对话是两套上游协议，但对外都收敛为 OpenAI 兼容的 /v1/images/generations。
+// 这里把「怎么调上游」全部放进渠道配置，新增服务商时只需改配置，不必改核心代码。
+type ImageGenConfig struct {
+	// Mode 生图模式：空=不支持，sync=同步，async=异步任务。
+	Mode string `json:"mode"`
+	// Path 提交路径，默认 /images/generations（相对渠道 base_url）。
+	Path string `json:"path"`
+	// PollPath 异步任务轮询路径，默认 /tasks/{task_id}，{task_id} 会被替换。
+	PollPath string `json:"poll_path"`
+	// SubmitHeaders / PollHeaders 仅用于生图提交与轮询的附加请求头（渠道公共头仍会生效）。
+	SubmitHeaders []Header `json:"submit_headers"`
+	PollHeaders   []Header `json:"poll_headers"`
+	// PollIntervalMS 轮询间隔（毫秒），默认 5000。
+	PollIntervalMS int `json:"poll_interval_ms"`
+	// TimeoutMS 异步任务整体超时（毫秒），默认 300000。
+	TimeoutMS int `json:"timeout_ms"`
+	// 异步任务响应字段名，默认分别对应 ModelScope 的 task_id / task_status / SUCCEED / FAILED。
+	TaskIDField   string `json:"task_id_field"`
+	StatusField   string `json:"status_field"`
+	SuccessStatus string `json:"success_status"`
+	FailedStatus  string `json:"failed_status"`
+	// ImagesField 图片列表字段名（同步/异步共用），默认 output_images。
+	ImagesField string `json:"images_field"`
+	// ErrorField 失败原因字段名，默认 error。
+	ErrorField string `json:"error_field"`
+}
+
+// Normalized 补齐生图配置的默认值并归一化模式。
+func (g ImageGenConfig) Normalized() ImageGenConfig {
+	mode := strings.ToLower(strings.TrimSpace(g.Mode))
+	switch mode {
+	case ImageGenSync, ImageGenAsync:
+		g.Mode = mode
+	default:
+		g.Mode = ""
+	}
+
+	g.Path = normalizePath(g.Path, "/images/generations")
+	g.PollPath = normalizePath(g.PollPath, "/tasks/{task_id}")
+	if g.PollIntervalMS <= 0 {
+		g.PollIntervalMS = 5000
+	}
+	if g.PollIntervalMS < 100 {
+		g.PollIntervalMS = 100
+	}
+	if g.TimeoutMS <= 0 {
+		g.TimeoutMS = 300000
+	}
+	if g.TimeoutMS < 1000 {
+		g.TimeoutMS = 1000
+	}
+	g.TaskIDField = defaultField(g.TaskIDField, "task_id")
+	g.StatusField = defaultField(g.StatusField, "task_status")
+	g.SuccessStatus = defaultField(g.SuccessStatus, "SUCCEED")
+	g.FailedStatus = defaultField(g.FailedStatus, "FAILED")
+	g.ImagesField = defaultField(g.ImagesField, "output_images")
+	g.ErrorField = defaultField(g.ErrorField, "error")
+	if g.SubmitHeaders == nil {
+		g.SubmitHeaders = []Header{}
+	}
+	if g.PollHeaders == nil {
+		g.PollHeaders = []Header{}
+	}
+	return g
+}
+
+// SupportsImageGen 渠道是否配置为生图渠道（sync 或 async）。
+func (c *Channel) SupportsImageGen() bool {
+	return c != nil && c.ImageGen.Normalized().Mode != ""
+}
+
+// ImageConfig 返回补齐默认值后的生图配置。
+func (c *Channel) ImageConfig() ImageGenConfig {
+	if c == nil {
+		return ImageGenConfig{}.Normalized()
+	}
+	return c.ImageGen.Normalized()
+}
+
+// IsImageModel 判断公开模型是否在本渠道上被标记为生图模型。
+func (c *Channel) IsImageModel(publicModel string) bool {
+	if c == nil {
+		return false
+	}
+	for _, m := range c.ImageModels {
+		if strings.TrimSpace(m) == publicModel {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizePath(p, def string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return def
+	}
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
+}
+
+func defaultField(v, def string) string {
+	if strings.TrimSpace(v) == "" {
+		return def
+	}
+	return strings.TrimSpace(v)
+}
+
 // Channel 一个上游渠道。
 type Channel struct {
 	ID            string            `json:"id"`
@@ -46,6 +166,10 @@ type Channel struct {
 	// DisabledModels 在本渠道上被单独停用的公开模型名；命中的模型不参与路由。
 	DisabledModels []string `json:"disabled_models"`
 	Headers        []Header `json:"headers"`
+	// ImageModels 本渠道上被标记为生图的公开模型名，只能走 /v1/images/generations。
+	ImageModels []string `json:"image_models"`
+	// ImageGen 渠道级生图配置（同步/异步）。
+	ImageGen ImageGenConfig `json:"image_generation"`
 	// KeyStrategy 多密钥选用策略，见 KeyStrategy* 常量；空值按轮询处理。
 	KeyStrategy string `json:"key_strategy"`
 	Enabled     bool   `json:"enabled"`
@@ -80,6 +204,12 @@ func (c *Channel) ResolveUpstreamModel(publicModel string) (string, bool) {
 	}
 	for _, m := range c.Models {
 		if m == publicModel {
+			return publicModel, true
+		}
+	}
+	// 只登记在生图模型列表里的模型同样按同名透传
+	for _, m := range c.ImageModels {
+		if strings.TrimSpace(m) == publicModel {
 			return publicModel, true
 		}
 	}

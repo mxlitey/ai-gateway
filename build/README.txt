@@ -43,8 +43,8 @@ MCP 服务器整个目录放进来即可（每个子目录一个服务），
 
 mcp\image-generation（别名 image-gen）调用网关的 /v1/images/generations 生图，
 支持文生图与参考图（公网 URL、data URI、纯 base64、本机文件路径）。生图约 1-3 分钟，
-工具先返回 running + job_id，再用 get_image_job 轮询。使用前在它的 mcp.json 的 env 里
-填 AIGW_IMAGE_API_KEY（面板签发的 sk- 密钥），按需填 AIGW_IMAGE_MODEL 作为默认模型。
+工具先返回 running + job_id，再用 get_image_job 轮询。密钥在面板「MCP 服务器 → 生图 →
+编辑 → 密钥」里填面板签发的 sk- 密钥，无需改 mcp.json。
 
 管理 MCP（可选）
 ----------------

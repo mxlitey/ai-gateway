@@ -100,8 +100,8 @@ plugins/
 上面是最小形态的示意（`hello` 只是示例名），**不宜直接照抄上线**。
 仓库里可直接运行的参考实现：
 
-- `examples/hello-py/` —— 只用标准库的最小实现，最适合当起点；
-- `examples/trae/`、`examples/workbuddy/` —— 完整实现（控制台、多账号、签到、额度与多种登录方式）。
+- `examples/plugins/hello-py/` —— 只用标准库的最小实现，最适合当起点；
+- `examples/plugins/trae/`、`examples/plugins/workbuddy/` —— 完整实现（控制台、多账号、签到、额度与多种登录方式）。
 
 把目录整个复制到 `plugins/<id>/` 后点面板「重新扫描」即可拉起。
 
@@ -641,7 +641,7 @@ Docker 部署时回调端口只在容器内，宿主机浏览器打不开。此�
 - 账号列表的列与按钮由 `capabilities` 决定（`checkin` / `quota`）
 - 所有操作走 toast 反馈，失败展示插件返回的 `error`
 
-参考实现见 `examples/workbuddy/`：含完整的账号 / 签到 / 额度，以及国内站 / 国际站两种 OAuth 登录。
+参考实现见 `examples/plugins/workbuddy/`：含完整的账号 / 签到 / 额度，以及国内站 / 国际站两种 OAuth 登录。
 
 ---
 
@@ -806,7 +806,7 @@ macOS / Linux 依次尝试 `python3` → `python`。只接受 Python 3。
 
 ### 11.4 示例
 
-`examples/hello-py/` 是一个只用标准库的最小实现（`http.server` + `json`），
+`examples/plugins/hello-py/` 是一个只用标准库的最小实现（`http.server` + `json`），
 复制到 `plugins/hello-py/` 后点面板「重新扫描」即可拉起。它同时演示了
 `/health`、`/v1/models`、`/v1/chat/completions` 三个端点以及按 `X-Plugin-Account` 取账号。
 

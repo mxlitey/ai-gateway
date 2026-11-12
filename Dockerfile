@@ -69,13 +69,13 @@ COPY --from=go-builder /out/ai-gateway /usr/local/bin/ai-gateway
 
 # 内置 TRAE / WorkBuddy 插件：Python 源码直接拷入，无需编译。
 # /plugins 是卷挂载点，卷首次创建时会带着这些插件一起初始化；用户自己加的插件也放这里。
-COPY --chown=gateway:gateway examples/trae /plugins/trae
-COPY --chown=gateway:gateway examples/workbuddy /plugins/workbuddy
+COPY --chown=gateway:gateway examples/plugins/trae /plugins/trae
+COPY --chown=gateway:gateway examples/plugins/workbuddy /plugins/workbuddy
 
 # 内置 GitHub 搜索 / 生图两个本地 MCP 服务器：纯标准库 Python 源码，开箱即用。
 # /mcp 是卷挂载点，卷首次创建时会带着它们一起初始化；用户自己加的服务器也放这里。
 COPY --chown=gateway:gateway examples/mcp/github-search /mcp/github-search
-COPY --chown=gateway:gateway mcp/image-generation /mcp/image-generation
+COPY --chown=gateway:gateway examples/mcp/image-generation /mcp/image-generation
 
 # 数据与插件目录固定为卷挂载点：换个容器实例也能保留配置、密钥与插件
 ENV AIGW_DATA_DIR=/data \

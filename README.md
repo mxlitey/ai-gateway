@@ -191,14 +191,14 @@ plugins/
 
 同一份 `main.py` 在 Windows / macOS / Linux（含 Docker）上通用，不需要编译多份。网关只支持 Python 插件：`entry` 必须是插件目录内的 `.py` 脚本。宿主用系统 Python（`py -3` → `python3` → `python`）拉起插件，并按清单声明的 `requirements` 安装依赖到插件私有目录；Docker 镜像已内置 Python，Windows 桌面版需自行安装 Python 3。
 
-内置两个示例插件（`examples/`，均为纯 Python 标准库实现），安装包与镜像只打包这两个：
+内置两个示例插件（`examples/plugins/`，均为纯 Python 标准库实现），安装包与镜像只打包这两个：
 
 | 插件 | 说明 |
 |---|---|
 | TRAE | TRAE 通道 → OpenAI 兼容上游，支持签到与额度查询 |
 | WorkBuddy | OAuth 授权登录（国内站 / 国际站），多账号、签到、额度 |
 
-插件端口由宿主自动分配（`127.0.0.1` 空闲端口），清单里不需要也不能写死。`examples/` 里还有 Kilo / Cline / MiniMax / Loomy / LobsterAI / Gemini 等更多插件源码，需要时把对应目录复制到 `plugins/` 即可。
+插件端口由宿主自动分配（`127.0.0.1` 空闲端口），清单里不需要也不能写死。`examples/plugins/` 里还有 Kilo / Cline / MiniMax / Loomy / LobsterAI / Gemini 等更多插件源码，需要时把对应目录复制到 `plugins/` 即可。
 
 账号类插件在面板「插件 → 控制台」里完成登录与签到，之后到「渠道管理」点「获取上游模型」勾选要用的模型即可；完整开发规范见 [docs/plugin-spec.md](docs/plugin-spec.md)。
 
@@ -214,7 +214,7 @@ mcp/
     └── requirements.txt  # 可选：有实际依赖时自动 pip 安装
 ```
 
-安装包与镜像都内置了 `mcp/github-search`（GitHub 仓库 / 代码 / issue / PR / 提交 / 用户搜索，纯标准库，匿名即可用；在它的 `mcp.json` 的 `env` 里填 `GITHUB_TOKEN` 可提升额度并解锁代码搜索）。想加自己的服务，参考仓库里的 `examples/mcp/local-demo`（最小实现），把目录整个复制到 `mcp/` 下即可。完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里把该密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
+安装包与镜像都内置了 `mcp/github-search`（GitHub 仓库 / 代码 / issue / PR / 提交 / 用户搜索）与 `mcp/image-generation`（生图，别名 `image-gen`）。前者纯标准库、匿名即可用，在它的 `mcp.json` 的 `env` 里填 `GITHUB_TOKEN` 可提升额度并解锁代码搜索；后者调用网关的 `/v1/images/generations`，密钥在面板「MCP 服务器 → 生图 → 密钥」里配。想加自己的服务，参考仓库里的 `examples/mcp/local-demo`（最小实现），把目录整个复制到 `mcp/` 下即可。完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里把该密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
 
 ## 🛠️ 从源码构建
 
@@ -269,9 +269,9 @@ ai-gateway-v2/
 │   ├── store/             # SQLite 存储（migrations/ 为版本化建表脚本）
 │   └── version/           # 构建期注入的版本信息
 ├── web/                   # 管理面板前端（React 19 + Vite + Tailwind，embed.go 内嵌产物）
-├── examples/              # 示例插件（hello-py / trae / workbuddy / kilo / cline /
-│                          #   minimax / loomy / lobsterai / gemini，均为 Python）
-├── mcp/                   # 本地 MCP 服务器（每个子目录一个，启动时自动登记）
+├── examples/              # 示例（plugins/：插件；mcp/：本地 MCP 服务器；skills/：客户端 skill）
+│                          #   插件含 hello-py / trae / workbuddy / kilo / cline /
+│                          #   minimax / loomy / lobsterai / gemini，均为 Python
 ├── docs/                  # 插件 / 本地 MCP 开发规范与各插件说明
 ├── build/                 # 一键构建脚本与绿色版说明
 ├── Dockerfile             # 多阶段构建的无界面 Linux 镜像

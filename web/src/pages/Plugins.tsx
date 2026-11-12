@@ -119,7 +119,7 @@ export default function Plugins() {
             </p>
             <p>3. 点上方「重新扫描」，插件会被拉起并自动注册为渠道</p>
             <p className="pt-1 text-xs text-zinc-500">
-              仓库内置了一个可直接试用的示例：把 <code>examples/workbuddy</code> 复制到{' '}
+              仓库内置了一个可直接试用的示例：把 <code>examples/plugins/workbuddy</code> 复制到{' '}
               <code>plugins/workbuddy</code> 即可
             </p>
           </div>

@@ -116,19 +116,20 @@ function Reset-Dir([string]$path) {
 }
 Reset-Dir "dist/plugins"
 foreach ($name in @("trae", "workbuddy")) {
-    if (-not (Test-Path "examples/$name/plugin.json")) { continue }
+    $src = "examples/plugins/$name"
+    if (-not (Test-Path "$src/plugin.json")) { continue }
     $dst = "dist/plugins/$name"
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
-    Copy-Item "examples/$name/*.py" $dst -Force
-    Copy-Item "examples/$name/plugin.json" "$dst/plugin.json" -Force
+    Copy-Item "$src/*.py" $dst -Force
+    Copy-Item "$src/plugin.json" "$dst/plugin.json" -Force
 }
 
-# 本地 MCP 服务器目录：内置 github-search（纯标准库）与 image-generation（生图），
+# 本地 MCP 服务器目录：内置 github-search（搜索）与 image-generation（生图），
 # 用户也可以放自己的服务进来；网关启动时自动扫描登记。
 Reset-Dir "dist/mcp"
 $mcpBuiltin = @{
     "github-search"    = "examples/mcp/github-search"
-    "image-generation" = "mcp/image-generation"
+    "image-generation" = "examples/mcp/image-generation"
 }
 foreach ($name in $mcpBuiltin.Keys) {
     $src = $mcpBuiltin[$name]
@@ -158,8 +159,8 @@ $mcpReadme = @(
     "内置 image-generation（别名 image-gen）：调用网关 /v1/images/generations 生成图片，",
     "支持文生图、参考图（公网 URL / data URI / 纯 base64 / 本机文件路径）、尺寸与数量。",
     "生图通常需要 1-3 分钟，工具会先返回 running + job_id，再用 get_image_job 轮询结果。",
-    "使用前在 mcp/image-generation/mcp.json 的 env 里填写 AIGW_IMAGE_API_KEY（面板签发的 sk- 密钥），",
-    "并按需填 AIGW_IMAGE_MODEL 作为默认模型。",
+    "密钥在面板「MCP 服务器 → 生图 → 编辑 → 密钥」里填面板签发的 sk- 密钥，无需改 mcp.json；",
+    "想让服务端固定默认模型时，可在 mcp/image-generation/mcp.json 的 env 里填 AIGW_IMAGE_MODEL。",
     "",
     "参考实现见仓库 examples/mcp/local-demo 与 examples/mcp/github-search。",
     "完整规范见仓库 docs/local-mcp-spec.md。"

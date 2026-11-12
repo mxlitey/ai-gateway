@@ -5,7 +5,9 @@
 
 参考实现：[examples/mcp/local-demo](../examples/mcp/local-demo)（纯标准库，无第三方依赖，可直接复制改名）。
 安装包与镜像另外内置了 [examples/mcp/github-search](../examples/mcp/github-search)（GitHub 搜索，匿名可用；
-在它的 `mcp.json` 的 `env` 里填 `GITHUB_TOKEN` 可提升额度并解锁代码搜索）。
+在它的 `mcp.json` 的 `env` 里填 `GITHUB_TOKEN` 可提升额度并解锁代码搜索）与
+[examples/mcp/image-generation](../examples/mcp/image-generation)（生图，别名 `image-gen`，
+调用网关的 `/v1/images/generations`；密钥在面板「MCP 服务器 → 生图 → 密钥」里配）。
 
 ---
 

@@ -16,17 +16,37 @@ OpenAI 兼容接口 `POST /v1/images/generations`。异步服务商（如 ModelS
    单服务器接入（`/mcp/image-gen`）时叫 `generate_image` / `get_image_job`。
 2. 网关「MCP 服务器」页里 `生图` 状态为就绪；否则让用户先在网关里启动它。
 3. 该 MCP 服务器的密钥需有生图渠道权限（面板「API 密钥 → 渠道权限」）。
-4. 模型：`model` 必填。用 `GET /v1/models?type=image` 查可生图的模型（只返回已标记生图、
-   且渠道配了生图能力的），让用户选；不带 `type=image` 会把对话模型也列出来，不能直接照着传。
-   返回 `没有被标记为生图模型` 就换一个已配置的，不要重复重试同一个模型。
 
 工具不可用时不要伪造结果，直接说明缺哪一步并提供上面的排查项。
+
+## 先选模型（必做）
+
+`model` 是必填参数，**必须先问用户要哪一个，不要自己挑**。流程：
+
+1. 查可生图的模型（只返回已标记生图、且渠道配了生图能力的模型）：
+
+```bash
+curl -H "Authorization: Bearer sk-你的密钥" "<网关地址>/v1/models?type=image"
+```
+
+   返回 `{"data":[{"id":"MiniMax/MiniMax-H3-Image"},...]}`。用不带 `type=image` 的
+   `/v1/models` 会把对话模型也列出来，不能直接照着传。
+
+2. 把 `id` 列表原样列给用户，问用哪个。模型差异会直接影响出图效果——
+   以图生图任务（带参考图改细节）尤其要挑支持参考图的模型，别默认选最快的那个。
+
+3. 用户选定后再调用工具 / 脚本，把该 `id` 作为 `model` 传入。
+
+只有一个模型时可以直接用，但要先说明查到的结果。
+
+返回 `没有被标记为生图模型` 就回到第 1 步重查，不要重复重试同一个模型。
 
 ## 工作流
 
 1. 明确提示词、尺寸、数量、参考图，缺什么问什么，不要替用户编造主体。
-2. 调 `generate_image`，`wait_seconds` 给 20–60 秒。
-3. 返回 `status=succeeded` 直接交付；返回 `status=running` 就每 5 秒调 `get_image_job(job_id)`，
+2. 按上一节确认 `model`。
+3. 调 `generate_image`，`wait_seconds` 给 20–60 秒。
+4. 返回 `status=succeeded` 直接交付；返回 `status=running` 就每 5 秒调 `get_image_job(job_id)`，
    直到 `succeeded` / `failed`。不要因为一次 running 就重复提交新任务。
 
 **不要绕过本工具直连 `POST /v1/images/generations`**：同步等待会一直阻塞到出图（几十秒到几分钟）。

@@ -5,29 +5,33 @@
 /mcp/image-generation/C:\\...），本地图片必须转成 base64 data URI；而 base64
 有几十万字符，不能塞进对话里，所以在本地脚本里完成编码最省事。
 
-启动时会自动完成三件事：
+启动时自动完成两件事：
   1. 寻找 MCP 配置（--config / 环境变量 / 常见客户端路径）；
   2. 调 tools/list 自动识别 generate_image / get_image_job 的实际工具名，
-     聚合入口（/mcp）与单服务器入口（/mcp/image-gen）都能用；
-  3. 未指定 --model 时拉取网关 /v1/models，由你选择。
+     聚合入口（/mcp）与单服务器入口（/mcp/image-gen）都能用。
+
+模型不在脚本里查：--model 必填。请先按 SKILL.md「先选模型」一节的流程
+查 GET /v1/models?type=image，把候选交给用户选定后再传进来。
 
 用法示例：
-  # 交互选模型 + 带本地参考图（图 1、图 2 对应提示词里的 Picture 1/2）
-  python image-gen-cli.py --prompt "Picture 1 作背景，Picture 2 的猫走进画面" \
+  # 带本地参考图（图 1、图 2 对应提示词里的 Picture 1/2）
+  python image-gen-cli.py --model MiniMax/MiniMax-H3-Image \
+      --prompt "Picture 1 作背景，Picture 2 的猫走进画面" \
       --images "C:/path/a.jpg" "C:/path/b.png" --out "output/result.png"
 
-  # 跳过交互，直接指定模型
-  python image-gen-cli.py --prompt "一只橘猫在雪地里" --model MiniMax/MiniMax-H3-Image
+  # 文生图
+  python image-gen-cli.py --model MiniMax/MiniMax-H3-Image --prompt "一只橘猫在雪地里"
 
   # 显式指定 MCP 地址与密钥（不读配置文件）
-  python image-gen-cli.py --prompt "..." --url "https://host/mcp/image-gen" --token "sk-xxx"
+  python image-gen-cli.py --model MiniMax/MiniMax-H3-Image --prompt "..." \
+      --url "https://host/mcp/image-gen" --token "sk-xxx"
 
   # 参考图很大时自动传到 Flyimg 图床改传公网直链（默认已启用，无需额外参数）
-  python image-gen-cli.py --prompt "..." --images "C:/path/big.jpg"
+  python image-gen-cli.py --model MiniMax/MiniMax-H3-Image --prompt "..." --images "big.jpg"
 
   # 换用其它图床，或传 --worker "" 完全禁用上传
-  python image-gen-cli.py --prompt "..." --images "C:/path/big.jpg" \
-      --worker "https://your-worker.workers.dev"
+  python image-gen-cli.py --model MiniMax/MiniMax-H3-Image --prompt "..." \
+      --images "big.jpg" --worker "https://your-worker.workers.dev"
 """
 
 import argparse
@@ -164,78 +168,11 @@ def load_endpoint(explicit_path="", explicit_url="", explicit_token=""):
 
 
 def gateway_base(mcp_url):
-    """从 MCP 地址推导网关根地址，用于拉取 /v1/models。"""
+    """从 MCP 地址推导网关根地址，便于在报错里提示 /v1/models 的完整地址。"""
     parsed = urllib.parse.urlparse(mcp_url)
     if not parsed.scheme or not parsed.netloc:
         raise RuntimeError("MCP 地址不是合法的 http(s) URL：%s" % mcp_url)
     return "%s://%s" % (parsed.scheme, parsed.netloc)
-
-
-def gateway_models(base, auth, only_image=True):
-    """拉取模型列表。only_image 时请求 ?type=image，只返回能生图的模型。"""
-    url = base + "/v1/models" + ("?type=image" if only_image else "")
-    req = urllib.request.Request(url, method="GET")
-    req.add_header("Authorization", auth)
-    req.add_header("Accept", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read().decode("utf-8", "replace"))
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")
-        raise RuntimeError("拉取模型列表失败（HTTP %s）：%s" % (e.code, body[:400]))
-    except Exception as e:
-        raise RuntimeError("拉取模型列表失败：%s" % e)
-    models = []
-    for item in data.get("data") or []:
-        if isinstance(item, dict) and item.get("id"):
-            models.append(item["id"])
-    return models
-
-
-def resolve_model(base, auth, only_image=True):
-    """取生图模型列表供选择；带 type=image 的网关会直接过滤出可生图的模型。"""
-    models = gateway_models(base, auth, only_image)
-    if not models and only_image:
-        log("网关未返回生图模型（可能不支持 ?type=image 过滤），改为列出全部模型")
-        models = gateway_models(base, auth, False)
-        if models:
-            log("注意：下面这些是全部模型，其中对话模型不能用于生图")
-    if not models:
-        raise RuntimeError("网关没有返回任何模型；请检查密钥的渠道权限，或在渠道里标记生图模型")
-    return choose_model(models)
-
-
-def choose_model(models):
-    """交互选择模型。"""
-    log("可选模型（%d 个）：" % len(models))
-    for i, name in enumerate(models, 1):
-        log("  %2d) %s" % (i, name))
-
-    def non_interactive():
-        return RuntimeError(
-            "当前不是交互终端，无法选择模型；请用 --model 指定，可选值：\n  " +
-            "\n  ".join(models)
-        )
-
-    if not sys.stdin.isatty():
-        raise non_interactive()
-    while True:
-        try:
-            choice = input("选择模型编号（直接回车取消）：").strip()
-        except EOFError:
-            raise non_interactive()
-        except KeyboardInterrupt:
-            raise RuntimeError("已取消")
-        if not choice:
-            raise RuntimeError("已取消")
-        try:
-            idx = int(choice)
-        except ValueError:
-            log("请输入 1-%d 之间的数字" % len(models))
-            continue
-        if 1 <= idx <= len(models):
-            return models[idx - 1]
-        log("请输入 1-%d 之间的数字" % len(models))
 
 
 # ---------- MCP 客户端 ----------
@@ -502,7 +439,9 @@ def main():
     ap.add_argument("--prompt", required=True, help="提示词；参考图按 --images 顺序为 Picture 1/2/...")
     ap.add_argument("--images", nargs="*", default=[], help="本地参考图路径，按顺序")
     ap.add_argument("--urls", nargs="*", default=[], help="公网参考图 URL，拼在 --images 之后")
-    ap.add_argument("--model", default="", help="留空则拉取网关模型列表后交互选择")
+    ap.add_argument("--model", required=True,
+                    help="生图模型名。脚本不负责查询模型，请先按 SKILL 的流程取得候选、"
+                         "让用户选好再传进来（例如 MiniMax/MiniMax-H3-Image）")
     ap.add_argument("--size", default="1328x1328")
     ap.add_argument("--n", type=int, default=1)
     ap.add_argument("--negative", default="")
@@ -520,13 +459,16 @@ def main():
                          "（默认 %s，传空字符串可禁用）" % DEFAULT_WORKER)
     args = ap.parse_args()
 
-    url, auth, source = load_endpoint(args.config, args.url, args.token)
-    log("配置：%s" % source)
-
     model = args.model.strip()
     if not model:
-        model = resolve_model(gateway_base(url), auth)
-        log("已选择模型：%s" % model)
+        raise RuntimeError(
+            "缺少 --model。请先查询网关的可生图模型让用户选择，再把结果传进来：\n"
+            "  curl -H \"Authorization: Bearer sk-xxx\" \"<网关地址>/v1/models?type=image\"\n"
+            "不带 type=image 会把对话模型也列出来，不能直接照着传。"
+        )
+
+    url, auth, source = load_endpoint(args.config, args.url, args.token)
+    log("配置：%s" % source)
 
     mcp = MCP(url, auth)
     mcp.start()

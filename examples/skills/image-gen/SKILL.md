@@ -16,9 +16,9 @@ OpenAI 兼容接口 `POST /v1/images/generations`。异步服务商（如 ModelS
    单服务器接入（`/mcp/image-gen`）时叫 `generate_image` / `get_image_job`。
 2. 网关「MCP 服务器」页里 `生图` 状态为就绪；否则让用户先在网关里启动它。
 3. 该 MCP 服务器的密钥需有生图渠道权限（面板「API 密钥 → 渠道权限」）。
-4. 模型：`model` 必填。用户没说就先用 `Qwen/Qwen-Image-2.1-Turbo`；渠道若配了其它生图模型，
-   可用 `GET /v1/models` 或面板「模型路由」确认。返回 `没有被标记为生图模型` 就换一个已配置的，
-   不要重复重试同一个模型（例如某些网关只开了 `MiniMax/MiniMax-H3-Image`）。
+4. 模型：`model` 必填。用 `GET /v1/models?type=image` 查可生图的模型（只返回已标记生图、
+   且渠道配了生图能力的），让用户选；不带 `type=image` 会把对话模型也列出来，不能直接照着传。
+   返回 `没有被标记为生图模型` 就换一个已配置的，不要重复重试同一个模型。
 
 工具不可用时不要伪造结果，直接说明缺哪一步并提供上面的排查项。
 
@@ -57,14 +57,22 @@ OpenAI 兼容接口 `POST /v1/images/generations`。异步服务商（如 ModelS
 - `image_path`：本机文件路径，服务读文件后转 data URI。**只在 MCP 服务与文件同机时可用**，
   即网关本机部署；MCP 跑在远端时路径会被拼成 `/mcp/image-generation/C:/...` 报文件不存在，
   这种情况改用公网 URL 或 base64。
-- 约束：单张 ≤3 MB（建议 ≤2 MB），合计 ≤5 MB；建议最多 4 张。
+- 约束：单张 ≤3 MB，base64 合计 ≤7 M 字符（解码后约 5.5 MB），建议最多 4 张。
+  上限来自网关 MCP 入口的 8 MB 请求体，别按原始文件大小算总量——base64 会膨胀 4/3。
+- 超过上限不要硬塞：改用公网 URL（图床），请求体只有几百字节，也能绕开这个上限。
 - 对话里直接粘贴的图片不会自动进入工具参数。用户只给了图、没给路径或链接时，
   先问清楚「图片在本地的完整路径」，或让用户提供可访问的链接。
 - **不要**自己把看到的图片"转成 base64"填进参数：模型拿不到原始字节，编出来的内容会解码失败。
 - 裸 base64 已验证可用（工具按文件头嗅探 MIME 再补 `data:` 前缀），编排时无需手工拼接。
 - 参考图 base64 有几十万字符，**不要**把它写进对话或工具参数：既撑爆上下文，Read 也会截断长行
   导致内容失真。同机场景传 `image_path`；远端场景用本地脚本自己读文件、编码、按 MCP 协议发
-  `tools/call`，base64 全程不经过对话，换图时只改脚本里的路径与提示词。
+  `tools/call`，base64 全程不经过对话。
+  本目录的 [image-gen-cli.py](image-gen-cli.py) 已实现这套流程：自动探测 MCP 配置、
+  自动识别工具名（聚合入口 `image-gen__generate_image` 与单服务器入口都适用）、
+  未传 `--model` 时拉 `/v1/models?type=image` 让你选、按文件头校验参考图、失败重试；
+  参考图超出 base64 上限时，自动传到 Flyimg 图床改用公网直链（默认 Worker
+  `https://flyimg.lii.qzz.io`，可用 `--worker` 或环境变量 `FLYIMG_WORKER_URL` 覆盖，
+  传 `--worker ""` 可禁用）。
 
 参考图的角色分工写在提示词里，工具参数没有 role 字段。详见 [references/prompt-guide.md](references/prompt-guide.md)。
 

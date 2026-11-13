@@ -48,10 +48,11 @@ JOB_TTL_SECONDS = 3600
 MAX_JOBS = 100
 MAX_DOWNLOAD_BYTES = 32 << 20
 DOWNLOAD_TIMEOUT = 60
-# 参考图上限：网关 MCP 入口整体请求体上限 8 MB，base64 还会再膨胀约 1/3。
-# 单张解码后 3 MB、所有参考图 base64 合计 5 MB 是留足余量的建议上限。
+# 参考图上限：网关 MCP 入口整体请求体上限 8 MB（internal/mcp/handler.go 的 maxRequestBody），
+# base64 会膨胀约 1/3 且不再额外转义，故 base64 字符数上限取 7 M（解码后约 5.5 MB），
+# 留约 0.6 MB 给提示词与 JSON 结构。单张解码后 3 MB 是上游更常见的容忍上限。
 MAX_REFERENCE_BYTES = 3 << 20
-MAX_REFERENCE_TOTAL_CHARS = 5 << 20
+MAX_REFERENCE_TOTAL_CHARS = 7 << 20
 B64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
 REFERENCE_HINT = (
     "参考图格式无法识别。可用的三种形式：公网 http(s) 图片地址、"
@@ -79,7 +80,8 @@ IMAGE_TOOLS = [
                     "items": {"type": "string"},
                     "description": (
                         "参考图数组，支持公网 http(s) URL、data:image/...;base64,... 或纯 base64；"
-                        "传单个字符串也可以。建议单张 ≤2 MB、最多 4 张。"
+                        "传单个字符串也可以。建议单张 ≤2 MB、最多 4 张，"
+                        "所有参考图 base64 合计不超过 7 M 字符（解码后约 5.5 MB）。"
                         "对话里粘贴的图片不会被 MCP 工具自动读取，需要链接、base64 或改用 image_path。"
                     ),
                 },
@@ -600,9 +602,9 @@ def _build_payload(args):
         total_chars = sum(len(r) for r in refs)
         if total_chars > MAX_REFERENCE_TOTAL_CHARS:
             raise ToolError(
-                "参考图总量过大（base64 约 %d MB）；网关 MCP 入口请求体上限 8 MB，"
-                "建议单张 ≤2 MB、总量 ≤4 MB，或改用公网 URL"
-                % (total_chars >> 20)
+                "参考图总量过大（base64 共 %.1f M 字符，上限 %.1f M）；"
+                "网关 MCP 入口请求体上限 8 MB，请压缩图片、减少张数，或改用公网 URL"
+                % (total_chars / 1048576.0, MAX_REFERENCE_TOTAL_CHARS / 1048576.0)
             )
         # 只有一张参考图时按上游习惯发字符串，多张发数组
         payload["image_url"] = refs[0] if len(refs) == 1 else refs

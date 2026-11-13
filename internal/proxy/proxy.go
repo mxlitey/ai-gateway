@@ -107,7 +107,10 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	allowed := apiKey.ChannelIDs
 
 	if strings.HasSuffix(path, "/models") && r.Method == http.MethodGet {
-		h.handleModels(w, allowed)
+		// ?type=image 只返回可在 /v1/images/generations 使用的模型，
+		// 便于生图客户端在模型列表里避开对话模型
+		onlyImage := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("type")), "image")
+		h.handleModels(w, allowed, onlyImage)
 		return
 	}
 
@@ -519,7 +522,11 @@ func (h *Handler) openaiUpstreamResponse(up *http.Response, t routing.Target, up
 
 // ---------- 模型列表 ----------
 
-func (h *Handler) handleModels(w http.ResponseWriter, allowed []string) {
+// handleModels 列出可用模型；onlyImage 为 true 时只返回生图可用的模型。
+//
+// 判断口径与路由一致：渠道已启用、有可用密钥、模型未被单独停用，
+// 且在该渠道上被标记为生图模型并配置了生图能力（sync/async）。
+func (h *Handler) handleModels(w http.ResponseWriter, allowed []string, onlyImage bool) {
 	channels, err := h.store.ListChannels()
 	if err != nil {
 		slog.Error("读取渠道失败", "err", err)
@@ -563,6 +570,21 @@ func (h *Handler) handleModels(w http.ResponseWriter, allowed []string) {
 		owner := ch.Name
 		if owner == "" {
 			owner = ch.ID
+		}
+		if onlyImage {
+			// 生图列表只认「标记为生图 + 配了生图能力」的模型，
+			// 与 SelectImageTarget 的筛选口径保持一致
+			if !ch.SupportsImageGen() {
+				continue
+			}
+			for _, m := range ch.ImageModels {
+				pub := strings.TrimSpace(m)
+				if pub == "" || ch.IsModelDisabled(pub) {
+					continue
+				}
+				add(pub, owner)
+			}
+			continue
 		}
 		for pub := range ch.ModelMap {
 			add(strings.TrimSpace(pub), owner)

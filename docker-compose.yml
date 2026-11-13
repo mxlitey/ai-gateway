@@ -19,7 +19,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        VERSION: ${VERSION:-1.3.1}
+        VERSION: ${VERSION:-1.3.2}
     image: ai-gateway:latest
     container_name: ai-gateway
     restart: unless-stopped

@@ -8,10 +8,11 @@
 异步渠道的「提交任务 + 轮询」由网关内部完成，本服务只需一次调用并等待结果。
 
 为什么用作业模型：
-  网关调用本地 MCP 工具默认 30 秒超时，而生图实测约 120 秒。因此
-  generate_image 最多等待 wait_seconds（默认 20 秒）：完成就直接返回图片，
-  没完成就返回 job_id，由客户端每 5 秒调用 get_image_job 轮询。
-  这样每次 MCP 调用都远小于 30 秒，无需改网关配置。
+  网关调用 MCP 工具受两层限制：单次调用超时（服务器未配置 timeout_ms 时默认 120 秒），
+  以及底层 HTTP 连接等待响应头的上限（同样 120 秒，调大 timeout_ms 也突破不了）。
+  而生图实测可达 120 秒以上。因此 generate_image 最多等待 wait_seconds（默认 20 秒）：
+  完成就直接返回图片，没完成就返回 job_id，由客户端每 5 秒调用 get_image_job 轮询。
+  这样每次 MCP 调用都远小于网关超时，无需改网关配置。
 
 环境变量（在 mcp.json 的 env 里配置，均可留空）：
   AIGW_IMAGE_BASE_URL        网关地址，默认 http://127.0.0.1:8787
@@ -88,6 +89,8 @@ IMAGE_TOOLS = [
                     "description": (
                         "参考图的本机文件路径数组（传单个字符串也可以）。"
                         "服务会读取文件转成 data URI 再发给网关，适合对话附件已落盘成本地文件的场景。"
+                        "仅当本服务与文件在同一台机器上时可用；服务部署在远端时路径读不到，"
+                        "请改用 image_url 传公网链接或 base64。"
                         "支持 PNG/JPEG/WebP/GIF，单张 ≤3 MB；相对路径按本服务目录解析。"
                     ),
                 },
@@ -531,7 +534,8 @@ def _reference_from_path(value, index):
     path = raw_path if os.path.isabs(raw_path) else os.path.join(os.path.dirname(os.path.abspath(__file__)), raw_path)
     if not os.path.isfile(path):
         raise ToolError(
-            "第 %d 张参考图文件不存在：%s（请确认路径，或用 image_url 传公网链接）"
+            "第 %d 张参考图文件不存在：%s（请确认路径；本服务若部署在远端，本机路径一定读不到，"
+            "改用 image_url 传公网链接或 base64）"
             % (index, _clip(path, 200))
         )
     try:

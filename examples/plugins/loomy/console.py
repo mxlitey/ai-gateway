@@ -8,7 +8,7 @@ Loomy 的登录是**两步短信**，故声明两个带 `fields` 的登录方法
 
 from chat import account_for_request, ensure_token, models_payload
 from upstream import UpstreamError, as_upstream_error
-from util import now_millis, sanitize_error, truncate_runes
+from util import clamp_bytes, console_status, now_millis, sanitize_error, truncate_runes
 
 LOGIN_METHODS = [
     {
@@ -79,7 +79,7 @@ def handle_checkin(plugin, account_id):
     except Exception as exc:
         ue = as_upstream_error(exc)
         plugin.note_error(ue, account)
-        return ue.status, {"error": truncate_runes(ue.msg, 120)}
+        return console_status(ue.status), {"error": clamp_bytes(ue.msg, 240)}
 
     points = None
     try:

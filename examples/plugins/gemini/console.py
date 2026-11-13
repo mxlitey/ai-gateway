@@ -17,7 +17,7 @@ import hashlib
 
 from chat import SUPPORTED_MODEL, ensure_token, models_payload
 from upstream import UpstreamError, as_upstream_error
-from util import now_millis, sanitize_error, truncate_runes
+from util import clamp_bytes, console_status, now_millis, sanitize_error, truncate_runes
 
 LOGIN_METHODS = [
     {
@@ -75,7 +75,7 @@ def _paste_refresh_token(plugin, body):
     try:
         grant = plugin.upstream.refresh(refresh_token)
     except UpstreamError as err:
-        return err.status, {"error": truncate_runes(err.msg, 120)}
+        return console_status(err.status), {"error": clamp_bytes(err.msg, 240)}
     except Exception as exc:
         return 502, {"error": truncate_runes(as_upstream_error(exc).msg, 120)}
 
@@ -113,13 +113,13 @@ def handle_quota(plugin, account_id):
     except Exception as exc:
         ue = as_upstream_error(exc)
         plugin.note_error(ue, account)
-        return ue.status, {"error": truncate_runes(ue.msg, 120)}
+        return console_status(ue.status), {"error": clamp_bytes(ue.msg, 240)}
 
     try:
         quota = plugin.upstream.fetch_quota(account.token)
     except UpstreamError as err:
         plugin.note_error(err, account)
-        return err.status, {"error": truncate_runes(err.msg, 120)}
+        return console_status(err.status), {"error": clamp_bytes(err.msg, 240)}
 
     remaining = float(quota.get("remaining") or 0)
 

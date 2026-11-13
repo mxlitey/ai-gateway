@@ -786,6 +786,8 @@ func (h *Host) spawn(inst *instance) error {
 		"PYTHONUNBUFFERED=1",
 		"PYTHONUTF8=1",
 		"PYTHONIOENCODING=utf-8",
+		// 把 __pycache__ 挪到插件数据目录，保持插件安装目录只读干净（见 plugin-spec §4）
+		"PYTHONPYCACHEPREFIX="+filepath.Join(vars.Data, "pycache"),
 	)
 	if pyPath != "" {
 		childEnv = append(childEnv, "PYTHONPATH="+pyPath)

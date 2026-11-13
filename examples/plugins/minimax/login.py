@@ -90,7 +90,7 @@ class LoginBroker:
                 session.interval += 5.0
                 continue
             if kind == "error":
-                self._fail(session, util.truncate_runes(payload, 120))
+                self._fail(session, util.clamp_bytes(payload, 240))
                 return
             self._finish(session, payload)
             return

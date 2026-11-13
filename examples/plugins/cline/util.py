@@ -40,6 +40,34 @@ def clamp_bytes(text, limit):
     return "".join(out)
 
 
+# plugin-spec §5.3：机器判定类型，必须与状态码一一对应
+_ERROR_TYPES = {
+    400: "invalid_request",
+    401: "auth_failed",
+    403: "forbidden",
+    404: "not_found",
+    429: "rate_limited",
+    500: "plugin_error",
+}
+
+
+def error_type(status):
+    """把状态码映射成错误体里的 `type`（plugin-spec §5.3）。"""
+    if status in _ERROR_TYPES:
+        return _ERROR_TYPES[status]
+    return "upstream_error" if status >= 500 else "invalid_request"
+
+
+def error_body(status, msg, limit=240):
+    """统一错误体：`error` 给人看（按字节截断），`type` 给机器判定。"""
+    return {"error": clamp_bytes(msg, limit), "type": error_type(status)}
+
+
+def console_status(status):
+    """控制台状态码：401/403/404 一律折成 400（plugin-spec §6.2）。"""
+    return 400 if status in (401, 403, 404) else status
+
+
 def sanitize_error(msg):
     """脱敏错误文案：抹掉疑似 token 片段并压到 100 字内。"""
     msg = (msg or "").strip()

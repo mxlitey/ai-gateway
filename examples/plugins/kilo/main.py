@@ -38,6 +38,30 @@ from config import default_config_path, env_int, load_endpoints  # noqa: E402
 PLUGIN_VERSION = "1.0.0"
 _STOP = threading.Event()
 
+# plugin-spec §5.3：机器判定类型，必须与状态码一一对应
+_ERROR_TYPES = {
+    400: "invalid_request",
+    401: "auth_failed",
+    403: "forbidden",
+    404: "not_found",
+    429: "rate_limited",
+    500: "plugin_error",
+}
+
+
+def error_type(status):
+    if status in _ERROR_TYPES:
+        return _ERROR_TYPES[status]
+    return "upstream_error" if status >= 500 else "invalid_request"
+
+
+def clamp_bytes(text, limit=240):
+    """按 UTF-8 字节截断，且不切断多字节字符（plugin-spec §5.3）。"""
+    raw = str(text).encode("utf-8")
+    if len(raw) <= limit:
+        return str(text)
+    return raw[:limit].decode("utf-8", "ignore")
+
 # 清单缓存：(过期时间, 模型 id 列表)
 _listing_lock = threading.Lock()
 _listing_cache = (0.0, [])
@@ -206,7 +230,7 @@ def forward_chat(eps, raw, want_stream):
         conn, resp = request(eps, "POST", eps.chat_path, payload,
                              timeout=eps.chat_timeout, accept=accept)
     except UpstreamError as err:
-        return "json", (err.status, {"error": err.msg[:240]})
+        return "json", (err.status, {"error": clamp_bytes(err.msg, 240)})
 
     if resp.status == 200 and want_stream:
         ctype = (resp.getheader("content-type") or "").lower()
@@ -226,7 +250,7 @@ def forward_chat(eps, raw, want_stream):
 def _json_result(status, raw):
     if status >= 400:
         err = classify(status, raw)
-        return err.status, {"error": err.msg[:240]}
+        return err.status, {"error": clamp_bytes(err.msg, 240)}
     try:
         doc = json.loads(raw.decode("utf-8", "replace"))
     except Exception:
@@ -234,7 +258,7 @@ def _json_result(status, raw):
     if not isinstance(doc, dict):
         return 502, {"error": "上游返回了无法解析的响应体"}
     if doc.get("error"):
-        return 502, {"error": _error_message(raw)[:240]}
+        return 502, {"error": clamp_bytes(_error_message(raw), 240)}
     if not doc.get("choices"):
         return 502, {"error": "上游未返回任何内容"}
     return 200, normalize_doc(doc)
@@ -300,6 +324,10 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(length) if length > 0 else b""
 
     def send_json(self, status, body):
+        if status >= 400 and isinstance(body, dict) and isinstance(body.get("error"), str):
+            # plugin-spec §5.3：错误体统一带 type，error 按 UTF-8 字节截断到 240
+            body["error"] = clamp_bytes(body["error"], 240)
+            body.setdefault("type", error_type(status))
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -310,6 +338,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path.startswith("/health"):
+            # 探活只反映插件进程自身，不触碰上游（plugin-spec §7）
+            return self.send_json(200, {"status": "ok", "version": PLUGIN_VERSION})
+        if path.startswith("/status"):
+            # 非探活端点：模型集合依赖上游，放在这里，避免拖慢/拖挂 /health
             return self.send_json(200, {
                 "status": "ok", "version": PLUGIN_VERSION,
                 "free_models": len(fetch_free_models(self.eps)),
@@ -332,7 +364,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             kind, payload = forward_chat(self.eps, raw, want_stream)
         except Exception as exc:
-            return self.send_json(502, {"error": str(exc)[:240]})
+            return self.send_json(502, {"error": clamp_bytes(str(exc), 240)})
 
         if kind == "json":
             status, body = payload
@@ -385,7 +417,10 @@ def run_serve(args):
     parser.add_argument("--config", default="")
     opts = parser.parse_args(args)
 
-    port = opts.port or env_int("AI_GATEWAY_PLUGIN_PORT", 20812)
+    port = opts.port or env_int("AI_GATEWAY_PLUGIN_PORT", 0)
+    if not port:
+        print("缺少 AI_GATEWAY_PLUGIN_PORT（或 --port），无法启动", file=sys.stderr)
+        return 2
     eps = load_endpoints(opts.config or default_config_path())
     Handler.eps = eps
 

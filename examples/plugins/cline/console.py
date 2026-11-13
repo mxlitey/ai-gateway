@@ -12,7 +12,7 @@
 
 from chat import account_for_request, ensure_token, models_payload
 from upstream import UpstreamError, as_upstream_error
-from util import now_millis, sanitize_error, truncate_runes
+from util import clamp_bytes, console_status, now_millis, sanitize_error, truncate_runes
 
 LOGIN_METHODS = [
     {
@@ -67,7 +67,7 @@ def handle_login_start(plugin, method, payload, headers):
         try:
             return 200, plugin.login.start()
         except UpstreamError as err:
-            return err.status, {"error": truncate_runes(err.msg, 120)}
+            return console_status(err.status), {"error": clamp_bytes(err.msg, 240)}
         except Exception as exc:
             return 502, {"error": truncate_runes(as_upstream_error(exc).msg, 120)}
     if method == "paste":
@@ -82,7 +82,7 @@ def _paste_token(plugin, body):
     # 校验一次：能读到 /users/me 才算有效
     me = plugin.upstream.fetch_me(token)
     if me is None:
-        return 401, {"error": "令牌无效或已过期（/users/me 未通过）"}
+        return 400, {"error": "令牌无效或已过期（/users/me 未通过）"}
     account_id = _first(me, ("clineUserId", "accountId", "id"))
     email = _first(me, ("email",))
     uid = account_id or email or util_digest(token)
@@ -123,13 +123,13 @@ def handle_quota(plugin, account_id):
     except Exception as exc:
         ue = as_upstream_error(exc)
         plugin.note_error(ue, account)
-        return ue.status, {"error": truncate_runes(ue.msg, 120)}
+        return console_status(ue.status), {"error": clamp_bytes(ue.msg, 240)}
 
     try:
         credits = plugin.upstream.fetch_balance(account.token, account.account_id)
     except UpstreamError as err:
         plugin.note_error(err, account)
-        return err.status, {"error": truncate_runes(err.msg, 120)}
+        return console_status(err.status), {"error": clamp_bytes(err.msg, 240)}
 
     def mutate(st):
         st.credits = credits

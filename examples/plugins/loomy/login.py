@@ -14,7 +14,7 @@ import time
 
 from accounts import Credential
 from upstream import UpstreamError, as_upstream_error
-from util import mask_phone, new_state, now_millis
+from util import clamp_bytes, console_status, mask_phone, new_state, now_millis
 
 MSGID_TTL = 300
 
@@ -33,7 +33,7 @@ class LoginBroker:
         try:
             msgid = self.plugin.upstream.send_sms(phone)
         except UpstreamError as err:
-            return err.status, {"error": err.msg}
+            return console_status(err.status), {"error": clamp_bytes(err.msg, 240)}
         except Exception as exc:
             return 502, {"error": as_upstream_error(exc).msg}
         with self.mu:
@@ -60,7 +60,7 @@ class LoginBroker:
         try:
             result = self.plugin.upstream.login_sms(phone, code, msgid)
         except UpstreamError as err:
-            return err.status, {"error": err.msg}
+            return console_status(err.status), {"error": clamp_bytes(err.msg, 240)}
         except Exception as exc:
             return 502, {"error": as_upstream_error(exc).msg}
 

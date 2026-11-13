@@ -18,9 +18,34 @@ import json
 import os
 import signal
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PLUGIN_VERSION = "1.0.0"
+
+# plugin-spec §5.3：机器判定类型，必须与状态码一一对应
+_ERROR_TYPES = {
+    400: "invalid_request",
+    401: "auth_failed",
+    403: "forbidden",
+    404: "not_found",
+    429: "rate_limited",
+    500: "plugin_error",
+}
+
+
+def _error_type(status: int) -> str:
+    if status in _ERROR_TYPES:
+        return _ERROR_TYPES[status]
+    return "upstream_error" if status >= 500 else "invalid_request"
+
+
+def _clamp_bytes(text: str, limit: int = 240) -> str:
+    """按 UTF-8 字节截断，且不切断多字节字符（plugin-spec §5.3）。"""
+    raw = str(text).encode("utf-8")
+    if len(raw) <= limit:
+        return str(text)
+    return raw[:limit].decode("utf-8", "ignore")
 
 
 def log(msg: str) -> None:
@@ -28,7 +53,7 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def port_from_env(default: int = 20801) -> int:
+def port_from_env(default: int = 0) -> int:
     try:
         n = int(os.environ.get("AI_GATEWAY_PLUGIN_PORT", "") or default)
         return n if 0 < n < 65536 else default
@@ -44,6 +69,10 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- 工具 ----
     def send_json(self, status: int, body: dict) -> None:
+        if status >= 400 and isinstance(body, dict) and isinstance(body.get("error"), str):
+            # plugin-spec §5.3：错误体统一带 type，error 按 UTF-8 字节截断到 240
+            body["error"] = _clamp_bytes(body["error"], 240)
+            body.setdefault("type", _error_type(status))
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -106,11 +135,15 @@ def main() -> int:
     args = parser.parse_args()
 
     port = args.port or port_from_env()
+    if not port:
+        log("缺少 AI_GATEWAY_PLUGIN_PORT（或 --port），无法启动")
+        return 2
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
 
     def stop(_signum, _frame):
         log("收到停止信号，正在退出")
-        server.shutdown()
+        # shutdown() 必须由另一个线程调用，否则会与 serve_forever() 互等死锁
+        threading.Thread(target=server.shutdown, daemon=True).start()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -121,7 +154,10 @@ def main() -> int:
         signal.signal(signal.SIGBREAK, stop)
 
     log("监听 http://127.0.0.1:%d（Python %s）" % (port, sys.version.split()[0]))
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
     return 0
 
 

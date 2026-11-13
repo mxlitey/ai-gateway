@@ -101,6 +101,10 @@ class Handler(BaseHTTPRequestHandler):
         return doc if isinstance(doc, dict) else None
 
     def send_json(self, status, body):
+        if status >= 400 and isinstance(body, dict) and isinstance(body.get("error"), str):
+            # plugin-spec §5.3：错误体统一带 type，error 按 UTF-8 字节截断到 240
+            body["error"] = util.clamp_bytes(body["error"], 240)
+            body.setdefault("type", util.error_type(status))
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -223,7 +227,10 @@ def run_serve(args):
     parser.add_argument("--config", default="")
     opts = parser.parse_args(args)
 
-    port = opts.port or env_int("AI_GATEWAY_PLUGIN_PORT", 20819)
+    port = opts.port or env_int("AI_GATEWAY_PLUGIN_PORT", 0)
+    if not port:
+        print("缺少 AI_GATEWAY_PLUGIN_PORT（或 --port），无法启动", file=sys.stderr)
+        return 2
     data_dir = opts.data or default_data_dir()
     config_path = opts.config or default_config_path()
 

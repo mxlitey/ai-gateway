@@ -130,7 +130,7 @@ def handle_checkin(plugin, account_id):
     try:
         ensure_token(plugin.eps, acc, plugin.store)
     except Exception as exc:
-        return 409, {"error": str(exc)}
+        return 400, {"error": str(exc)}
 
     try:
         result, msg = do_checkin(plugin.eps, acc)
@@ -158,7 +158,7 @@ def handle_quota(plugin, account_id):
     try:
         ensure_token(plugin.eps, acc, plugin.store)
     except Exception as exc:
-        return 409, {"error": str(exc)}
+        return 400, {"error": str(exc)}
 
     try:
         updated, _packages, msg = fetch_quota(plugin.eps, acc)
@@ -185,7 +185,7 @@ def handle_login_start(plugin, method, body):
     if realm is None:
         return 400, {"error": "未知的登录方式：" + method}
     if plugin.oauth is None:
-        return 501, {"error": "本插件未启用 OAuth 登录"}
+        return 400, {"error": "本插件未启用 OAuth 登录"}
     if isinstance(body, dict):
         override = (body.get("realm") or "").strip()
         if override:
@@ -208,7 +208,7 @@ def handle_login_status(plugin, method, query):
     if method not in OAUTH_REALM_BY_METHOD:
         return 400, {"error": "未知的登录方式：" + method}
     if plugin.oauth is None:
-        return 501, {"error": "本插件未启用 OAuth 登录"}
+        return 400, {"error": "本插件未启用 OAuth 登录"}
     values = query.get("state") or [""]
     state = (values[0] or "").strip()
     if not state:

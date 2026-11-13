@@ -17,7 +17,7 @@ from upstream import (
     _CODE_ALREADY_CHECKED_IN, _CODE_TOKEN_DEAD, CheckinState, UpstreamError,
     as_upstream_error,
 )
-from util import clamp_bytes, new_checkin_device_id, now_millis, sanitize_error, truncate_runes
+from util import clamp_bytes, console_status, new_checkin_device_id, now_millis, sanitize_error, truncate_runes
 
 LOGIN_METHODS = [{
     "id": "web",
@@ -87,7 +87,7 @@ def handle_checkin(plugin, account_id):
         updated, msg = perform_checkin(plugin, account_id)
     except Exception as exc:
         ue = as_upstream_error(exc)
-        return ue.status, {"error": ue.msg}
+        return console_status(ue.status), {"error": clamp_bytes(ue.msg, 240)}
     return 200, {"message": msg, "account": account_view(updated)}
 
 
@@ -226,7 +226,7 @@ def handle_quota(plugin, account_id):
         plugin.upstream.ensure_token(work, plugin.store)
     except Exception as exc:
         ue = as_upstream_error(exc)
-        return ue.status, {"error": ue.msg}
+        return console_status(ue.status), {"error": clamp_bytes(ue.msg, 240)}
     updated, note = refresh_quota_snapshot(plugin, account_id)
     return 200, {"message": "额度已刷新" + note, "account": account_view(updated)}
 

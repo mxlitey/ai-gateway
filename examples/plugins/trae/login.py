@@ -16,16 +16,21 @@ TRAE 官方授权页（www.trae.cn/authorization）对 auth_callback_url 做硬�
   ④ 回调里取 refreshToken → ExchangeToken → GetUserInfo → 原子落盘 → 会话标记 ok
   ⑤ 面板轮询 GET /console/login/web?state=xxx 拿到 ok → 自动刷新账号列表
 
-授权有效期由网关计时（90 秒，见 docs/plugin-spec.md §6.7），插件不再自己设 TTL。
+授权使用「单活会话」模型（回调地址带不了 state）：90 秒截止 + 一次性消费，
+见 docs/plugin-spec.md §6.7 硬要求 1。
 
 插件只监听清单里的那一个端口，不新增额外端口。
 """
 
 import threading
+import time
 
 from accounts import Account
 from upstream import as_upstream_error, build_login_url, parse_callback
 from util import new_checkin_device_id, random_hex, random_state, truncate_runes
+
+# 无 state 回调必须自己保留截止时间（网关重启后计时登记会丢失，见 plugin-spec §6.7）
+LOGIN_TTL_SECONDS = 90
 
 
 def loopback_base(headers=None, port=0):
@@ -48,7 +53,7 @@ def loopback_base(headers=None, port=0):
 
 
 class LoginSession:
-    __slots__ = ("state", "auth_url", "status", "message", "machine_id", "device_id")
+    __slots__ = ("state", "auth_url", "status", "message", "machine_id", "device_id", "started_at")
 
     def __init__(self, state, auth_url, machine_id, device_id):
         self.state = state
@@ -57,6 +62,7 @@ class LoginSession:
         self.message = "请在浏览器中完成授权"
         self.machine_id = machine_id
         self.device_id = device_id
+        self.started_at = time.monotonic()
 
     def set_status(self, status, message):
         self.status = status
@@ -112,24 +118,39 @@ class LoginBroker:
             self.by_state = {}
             self.cur = None
 
+    def _consume(self, session):
+        """一次性消费：处理完即摘掉活动会话，后续回调只能拿到失败页。"""
+        with self.mu:
+            if self.cur is session:
+                self.cur = None
+
     def handle_callback(self, state, raw_url, raw_query):
         """处理浏览器打到插件 /authorize 的授权回调。
 
         state 无法出现在回调地址里（官方只接受 /authorize），因此按
         「当前唯一会话」匹配；若带了 state 仍做一致性校验。
+        安全模型见 plugin-spec §6.7 硬要求 1：单活会话 + 90 秒截止 + 一次性消费。
         """
-        session = self.lookup((state or "").strip()) if (state or "").strip() else self.current()
+        key = (state or "").strip()
+        session = self.lookup(key) if key else self.current()
         if session is None:
             return False, "登录会话不存在或已过期，请回到网关控制台重试"
+        if session.status != "pending":
+            return False, "该登录会话已使用，请回到网关控制台重新发起"
+        if time.monotonic() - session.started_at > LOGIN_TTL_SECONDS:
+            session.set_status("error", "登录会话已超时，请重新发起")
+            self._consume(session)
+            return False, "登录会话已超时，请回到网关控制台重试"
 
         if "refreshToken" not in (raw_query or "") and "userJwt" not in (raw_query or ""):
-            # 可能是浏览器预取 /favicon.ico 之类，直接忽略
+            # 可能是浏览器预取 /favicon.ico 之类：不消费会话，继续等待真正的回调
             return False, "等待授权回调…"
 
         try:
             info = parse_callback(raw_url)
         except Exception as exc:
             session.set_status("error", "回调解析失败：" + truncate_runes(str(exc), 60))
+            self._consume(session)
             return False, "回调解析失败，请回到网关控制台重试"
 
         plugin = self.plugin
@@ -144,6 +165,7 @@ class LoginBroker:
                 plugin.upstream.refresh_token(account)
             except Exception as exc:
                 session.set_status("error", "换取 token 失败：" + as_upstream_error(exc).msg)
+                self._consume(session)
                 return False, "登录失败，请回到网关控制台重试"
         try:
             uid, nick, ent = plugin.upstream.get_user_info(account)
@@ -158,6 +180,7 @@ class LoginBroker:
 
         if not (account.uid or "").strip() or not (account.access_token or "").strip():
             session.set_status("error", "未能从回调确定账号信息，请重试或改用手工导入")
+            self._consume(session)
             return False, "登录失败，请回到网关控制台重试"
         if not (account.device_id or "").strip():
             account.device_id = new_checkin_device_id()
@@ -165,6 +188,7 @@ class LoginBroker:
         saved, created = plugin.store.upsert(account.to_auth())
         verb = "已更新" if not created else "已新增"
         session.set_status("ok", "登录成功，账号 %s %s" % (verb, saved.name()))
+        self._consume(session)
         return True, "登录成功，可关闭此窗口"
 
 

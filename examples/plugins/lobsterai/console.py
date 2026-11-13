@@ -4,7 +4,7 @@
 from chat import account_for_request, ensure_token, models_payload
 from login import render_page
 from upstream import UpstreamError, as_upstream_error
-from util import as_str, now_millis, sanitize_error, to_float_ok, truncate_runes
+from util import as_str, clamp_bytes, console_status, now_millis, sanitize_error, to_float_ok, truncate_runes
 
 LOGIN_METHODS = [
     {
@@ -51,7 +51,7 @@ def handle_login_start(plugin, method, payload, headers):
     try:
         return 200, plugin.login.start(base)
     except UpstreamError as err:
-        return err.status, {"error": truncate_runes(err.msg, 120)}
+        return console_status(err.status), {"error": clamp_bytes(err.msg, 240)}
     except Exception as exc:
         return 502, {"error": truncate_runes(as_upstream_error(exc).msg, 120)}
 
@@ -93,7 +93,7 @@ def handle_quota(plugin, account_id):
     except Exception as exc:
         ue = as_upstream_error(exc)
         plugin.note_error(ue, account)
-        return ue.status, {"error": truncate_runes(ue.msg, 120)}
+        return console_status(ue.status), {"error": clamp_bytes(ue.msg, 240)}
 
     notes = []
     credits = account.credits

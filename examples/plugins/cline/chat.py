@@ -9,7 +9,7 @@ import json
 
 import net
 import util
-from upstream import UpstreamError
+from upstream import UpstreamError, classify_status
 
 MAX_OUTPUT_TOKENS = 943718
 
@@ -127,8 +127,9 @@ def forward_chat(plugin, raw, headers):
         resp.close()
 
     if status >= 400:
-        return "json", (status, {"error": util.clamp_bytes(
-            _error_text(raw_body), 240)})
+        # plugin-spec §5.2：禁止透传上游状态码，统一交给分类器归并
+        err = classify_status(status, _error_text(raw_body))
+        return "json", (err.status, {"error": util.clamp_bytes(err.msg, 240)})
 
     if "text/event-stream" in ctype.lower():
         merged, err = aggregate_sse(raw_body)

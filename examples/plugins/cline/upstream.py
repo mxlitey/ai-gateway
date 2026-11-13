@@ -72,18 +72,20 @@ def classify_status(status, text, context="chat"):
     lower = (text or "").lower()
     if context == "chat" and status == 403 and any(m in lower for m in _REGION_MARKERS):
         # 地域限制与账号无关：归 400，避免网关白白切号。
-        return UpstreamError(400, "模型在当前地区不可用：%s" % util.truncate_runes(text, 120))
+        return UpstreamError(400, "模型在当前地区不可用：%s" % util.clamp_bytes(text, 240))
     if status in (402,) or (status == 429 and any(m in lower for m in _CREDIT_MARKERS)):
         return UpstreamError(429, "Cline 额度或频率受限：%s" % util.truncate_runes(text, 100))
     if status in (429,) or status >= 500:
         return UpstreamError(429 if status == 429 else 502,
-                             util.truncate_runes(text, 160))
+                             util.clamp_bytes(text, 240))
     if status in (401, 403):
-        return UpstreamError(status, util.truncate_runes(text, 160))
+        return UpstreamError(status, util.clamp_bytes(text, 240))
     if status == 404:
-        return UpstreamError(404, util.truncate_runes(text, 160))
-    return UpstreamError(status if 400 <= status < 500 else 502,
-                         util.truncate_runes(text, 160))
+        # plugin-spec §5.2：没有「账号/站点 → 模型集合」证据时，404 一律按全局缺失处理为 400
+        return UpstreamError(400, util.clamp_bytes(text, 240))
+    # plugin-spec §5.2：无法判定归属的其它 4xx 一律按客户端错误处理，不透传
+    return UpstreamError(400 if 400 <= status < 500 else 502,
+                         util.clamp_bytes(text, 240))
 
 
 class Upstream:

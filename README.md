@@ -221,11 +221,11 @@ mcp/
 依赖 [Go 1.26+](https://go.dev/dl/) 与 [Node.js 20+](https://nodejs.org/)（Windows，PowerShell）：
 
 ```powershell
-pwsh -File build/build.ps1 -Version 1.3.0
+pwsh -File build/build.ps1 -Version 1.3.1
 # 同时构建 Linux 镜像（默认 amd64 + arm64 双架构）
-pwsh -File build/build.ps1 -Version 1.3.0 -Docker
+pwsh -File build/build.ps1 -Version 1.3.1 -Docker
 # 只构建单架构时显式指定
-pwsh -File build/build.ps1 -Version 1.3.0 -Docker -DockerPlatforms linux/amd64
+pwsh -File build/build.ps1 -Version 1.3.1 -Docker -DockerPlatforms linux/amd64
 ```
 
 脚本会依次：构建前端（`web/`，产物经 `//go:embed` 内嵌进二进制）→ 生成 Wails bindings / 图标资源 → `go mod tidy` → 编译 `dist/ai-gateway-v<版本号>.exe` → 组装绿色版目录（含内置示例插件）→（可选）用 `docker buildx` 逐架构构建并导出 `dist/ai-gateway-v<版本号>-docker-amd64.tar` / `-arm64.tar`。构建 arm64 需要 buildx 与 QEMU 模拟（Docker Desktop 默认已启用；Linux 上执行 `docker run --privileged --rm tonistiigi/binfmt --install arm64`）。

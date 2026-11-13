@@ -32,6 +32,7 @@ import chat  # noqa: E402
 import console  # noqa: E402
 import reasoning  # noqa: E402
 import upstream  # noqa: E402
+import util  # noqa: E402
 from accounts import AccountStore  # noqa: E402
 from config import (  # noqa: E402
     default_config_path, default_data_dir, env_int, load_endpoints, plugin_dir,
@@ -123,7 +124,9 @@ def forward_chat(plugin, handler, headers):
     status = response.status
     response.close()
     if status != 200:
-        return "json", (status, _decode_json(full))
+        # plugin-spec §5.2：推理接口禁止透传上游状态码，按归属归并后再返回
+        return "json", (_map_upstream_status(status),
+                         {"error": util.clamp_bytes(_error_text(full), 240)})
     merged, err = chat.aggregate_sse(full)
     if err is not None:
         return "json", console.write_error(502, "聚合上游流式响应失败: " + err)
@@ -134,7 +137,30 @@ def _decode_json(raw):
     try:
         return json.loads(raw.decode("utf-8"))
     except Exception:
-        return {"error": raw.decode("utf-8", "replace")[:300]}
+        return {"error": util.clamp_bytes(raw.decode("utf-8", "replace"), 240)}
+
+
+def _error_text(raw):
+    """从上游错误体里取出可读文案（拿不到就退回原始文本）。"""
+    doc = _decode_json(raw)
+    if isinstance(doc, dict):
+        err = doc.get("error")
+        if isinstance(err, dict) and isinstance(err.get("message"), str):
+            return err["message"]
+        if isinstance(err, str):
+            return err
+        if isinstance(doc.get("message"), str):
+            return doc["message"]
+    return raw.decode("utf-8", "replace")
+
+
+def _map_upstream_status(status):
+    """plugin-spec §5.2：401/403/429 保留，5xx 归 502，其余 4xx 按 400 处理。"""
+    if status in (401, 403, 429):
+        return status
+    if status >= 500:
+        return 502
+    return 400
 
 
 def http_stream(url, headers, payload, timeout=120):
@@ -192,6 +218,10 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(length)
 
     def send_json(self, status, body):
+        if status >= 400 and isinstance(body, dict) and isinstance(body.get("error"), str):
+            # plugin-spec §5.3：错误体统一带 type，error 按 UTF-8 字节截断到 240
+            body["error"] = util.clamp_bytes(body["error"], 240)
+            body.setdefault("type", util.error_type(status))
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -307,7 +337,10 @@ def run_serve(args):
     parser.add_argument("--config", default="")
     opts = parser.parse_args(args)
 
-    port = opts.port or env_int("AI_GATEWAY_PLUGIN_PORT", 8399)
+    port = opts.port or env_int("AI_GATEWAY_PLUGIN_PORT", 0)
+    if not port:
+        print("缺少 AI_GATEWAY_PLUGIN_PORT（或 --port），无法启动", file=sys.stderr)
+        return 2
     data_dir = opts.data or default_data_dir()
     config_path = opts.config or default_config_path()
 

@@ -218,15 +218,17 @@ class Upstream:
 def classify_status(status, text):
     lower = (text or "").lower()
     if status in (401, 403):
-        return UpstreamError(status, util.truncate_runes(text, 160))
+        return UpstreamError(status, util.clamp_bytes(text, 240))
     if status == 429 or status >= 500:
-        return UpstreamError(429 if status == 429 else 502, util.truncate_runes(text, 160))
+        return UpstreamError(429 if status == 429 else 502, util.clamp_bytes(text, 240))
     if status == 402 or "insufficient" in lower or "balance" in lower or "quota" in lower:
-        return UpstreamError(429, util.truncate_runes(text, 160))
+        return UpstreamError(429, util.clamp_bytes(text, 240))
     if status == 404:
-        return UpstreamError(404, util.truncate_runes(text, 160))
-    return UpstreamError(status if 400 <= status < 500 else 502,
-                         util.truncate_runes(text, 160))
+        # plugin-spec §5.2：没有「账号/站点 → 模型集合」证据时，404 一律按全局缺失处理为 400
+        return UpstreamError(400, util.clamp_bytes(text, 240))
+    # plugin-spec §5.2：无法判定归属的其它 4xx 一律按客户端错误处理，不透传
+    return UpstreamError(400 if 400 <= status < 500 else 502,
+                         util.clamp_bytes(text, 240))
 
 
 def parse_token_payload(data):

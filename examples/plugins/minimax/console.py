@@ -3,7 +3,7 @@
 
 from chat import account_for_request, ensure_token, models_payload
 from upstream import UpstreamError, as_upstream_error
-from util import now_millis, sanitize_error, truncate_runes
+from util import clamp_bytes, console_status, now_millis, sanitize_error, truncate_runes
 
 LOGIN_METHODS = [
     {
@@ -49,7 +49,7 @@ def handle_login_start(plugin, method, payload, headers):
     try:
         return 200, plugin.login.start()
     except UpstreamError as err:
-        return err.status, {"error": truncate_runes(err.msg, 120)}
+        return console_status(err.status), {"error": clamp_bytes(err.msg, 240)}
     except Exception as exc:
         return 502, {"error": truncate_runes(as_upstream_error(exc).msg, 120)}
 
@@ -75,7 +75,7 @@ def handle_checkin(plugin, account_id):
     except Exception as exc:
         ue = as_upstream_error(exc)
         plugin.note_error(ue, account)
-        return ue.status, {"error": truncate_runes(ue.msg, 120)}
+        return console_status(ue.status), {"error": clamp_bytes(ue.msg, 240)}
 
     if state.get("checked_in_today"):
         def mutate_skip(st):
@@ -99,7 +99,7 @@ def handle_checkin(plugin, account_id):
     except Exception as exc:
         ue = as_upstream_error(exc)
         plugin.note_error(ue, account)
-        return ue.status, {"error": truncate_runes(ue.msg, 120)}
+        return console_status(ue.status), {"error": clamp_bytes(ue.msg, 240)}
 
     def mutate(st):
         st.checked_in_today = True
@@ -124,7 +124,7 @@ def handle_quota(plugin, account_id):
     except Exception as exc:
         ue = as_upstream_error(exc)
         plugin.note_error(ue, account)
-        return ue.status, {"error": truncate_runes(ue.msg, 120)}
+        return console_status(ue.status), {"error": clamp_bytes(ue.msg, 240)}
 
     notes = []
     credits = account.credits

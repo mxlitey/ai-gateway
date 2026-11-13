@@ -69,11 +69,11 @@ def plugin_dir():
 
 
 def default_data_dir():
-    """插件数据目录：环境变量优先，否则 <插件目录>/data。"""
+    """插件数据目录：只接受网关注入的 AI_GATEWAY_PLUGIN_DATA（直连调试请用 --data）。"""
     value = (os.environ.get("AI_GATEWAY_PLUGIN_DATA") or "").strip()
-    if value:
-        return value
-    return os.path.join(plugin_dir(), "data")
+    if not value:
+        raise RuntimeError("缺少 AI_GATEWAY_PLUGIN_DATA：请由网关启动，或用 --data 指定数据目录")
+    return value
 
 
 def default_config_path():

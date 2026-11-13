@@ -65,13 +65,17 @@ class Plugin:
     # ---------- 状态上报（不是调度） ----------
 
     def note_upstream_error(self, account, ue):
-        """记录上游错误：登录态失效时把账号硬禁用，并写脱敏后的 last_error。"""
+        """记录上游错误：登录态失效时把账号硬禁用，并写脱敏后的 last_error。
+
+        `enabled` 表示「账号是否被停用」，必须稳定：token 过期/刷新失败只通过
+        `expires_at` 与 `last_error` 表达，不能顺手把它翻成 false（plugin-spec §6.4）。
+        账号不可用由 `hard_disabled` 承担，`usable()` 同样会把它排除。
+        """
         if account is None or ue is None:
             return
 
         def mutate(st):
             if ue.disable:
-                st.enabled = False
                 st.hard_disabled = True
             st.last_error = util.sanitize_error(ue.msg)
 
@@ -298,6 +302,10 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(length)
 
     def send_json(self, status, body):
+        if status >= 400 and isinstance(body, dict) and isinstance(body.get("error"), str):
+            # plugin-spec §5.3：错误体统一带 type，error 按 UTF-8 字节截断到 240
+            body["error"] = util.clamp_bytes(body["error"], 240)
+            body.setdefault("type", util.error_type(status))
         raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -390,7 +398,7 @@ class Handler(BaseHTTPRequestHandler):
             kind, payload = forward_chat(plugin, self, self.headers_map())
         except Exception as exc:
             ue = as_upstream_error(exc)
-            return self.send_json(ue.status, {"error": ue.msg})
+            return self.send_json(ue.status, {"error": util.clamp_bytes(ue.msg, 240)})
 
         if kind == "json":
             if isinstance(payload, tuple) and len(payload) == 2 and isinstance(payload[0], int):
@@ -449,7 +457,10 @@ def run_serve(args):
     parser.add_argument("--config", default="")
     opts = parser.parse_args(args)
 
-    port = opts.port or env_int("AI_GATEWAY_PLUGIN_PORT", 20727)
+    port = opts.port or env_int("AI_GATEWAY_PLUGIN_PORT", 0)
+    if not port:
+        print("缺少 AI_GATEWAY_PLUGIN_PORT（或 --port），无法启动", file=sys.stderr)
+        return 2
     data_dir = opts.data or default_data_dir()
     config_path = opts.config or default_config_path()
 

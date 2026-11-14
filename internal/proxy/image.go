@@ -15,8 +15,26 @@ import (
 	"time"
 
 	"github.com/czg95/ai-gateway-v2/internal/channel"
+	"github.com/czg95/ai-gateway-v2/internal/imagestore"
 	"github.com/czg95/ai-gateway-v2/internal/model"
 )
+
+// ImagePersist 生图结果的落盘配置。
+//
+// Store 与 BaseURL 同时可用时，网关会把图片保存到本地并返回自己的地址；
+// 任一项缺失则退回上游原始结果（url 或 b64_json）。
+type ImagePersist struct {
+	Store   *imagestore.Store
+	BaseURL string
+}
+
+func (p ImagePersist) enabled() bool {
+	return p.Store != nil && strings.TrimSpace(p.BaseURL) != ""
+}
+
+func (p ImagePersist) url(name string) string {
+	return strings.TrimSuffix(strings.TrimSpace(p.BaseURL), "/") + imagestore.URL(name)
+}
 
 // ImageGenResult 一次生图调用的最终结果（已转换成 OpenAI 兼容响应体）。
 type ImageGenResult struct {
@@ -37,7 +55,8 @@ type ImageGenResult struct {
 //   - async：POST 提交任务拿到 task_id，再按配置轮询任务直到成功/失败/超时。
 //
 // clientReq 仅用于解析渠道请求头占位符，可为 nil。
-func GenerateImage(ctx context.Context, client *http.Client, ch *model.Channel, key string, input map[string]any, publicModel string, clientReq *http.Request) ImageGenResult {
+// persist 决定结果是否落盘并替换为网关地址；零值表示保留上游原始结果。
+func GenerateImage(ctx context.Context, client *http.Client, ch *model.Channel, key string, input map[string]any, publicModel string, clientReq *http.Request, persist ImagePersist) ImageGenResult {
 	cfg := ch.ImageConfig()
 	if cfg.Mode == "" {
 		return ImageGenResult{StatusCode: http.StatusBadRequest, Error: "渠道未配置生图能力"}
@@ -95,7 +114,7 @@ func GenerateImage(ctx context.Context, client *http.Client, ch *model.Channel, 
 	_ = json.Unmarshal(raw, &submit)
 
 	if cfg.Mode == model.ImageGenSync {
-		body, err := normalizeImageResponse(ctx, client, submit, cfg, responseFormat)
+		body, err := normalizeImageResponse(ctx, client, submit, cfg, responseFormat, persist)
 		if err != nil {
 			return ImageGenResult{StatusCode: http.StatusBadGateway, UpstreamStatus: status, Error: err.Error()}
 		}
@@ -104,7 +123,7 @@ func GenerateImage(ctx context.Context, client *http.Client, ch *model.Channel, 
 
 	// 兼容「提交即返回图片」的服务商：有图片就直接转换，不再轮询
 	if images := extractImages(submit, cfg.ImagesField); len(images) > 0 {
-		body, err := normalizeImageResponse(ctx, client, submit, cfg, responseFormat)
+		body, err := normalizeImageResponse(ctx, client, submit, cfg, responseFormat, persist)
 		if err != nil {
 			return ImageGenResult{StatusCode: http.StatusBadGateway, UpstreamStatus: status, Error: err.Error()}
 		}
@@ -119,11 +138,11 @@ func GenerateImage(ctx context.Context, client *http.Client, ch *model.Channel, 
 			Error:          "上游未返回任务 ID（字段 " + cfg.TaskIDField + "）: " + truncateImageText(raw, 400),
 		}
 	}
-	return pollImageTask(ctx, client, ch, key, cfg, taskID, responseFormat, clientReq)
+	return pollImageTask(ctx, client, ch, key, cfg, taskID, responseFormat, clientReq, persist)
 }
 
 // pollImageTask 轮询异步生图任务，直到成功、失败或超时。
-func pollImageTask(ctx context.Context, client *http.Client, ch *model.Channel, key string, cfg model.ImageGenConfig, taskID, responseFormat string, clientReq *http.Request) ImageGenResult {
+func pollImageTask(ctx context.Context, client *http.Client, ch *model.Channel, key string, cfg model.ImageGenConfig, taskID, responseFormat string, clientReq *http.Request, persist ImagePersist) ImageGenResult {
 	pollCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMS)*time.Millisecond)
 	defer cancel()
 
@@ -159,7 +178,7 @@ func pollImageTask(ctx context.Context, client *http.Client, ch *model.Channel, 
 		taskStatus := strings.ToUpper(stringField(task, cfg.StatusField))
 		switch {
 		case taskStatus == strings.ToUpper(cfg.SuccessStatus):
-			body, err := normalizeImageResponse(pollCtx, client, task, cfg, responseFormat)
+			body, err := normalizeImageResponse(pollCtx, client, task, cfg, responseFormat, persist)
 			if err != nil {
 				return ImageGenResult{StatusCode: http.StatusBadGateway, UpstreamStatus: status, Error: err.Error()}
 			}
@@ -227,7 +246,12 @@ func doImageRequest(ctx context.Context, client *http.Client, method, url string
 }
 
 // normalizeImageResponse 把上游响应转换成 OpenAI images 响应。
-func normalizeImageResponse(ctx context.Context, client *http.Client, upstream map[string]any, cfg model.ImageGenConfig, responseFormat string) ([]byte, error) {
+//
+// 归一化规则（保证客户端只需处理一种形态）：
+//   - 能拿到图片字节（上游给 base64，或能下载到 url）时优先落盘，url 一律替换为网关地址；
+//   - 客户端显式要求 b64_json 时，同时返回 b64_json 与网关 url（保持 OpenAI 兼容）；
+//   - 落盘或下载失败时保留上游原始结果并记录日志，不让整次生图失败。
+func normalizeImageResponse(ctx context.Context, client *http.Client, upstream map[string]any, cfg model.ImageGenConfig, responseFormat string, persist ImagePersist) ([]byte, error) {
 	images := extractImages(upstream, cfg.ImagesField)
 	if len(images) == 0 {
 		return nil, fmt.Errorf("上游未返回图片（字段 %s）", cfg.ImagesField)
@@ -238,19 +262,57 @@ func normalizeImageResponse(ctx context.Context, client *http.Client, upstream m
 	for _, img := range images {
 		url, _ := img["url"].(string)
 		b64, _ := img["b64_json"].(string)
+		b64 = bareBase64(b64)
+
+		var (
+			raw    []byte
+			rawErr error
+		)
 		switch {
-		case wantBase64 && url != "":
-			encoded, err := fetchImageBase64(ctx, client, url)
-			if err != nil {
-				return nil, fmt.Errorf("下载图片失败: %w", err)
-			}
-			data = append(data, map[string]any{"b64_json": encoded})
-		case b64 != "" && url == "":
-			data = append(data, map[string]any{"b64_json": b64})
-		case url != "":
-			data = append(data, map[string]any{"url": url})
 		case b64 != "":
-			data = append(data, map[string]any{"b64_json": b64})
+			raw, rawErr = decodeImageBase64(b64)
+			if rawErr != nil && url == "" {
+				return nil, fmt.Errorf("解析上游返回的 base64 图片失败: %w", rawErr)
+			}
+			if rawErr != nil {
+				slog.Warn("[image] base64 解码失败，改用上游地址", "err", rawErr)
+			}
+		case url != "":
+			raw, rawErr = fetchImageBytes(ctx, client, url)
+			if rawErr != nil {
+				if wantBase64 {
+					return nil, fmt.Errorf("下载图片失败: %w", rawErr)
+				}
+				slog.Warn("[image] 下载上游图片失败，保留原始地址", "url", url, "err", rawErr)
+			}
+		}
+
+		savedURL := ""
+		if raw != nil && persist.enabled() {
+			name, err := persist.Store.Save(raw, "")
+			if err != nil {
+				slog.Warn("[image] 保存生图结果失败，保留上游结果", "err", err)
+			} else {
+				savedURL = persist.url(name)
+			}
+		}
+
+		entry := map[string]any{}
+		switch {
+		case savedURL != "":
+			entry["url"] = savedURL
+		case url != "":
+			entry["url"] = url
+		}
+		switch {
+		case wantBase64 && raw != nil && b64 == "":
+			entry["b64_json"] = base64.StdEncoding.EncodeToString(raw)
+		case b64 != "" && (wantBase64 || savedURL == ""):
+			// 上游直接给了 base64 且不是网关地址形态时原样保留，避免重复编码
+			entry["b64_json"] = b64
+		}
+		if len(entry) > 0 {
+			data = append(data, entry)
 		}
 	}
 	if len(data) == 0 {
@@ -386,31 +448,58 @@ func errorMessageValue(v any) string {
 	return ""
 }
 
-// fetchImageBase64 下载图片并编码为 base64（响应体不包含 data URI 前缀）。
-func fetchImageBase64(ctx context.Context, client *http.Client, url string) (string, error) {
+// fetchImageBytes 下载图片内容，上限与本地存储保持一致。
+func fetchImageBytes(ctx context.Context, client *http.Client, url string) ([]byte, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	const maxImageSize = 32 << 20
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxImageSize+1))
+	maxSize := int64(imagestore.MaxImageBytes)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if len(raw) > maxImageSize {
-		return "", fmt.Errorf("图片超过 %d MB", maxImageSize>>20)
+	if int64(len(raw)) > maxSize {
+		return nil, fmt.Errorf("图片超过 %d MB", maxSize>>20)
 	}
-	return base64.StdEncoding.EncodeToString(raw), nil
+	return raw, nil
+}
+
+// decodeImageBase64 解析上游返回的 base64（兼容带 data URI 前缀与换行）。
+func decodeImageBase64(text string) ([]byte, error) {
+	s := bareBase64(text)
+	s = strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\r', '\t', ' ':
+			return -1
+		}
+		return r
+	}, s)
+	if s == "" {
+		return nil, errors.New("base64 内容为空")
+	}
+	return base64.StdEncoding.DecodeString(s)
+}
+
+// bareBase64 去掉 data URI 前缀，返回裸 base64 文本。
+func bareBase64(text string) string {
+	s := strings.TrimSpace(text)
+	if strings.HasPrefix(strings.ToLower(s), "data:") {
+		if _, payload, ok := strings.Cut(s, ","); ok {
+			s = strings.TrimSpace(payload)
+		}
+	}
+	return s
 }
 
 // cloneImagePayload 复制客户端请求体，避免修改后影响故障转移的其它目标。

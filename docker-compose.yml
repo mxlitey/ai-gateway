@@ -42,6 +42,10 @@ services:
       AIGW_LOG_LEVEL: ${AIGW_LOG_LEVEL:-info}
       # 如需自建价格源镜像，可在此覆盖
       # AIGW_PRICE_ENDPOINT: ""
+      # 生图返回的图片链接用这个地址拼接（默认按请求 Host 推导）。
+      # 客户端经公网域名/反向代理访问时必须填，否则可能拿到容器内 127.0.0.1 的地址。
+      # 从宿主机环境或同目录 .env 注入（export AIGW_PUBLIC_BASE_URL=...）；未设置时为空，按请求推导。
+      AIGW_PUBLIC_BASE_URL: ${AIGW_PUBLIC_BASE_URL:-}
     volumes:
       - ai-gateway-data:/data
       - ai-gateway-plugins:/plugins

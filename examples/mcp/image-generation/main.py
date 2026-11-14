@@ -21,6 +21,12 @@
   AIGW_IMAGE_MODEL           默认生图模型（generate_image 未传 model 时使用）
   AIGW_IMAGE_TIMEOUT_SECONDS 单次生图整体超时，默认 600（应大于渠道轮询超时）
   AIGW_IMAGE_SAVE_DIR        图片保存目录，默认 $AIGW_MCP_DATA/images
+  AIGW_IMAGE_MAX_CONCURRENCY 同时进行的生图任务上限，默认 4
+
+返回约定：
+  - 图片统一返回网关地址（网关已把上游结果落盘，地址 7 天内有效）；
+  - 失败时 isError=true，structuredContent.error 含 code / message / retryable / upstream_status；
+  - generate_image 支持 request_id 幂等键：相同 request_id 重复调用复用同一作业。
 
 提供的工具：
   generate_image  生成图片（支持参考图 image_url、尺寸、数量等）
@@ -46,8 +52,12 @@ DEFAULT_WAIT_SECONDS = 20
 MAX_WAIT_SECONDS = 600
 JOB_TTL_SECONDS = 3600
 MAX_JOBS = 100
+# 单次 MCP 调用允许的请求体上限，与网关 MCP 入口保持一致
+MAX_REQUEST_BYTES = 8 << 20
 MAX_DOWNLOAD_BYTES = 32 << 20
 DOWNLOAD_TIMEOUT = 60
+MAX_REQUEST_ID_LENGTH = 128
+REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
 # 参考图上限：网关 MCP 入口整体请求体上限 8 MB（internal/mcp/handler.go 的 maxRequestBody），
 # base64 会膨胀约 1/3 且不再额外转义，故 base64 字符数上限取 7 M（解码后约 5.5 MB），
 # 留约 0.6 MB 给提示词与 JSON 结构。单张解码后 3 MB 是上游更常见的容忍上限。
@@ -109,6 +119,13 @@ IMAGE_TOOLS = [
                 },
                 "download": {"type": "boolean", "description": "为 true 时把图片下载到本地并返回路径"},
                 "wait_seconds": {"type": "integer", "description": "本次调用最多等待秒数，默认 20，上限 600"},
+                "request_id": {
+                    "type": "string",
+                    "description": (
+                        "幂等键（可选，1-128 位字母/数字/._:-）。相同 request_id 重复调用会复用同一个作业，"
+                        "超时重试不会重复生图。"
+                    ),
+                },
             },
             "required": ["prompt"],
         },
@@ -126,7 +143,25 @@ IMAGE_TOOLS = [
 
 
 class ToolError(Exception):
-    """给模型看的可读错误。"""
+    """给模型看的可读错误，同时携带机器可读的错误码。
+
+    code      稳定的错误分类，客户端可据此决定重试/换参/放弃
+    retryable 同样的请求重试是否可能成功
+    upstream_status 上游 HTTP 状态码（0 表示未拿到响应）
+    """
+
+    def __init__(self, message, code="invalid_request", retryable=False, upstream_status=0):
+        super().__init__(message)
+        self.message = message
+        self.code = code
+        self.retryable = bool(retryable)
+        self.upstream_status = int(upstream_status or 0)
+
+    def payload(self):
+        out = {"code": self.code, "message": self.message, "retryable": self.retryable}
+        if self.upstream_status:
+            out["upstream_status"] = self.upstream_status
+        return out
 
 
 # ---------- 配置 ----------
@@ -172,37 +207,83 @@ _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # ---------- 作业存储 ----------
 
 _JOBS = {}
+_JOB_BY_REQUEST_ID = {}
 _JOBS_LOCK = threading.Lock()
 
 
+def _max_concurrency():
+    try:
+        value = int(_env("AIGW_IMAGE_MAX_CONCURRENCY", "4"))
+    except ValueError:
+        value = 4
+    return max(1, min(32, value))
+
+
+# 同时在跑的生图任务上限：避免一次并发提交把上游与本机线程打爆
+_JOB_SLOTS = threading.BoundedSemaphore(_max_concurrency())
+
+
+def _drop_job_locked(job):
+    _JOBS.pop(job["id"], None)
+    request_id = job.get("request_id")
+    if request_id and _JOB_BY_REQUEST_ID.get(request_id) is job:
+        _JOB_BY_REQUEST_ID.pop(request_id, None)
+
+
 def _prune_jobs_locked(now):
-    finished = [j for j in _JOBS.values() if j["status"] != "running"]
+    running, finished = [], []
+    for job in list(_JOBS.values()):
+        if job["status"] == "running" and now - job["created"] > job["deadline_seconds"]:
+            # 超时作业标记失败，避免永远占着并发槽、也避免客户端无限轮询
+            job["status"] = "failed"
+            job["error"] = {
+                "code": "timeout",
+                "message": "生图超时（%d 秒），请重试或换用更快的模型" % job["deadline_seconds"],
+                "retryable": True,
+            }
+            job["updated"] = now
+            finished.append(job)
+        elif job["status"] == "running":
+            running.append(job)
+        else:
+            finished.append(job)
+
     for job in finished:
         if now - job["updated"] > JOB_TTL_SECONDS:
-            _JOBS.pop(job["id"], None)
+            _drop_job_locked(job)
     if len(_JOBS) <= MAX_JOBS:
         return
     # 超出上限时按更新时间从旧到新清理已完成的作业
     for job in sorted(finished, key=lambda j: j["updated"]):
-        _JOBS.pop(job["id"], None)
+        _drop_job_locked(job)
         if len(_JOBS) <= MAX_JOBS:
             break
 
 
-def _new_job(payload):
+def _new_job(payload, request_id=""):
     now = time.time()
     job = {
         "id": uuid.uuid4().hex,
         "status": "running",
         "model": payload.get("model", ""),
+        "request_id": request_id,
         "created": now,
         "updated": now,
+        "deadline_seconds": _timeout_seconds(),
         "result": None,
-        "error": "",
+        "error": None,
     }
     with _JOBS_LOCK:
         _prune_jobs_locked(now)
+        if sum(1 for j in _JOBS.values() if j["status"] == "running") >= MAX_JOBS:
+            raise ToolError(
+                "当前生图任务过多（%d 个在跑），请稍后重试" % MAX_JOBS,
+                code="server_busy",
+                retryable=True,
+            )
         _JOBS[job["id"]] = job
+        if request_id:
+            _JOB_BY_REQUEST_ID[request_id] = job
     return job
 
 
@@ -217,33 +298,43 @@ def _job_snapshot(job):
         }
 
 
+def _finish_job(job, status, result=None, error=None):
+    with _JOBS_LOCK:
+        if job["status"] != "running":
+            # 已被判定超时，迟到的结果直接丢弃
+            return
+        job["status"] = status
+        job["result"] = result
+        job["error"] = error
+        job["updated"] = time.time()
+
+
 def _run_job(job, payload, download, key):
     try:
-        result = _request_images(payload, key)
-        if download:
-            for image in result.get("images", []):
-                if image.get("url") and not image.get("path"):
-                    try:
-                        path, size = _download_image(image["url"])
-                        image["path"] = path
-                        image["bytes"] = size
-                    except ToolError as exc:
-                        # 下载失败不影响已生成的图片地址
-                        image["download_error"] = str(exc)
-        with _JOBS_LOCK:
-            job["result"] = result
-            job["status"] = "succeeded"
-            job["updated"] = time.time()
+        # 排队等待并发槽：没有槽位时作业保持 running，客户端轮询即可
+        with _JOB_SLOTS:
+            result = _request_images(payload, key)
+            if download:
+                for image in result.get("images", []):
+                    if image.get("url") and not image.get("path"):
+                        try:
+                            path, size = _download_image(image["url"])
+                            image["path"] = path
+                            image["bytes"] = size
+                        except ToolError as exc:
+                            # 下载失败不影响已生成的图片地址
+                            image["download_error"] = exc.message
     except ToolError as exc:
-        with _JOBS_LOCK:
-            job["error"] = str(exc)
-            job["status"] = "failed"
-            job["updated"] = time.time()
+        _finish_job(job, "failed", error=exc.payload())
+        return
     except Exception as exc:  # 兜底，避免线程静默退出
-        with _JOBS_LOCK:
-            job["error"] = "生图失败: %s" % exc
-            job["status"] = "failed"
-            job["updated"] = time.time()
+        _finish_job(job, "failed", error={
+            "code": "internal_error",
+            "message": "生图失败: %s" % exc,
+            "retryable": False,
+        })
+        return
+    _finish_job(job, "succeeded", result=result)
 
 
 # ---------- 网关调用 ----------
@@ -255,7 +346,8 @@ def _request_images(payload, key):
     if not key:
         raise ToolError(
             "没有可用的 API 密钥：请在「MCP 服务器 → 生图 → 编辑 → 密钥」里填入面板签发的 sk- 密钥"
-            "（也可在 mcp.json 的 env 里设置 AIGW_IMAGE_API_KEY）"
+            "（也可在 mcp.json 的 env 里设置 AIGW_IMAGE_API_KEY）",
+            code="auth_missing",
         )
 
     url = _base_url() + "/v1/images/generations"
@@ -271,22 +363,46 @@ def _request_images(payload, key):
         with _LOCAL_OPENER.open(req, timeout=_timeout_seconds()) as resp:
             raw = resp.read(16 << 20)
     except urllib.error.HTTPError as exc:
-        raise ToolError(_http_error_message(exc))
+        message, code, retryable = _gateway_error(exc)
+        raise ToolError(message, code=code, retryable=retryable, upstream_status=exc.code)
     except urllib.error.URLError as exc:
-        raise ToolError("无法连接网关 %s：%s（确认网关已启动、端口正确）" % (_base_url(), exc.reason or exc))
+        reason = getattr(exc, "reason", exc)
+        if isinstance(reason, TimeoutError):
+            raise ToolError(
+                "生图请求超时（%d 秒）；可调大 AIGW_IMAGE_TIMEOUT_SECONDS 或渠道轮询超时" % _timeout_seconds(),
+                code="timeout",
+                retryable=True,
+            )
+        raise ToolError(
+            "无法连接网关 %s：%s（确认网关已启动、端口正确）" % (_base_url(), reason),
+            code="gateway_unreachable",
+            retryable=True,
+        )
     except TimeoutError:
-        raise ToolError("生图请求超时（%d 秒）；可调大 AIGW_IMAGE_TIMEOUT_SECONDS 或渠道轮询超时" % _timeout_seconds())
+        raise ToolError(
+            "生图请求超时（%d 秒）；可调大 AIGW_IMAGE_TIMEOUT_SECONDS 或渠道轮询超时" % _timeout_seconds(),
+            code="timeout",
+            retryable=True,
+        )
     except Exception as exc:
-        raise ToolError("请求网关失败：%s" % exc)
+        raise ToolError("请求网关失败：%s" % exc, code="gateway_unreachable", retryable=True)
 
     try:
         data = json.loads(raw.decode("utf-8", "replace"))
     except ValueError:
-        raise ToolError("网关返回的不是 JSON：%s" % _clip(raw.decode("utf-8", "replace"), 300))
+        raise ToolError(
+            "网关返回的不是 JSON：%s" % _clip(raw.decode("utf-8", "replace"), 300),
+            code="invalid_response",
+            retryable=True,
+        )
 
     items = data.get("data") if isinstance(data, dict) else None
     if not isinstance(items, list) or not items:
-        raise ToolError("网关未返回图片：%s" % _clip(json.dumps(data, ensure_ascii=False), 300))
+        raise ToolError(
+            "网关未返回图片：%s" % _clip(json.dumps(data, ensure_ascii=False), 300),
+            code="empty_result",
+            retryable=True,
+        )
 
     images = []
     for item in items:
@@ -307,7 +423,7 @@ def _request_images(payload, key):
         images.append(entry)
 
     if not images:
-        raise ToolError("网关返回的图片为空")
+        raise ToolError("网关返回的图片为空", code="empty_result", retryable=True)
 
     return {
         "status": "succeeded",
@@ -318,61 +434,77 @@ def _request_images(payload, key):
     }
 
 
-def _http_error_message(exc):
-    detail = ""
+def _gateway_error(exc):
+    """把网关 HTTP 错误转换为 (可读文案, 错误码, 是否可重试)。"""
+    raw = ""
     try:
-        detail = exc.read().decode("utf-8", "replace")
+        raw = exc.read().decode("utf-8", "replace")
     except Exception:
         pass
-    detail = _extract_error(detail)
-    suffix = ("；" + detail) if detail else ""
+    detail, upstream_code = _extract_error_detail(raw)
+    suffix = ("：" + detail) if detail else "：响应体为空"
     if exc.code == 401:
-        return "网关鉴权失败：API 密钥无效或已停用（检查 AIGW_IMAGE_API_KEY）" + suffix
+        return ("网关鉴权失败：API 密钥无效或已停用（检查 AIGW_IMAGE_API_KEY）" + suffix,
+                "auth_failed", False)
     if exc.code == 403:
-        return "网关拒绝：该密钥无权调用生图或此 MCP 服务器" + suffix
+        return ("网关拒绝：该密钥无权调用生图或此 MCP 服务器" + suffix, "forbidden", False)
     if exc.code == 404:
-        return "网关地址不对或接口不存在（检查 AIGW_IMAGE_BASE_URL）" + suffix
+        return ("网关地址不对或接口不存在（检查 AIGW_IMAGE_BASE_URL）" + suffix, "not_found", False)
     if exc.code == 400:
-        return "网关拒绝了生图请求" + suffix
+        return ("网关拒绝了生图请求" + suffix, "invalid_request", False)
+    if exc.code == 413:
+        return ("请求体过大（参考图太多或太大）" + suffix, "request_too_large", False)
     if exc.code == 429:
-        return "网关限流或额度不足" + suffix
+        return ("网关限流或额度不足" + suffix, "rate_limited", True)
+    if exc.code == 504:
+        return ("生图上游超时（HTTP 504）" + suffix, "upstream_timeout", True)
     if exc.code >= 500:
-        return "生图上游失败（HTTP %d）%s" % (exc.code, suffix)
-    return "网关返回 HTTP %d%s" % (exc.code, suffix)
+        return ("生图上游失败（HTTP %d）%s" % (exc.code, suffix), upstream_code or "upstream_error", True)
+    return ("网关返回 HTTP %d%s" % (exc.code, suffix), upstream_code or "unexpected_status", False)
 
 
-def _extract_error(text):
+def _extract_error_detail(text):
+    """从网关错误响应中提取 (message, code)，尽量透传上游原文。"""
     text = (text or "").strip()
     if not text:
-        return ""
+        return "", ""
     try:
         data = json.loads(text)
     except ValueError:
-        return _clip(text, 400)
+        return _clip(text, 400), ""
     if isinstance(data, dict):
         err = data.get("error")
-        if isinstance(err, dict) and err.get("message"):
-            return _clip(str(err["message"]), 400)
+        if isinstance(err, dict):
+            message = err.get("message") or err.get("msg") or ""
+            code = err.get("code") or err.get("type") or ""
+            if message:
+                return _clip(str(message), 400), str(code or "")
         if isinstance(err, str) and err:
-            return _clip(err, 400)
+            return _clip(err, 400), ""
         if data.get("message"):
-            return _clip(str(data["message"]), 400)
-    return _clip(text, 400)
+            return _clip(str(data["message"]), 400), str(data.get("code") or "")
+    return _clip(text, 400), ""
 
 
 # ---------- 图片落盘 ----------
 
 def _save_base64(b64_text):
-    raw = base64.b64decode(b64_text)
+    try:
+        raw = base64.b64decode(b64_text)
+    except Exception:
+        raise ToolError("网关返回的 base64 图片无法解码", code="invalid_response", retryable=True)
     if len(raw) > MAX_DOWNLOAD_BYTES:
-        raise ToolError("图片超过 %d MB，无法保存" % (MAX_DOWNLOAD_BYTES >> 20))
+        raise ToolError("图片超过 %d MB，无法保存" % (MAX_DOWNLOAD_BYTES >> 20), code="too_large")
     return _write_image(raw, _sniff_ext(raw))
 
 
 def _download_image(url):
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        raise ToolError("图片地址不是 http/https，无法下载：%s" % _clip(url, 120))
+        raise ToolError(
+            "图片地址不是 http/https，无法下载：%s" % _clip(url, 120),
+            code="download_failed",
+        )
     req = urllib.request.Request(url, method="GET")
     req.add_header("User-Agent", "ai-gateway-image-mcp/1.0")
     try:
@@ -380,11 +512,16 @@ def _download_image(url):
             raw = resp.read(MAX_DOWNLOAD_BYTES + 1)
             content_type = resp.headers.get("Content-Type", "")
     except urllib.error.HTTPError as exc:
-        raise ToolError("下载图片失败（HTTP %d）：%s" % (exc.code, _clip(url, 120)))
+        raise ToolError(
+            "下载图片失败（HTTP %d）：%s" % (exc.code, _clip(url, 120)),
+            code="download_failed",
+            retryable=exc.code >= 500,
+            upstream_status=exc.code,
+        )
     except Exception as exc:
-        raise ToolError("下载图片失败：%s" % exc)
+        raise ToolError("下载图片失败：%s" % exc, code="download_failed", retryable=True)
     if len(raw) > MAX_DOWNLOAD_BYTES:
-        raise ToolError("图片超过 %d MB，拒绝下载" % (MAX_DOWNLOAD_BYTES >> 20))
+        raise ToolError("图片超过 %d MB，拒绝下载" % (MAX_DOWNLOAD_BYTES >> 20), code="too_large")
     ext = _ext_from_content_type(content_type) or _ext_from_url(parsed.path) or _sniff_ext(raw)
     return _write_image(raw, ext)
 
@@ -402,7 +539,10 @@ def _write_image(raw, ext):
         with open(path, "wb") as fh:
             fh.write(raw)
     except OSError as exc:
-        raise ToolError("保存图片失败：%s（检查 AIGW_IMAGE_SAVE_DIR / AIGW_MCP_DATA 是否可写）" % exc)
+        raise ToolError(
+            "保存图片失败：%s（检查 AIGW_IMAGE_SAVE_DIR / AIGW_MCP_DATA 是否可写）" % exc,
+            code="storage_error",
+        )
     return path, len(raw)
 
 
@@ -626,12 +766,41 @@ def _build_payload(args):
     return payload
 
 
+def _request_id(args):
+    raw = str(args.get("request_id") or "").strip()
+    if not raw:
+        return ""
+    if len(raw) > MAX_REQUEST_ID_LENGTH or not REQUEST_ID_RE.match(raw):
+        raise ToolError(
+            "request_id 只能是 1-%d 位字母、数字或 ._:-" % MAX_REQUEST_ID_LENGTH,
+        )
+    return raw
+
+
 def _generate(args, key=""):
     payload = _build_payload(args)
     download = _bool_arg(args, "download", False)
     wait_seconds = _int_arg(args, "wait_seconds", DEFAULT_WAIT_SECONDS, 0, MAX_WAIT_SECONDS)
+    request_id = _request_id(args)
 
-    job = _new_job(payload)
+    # 幂等：相同 request_id 复用已有作业，重试不会重复生图、重复计费
+    if request_id:
+        with _JOBS_LOCK:
+            existing = _JOB_BY_REQUEST_ID.get(request_id)
+        if existing is not None:
+            snap = _job_snapshot(existing)
+            if snap["status"] == "running":
+                return {
+                    "status": "running",
+                    "job_id": snap["job_id"],
+                    "elapsed_ms": snap["elapsed_ms"],
+                    "reused": True,
+                    "hint": "相同 request_id 的作业仍在进行，请每 5 秒调用 get_image_job(job_id=\"%s\")"
+                            % snap["job_id"],
+                }
+            return _finish_result(snap)
+
+    job = _new_job(payload, request_id)
     thread = threading.Thread(target=_run_job, args=(job, payload, download, key), daemon=True)
     thread.start()
 
@@ -657,11 +826,26 @@ def _generate(args, key=""):
 
 def _finish_result(snap):
     if snap["status"] == "failed":
-        raise ToolError(snap["error"] or "生图失败（上游未提供原因）")
+        _raise_job_error(snap.get("error"))
 
     result = dict(snap["result"] or {})
     result["job_id"] = snap["job_id"]
     return result
+
+
+def _raise_job_error(err):
+    if isinstance(err, dict):
+        raise ToolError(
+            err.get("message") or "生图失败（上游未提供原因）",
+            code=err.get("code") or "internal_error",
+            retryable=bool(err.get("retryable")),
+            upstream_status=err.get("upstream_status") or 0,
+        )
+    raise ToolError(
+        str(err) if err else "生图失败（上游未提供原因）",
+        code="upstream_error",
+        retryable=True,
+    )
 
 
 def _job_status(args):
@@ -669,9 +853,13 @@ def _job_status(args):
     if not job_id:
         raise ToolError("缺少参数 job_id")
     with _JOBS_LOCK:
+        _prune_jobs_locked(time.time())
         job = _JOBS.get(job_id)
     if job is None:
-        raise ToolError("作业 %s 不存在或已过期（进程重启后作业会丢失）；请重新调用 generate_image" % job_id)
+        raise ToolError(
+            "作业 %s 不存在或已过期（进程重启后作业会丢失）；请重新调用 generate_image" % job_id,
+            code="job_not_found",
+        )
 
     snap = _job_snapshot(job)
     if snap["status"] == "succeeded":
@@ -681,7 +869,11 @@ def _job_status(args):
             "status": "failed",
             "job_id": job_id,
             "elapsed_ms": snap["elapsed_ms"],
-            "error": snap["error"] or "生图失败（上游未提供原因）",
+            "error": snap["error"] or {
+                "code": "upstream_error",
+                "message": "生图失败（上游未提供原因）",
+                "retryable": True,
+            },
         }
     return {
         "status": "running",
@@ -700,11 +892,11 @@ def call_tool(name, arguments, key=""):
         elif name == "get_image_job":
             payload = _job_status(arguments)
         else:
-            return _error_result("未知工具: %s" % name)
+            return _error_result("未知工具: %s" % name, code="unknown_tool")
     except ToolError as exc:
-        return _error_result(str(exc))
+        return _error_result(exc.message, exc.code, exc.retryable, exc.upstream_status)
     except Exception as exc:
-        return _error_result("内部错误: %s" % exc)
+        return _error_result("内部错误: %s" % exc, code="internal_error")
 
     return {
         "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
@@ -713,8 +905,18 @@ def call_tool(name, arguments, key=""):
     }
 
 
-def _error_result(message):
-    return {"content": [{"type": "text", "text": message}], "isError": True}
+def _error_result(message, code="internal_error", retryable=False, upstream_status=0):
+    error = {"code": code, "message": message, "retryable": bool(retryable)}
+    if upstream_status:
+        error["upstream_status"] = int(upstream_status)
+    text = "[%s] %s" % (code, message)
+    if retryable:
+        text += "（可以重试）"
+    return {
+        "content": [{"type": "text", "text": text}],
+        "structuredContent": {"status": "failed", "error": error},
+        "isError": True,
+    }
 
 
 def _caller_key(headers):
@@ -773,6 +975,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self._json(200, {"jsonrpc": "2.0", "id": None,
+                             "error": {"code": -32700, "message": "invalid Content-Length"}})
+            return
+        if length > MAX_REQUEST_BYTES:
+            # 不读取超大请求体，直接返回并断开连接，避免内存被撑爆
+            self._json(413, {"jsonrpc": "2.0", "id": None,
+                             "error": {"code": -32600,
+                                       "message": "request too large: %d bytes (limit %d)"
+                                                  % (length, MAX_REQUEST_BYTES)}})
+            self.close_connection = True
+            return
+        try:
             raw = self.rfile.read(length) if length > 0 else b"{}"
             msg = json.loads(raw.decode("utf-8", "replace"))
         except (ValueError, UnicodeDecodeError):

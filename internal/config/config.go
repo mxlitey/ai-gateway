@@ -22,6 +22,10 @@ type Config struct {
 	Dev           bool
 	NoBrowser     bool
 	AdminPassword string
+	// PublicBaseURL 对外访问地址（如 https://gw.example.com）。
+	// 为空时按请求的 Host / X-Forwarded-* 推导，适合反向代理场景；
+	// 容器或 NAT 后端的内部调用拿不到真实对外地址时，需要显式配置。
+	PublicBaseURL string
 }
 
 // DefaultPort 默认监听端口。
@@ -79,6 +83,7 @@ func Load(args []string) (*Config, error) {
 	fs.BoolVar(&c.Dev, "dev", false, "开发模式")
 	fs.BoolVar(&c.NoBrowser, "no-browser", false, "启动后不自动打开浏览器")
 	fs.StringVar(&c.AdminPassword, "admin-password", envOr("AIGW_ADMIN_PASSWORD", ""), "首次初始化管理员密码")
+	fs.StringVar(&c.PublicBaseURL, "public-url", envOr("AIGW_PUBLIC_BASE_URL", ""), "对外访问地址，如 https://gw.example.com（生图返回的链接用它拼接）")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -96,6 +101,9 @@ func Load(args []string) (*Config, error) {
 	}
 	if c.MCPDir, err = filepath.Abs(c.MCPDir); err != nil {
 		return nil, fmt.Errorf("解析本地 MCP 目录失败: %w", err)
+	}
+	if c.PublicBaseURL != "" {
+		c.PublicBaseURL = strings.TrimRight(strings.TrimSpace(c.PublicBaseURL), "/")
 	}
 	return c, nil
 }

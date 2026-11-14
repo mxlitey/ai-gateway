@@ -18,6 +18,7 @@ import (
 
 	"github.com/czg95/ai-gateway-v2/internal/channel"
 	"github.com/czg95/ai-gateway-v2/internal/id"
+	"github.com/czg95/ai-gateway-v2/internal/imagestore"
 	"github.com/czg95/ai-gateway-v2/internal/model"
 	"github.com/czg95/ai-gateway-v2/internal/penalty"
 	"github.com/czg95/ai-gateway-v2/internal/pricing"
@@ -33,6 +34,10 @@ type Handler struct {
 	balancer    *routing.Balancer
 	pricer      *pricing.Resolver
 	cooler      *penalty.Cooler
+	// images 生图结果落盘；nil 表示保留上游原始结果。
+	images *imagestore.Store
+	// publicBase 对外访问地址；为空时按请求推导。
+	publicBase string
 }
 
 // newTransport 构造出站 Transport。headerTimeout 为 0 时不限制等待响应头的时间。
@@ -94,6 +99,58 @@ func (h *Handler) coolerConfig() penalty.Config {
 
 // Cooler 暴露密钥冷却器，供管理接口查询与手动重置。
 func (h *Handler) Cooler() *penalty.Cooler { return h.cooler }
+
+// SetImageStore 注入图片存储（生图结果落盘）。传 nil 表示不落盘。
+func (h *Handler) SetImageStore(s *imagestore.Store) { h.images = s }
+
+// SetPublicBaseURL 设置对外访问地址（如 https://gw.example.com）。
+// 为空时按请求的 Host / X-Forwarded-* 推导。
+func (h *Handler) SetPublicBaseURL(base string) {
+	h.publicBase = strings.TrimRight(strings.TrimSpace(base), "/")
+}
+
+// imagePersist 按当前请求构造落盘配置：优先用显式配置的对外地址，否则取请求 Host。
+func (h *Handler) imagePersist(r *http.Request) ImagePersist {
+	if h.images == nil {
+		return ImagePersist{}
+	}
+	base := h.publicBase
+	if base == "" {
+		base = publicBaseURL(r)
+	}
+	return ImagePersist{Store: h.images, BaseURL: base}
+}
+
+// publicBaseURL 推导客户端访问网关所用的地址。
+func publicBaseURL(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	scheme := firstHeaderValue(r.Header.Get("X-Forwarded-Proto"))
+	if scheme != "http" && scheme != "https" {
+		if r.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	host := firstHeaderValue(r.Header.Get("X-Forwarded-Host"))
+	if host == "" {
+		host = r.Host
+	}
+	if host == "" {
+		return ""
+	}
+	return scheme + "://" + host
+}
+
+func firstHeaderValue(v string) string {
+	v = strings.TrimSpace(v)
+	if i := strings.IndexByte(v, ','); i >= 0 {
+		v = strings.TrimSpace(v[:i])
+	}
+	return v
+}
 
 // Handle 处理 /v1/* 请求。
 func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
@@ -362,7 +419,7 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 	var lastErr string
 	for _, t := range targets {
 		rec.Attempt()
-		res := GenerateImage(r.Context(), h.imageClient, t.Channel, t.Key, body, modelName, r)
+		res := GenerateImage(r.Context(), h.imageClient, t.Channel, t.Key, body, modelName, r, h.imagePersist(r))
 		if res.StatusCode >= 200 && res.StatusCode < 300 {
 			h.cooler.Success(t.Channel.ID, t.Key)
 			rec.Served(t)

@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/czg95/ai-gateway-v2/internal/imagestore"
 	"github.com/czg95/ai-gateway-v2/internal/model"
 )
 
@@ -61,7 +64,7 @@ func TestGenerateImageAsyncModelScope(t *testing.T) {
 		"model":  "Qwen/Qwen-Image-2.1-Turbo",
 		"prompt": "a cat",
 		"n":      1,
-	}, "Qwen/Qwen-Image-2.1-Turbo", nil)
+	}, "Qwen/Qwen-Image-2.1-Turbo", nil, ImagePersist{})
 
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
@@ -119,7 +122,7 @@ func TestGenerateImageAsyncB64(t *testing.T) {
 		"model":           "img",
 		"prompt":          "x",
 		"response_format": "b64_json",
-	}, "img", nil)
+	}, "img", nil, ImagePersist{})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
 	}
@@ -161,7 +164,7 @@ func TestGenerateImageSyncOpenAIPassthrough(t *testing.T) {
 	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
 		"model":  "pub-img",
 		"prompt": "x",
-	}, "pub-img", nil)
+	}, "pub-img", nil, ImagePersist{})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
 	}
@@ -191,7 +194,7 @@ func TestGenerateImageTaskFailed(t *testing.T) {
 			TimeoutMS:      5000,
 		},
 	}
-	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{"model": "img", "prompt": "x"}, "img", nil)
+	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{"model": "img", "prompt": "x"}, "img", nil, ImagePersist{})
 	if res.StatusCode == http.StatusOK {
 		t.Fatalf("expected failure, got body %s", res.Body)
 	}
@@ -225,7 +228,7 @@ func TestGenerateImageSyncTimeout(t *testing.T) {
 	}
 	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
 		"model": "img", "prompt": "x",
-	}, "img", nil)
+	}, "img", nil, ImagePersist{})
 	if res.StatusCode != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, body = %s", res.StatusCode, res.Body)
 	}
@@ -267,7 +270,7 @@ func TestGenerateImageEditMapping(t *testing.T) {
 		"size":            "1024x1024",
 		"image_url":       []any{"https://a/1.png"},
 		"negative_prompt": "blur",
-	}, "img", nil)
+	}, "img", nil, ImagePersist{})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
 	}
@@ -318,7 +321,7 @@ func TestGenerateImageNestedImagesPath(t *testing.T) {
 	}
 	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
 		"model": "img", "prompt": "x",
-	}, "img", nil)
+	}, "img", nil, ImagePersist{})
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
 	}
@@ -330,5 +333,128 @@ func TestGenerateImageNestedImagesPath(t *testing.T) {
 	}
 	if len(out.Data) != 2 || out.Data[1]["url"] != "https://x/b.png" {
 		t.Fatalf("unexpected data: %s", res.Body)
+	}
+}
+
+// TestImagePersistPrefersPublicBase 验证显式配置的对外地址优先于请求 Host。
+func TestImagePersistPrefersPublicBase(t *testing.T) {
+	images, err := imagestore.Open(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := &Handler{images: images}
+	h.SetPublicBaseURL("https://gw.example.com/")
+
+	p := h.imagePersist(httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8787/v1/images/generations", nil))
+	if p.BaseURL != "https://gw.example.com" {
+		t.Fatalf("BaseURL = %q", p.BaseURL)
+	}
+	if got := p.url("abc.png"); got != "https://gw.example.com/v1/images/files/abc.png" {
+		t.Fatalf("url = %q", got)
+	}
+}
+
+// TestGenerateImagePersistsURL 验证上游图片会落盘，并替换为网关自己的地址。
+func TestGenerateImagePersistsURL(t *testing.T) {
+	const imageContent = "\x89PNG\r\n\x1a\n-gateway-image"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/images/generations":
+			_, _ = w.Write([]byte(`{"data":[{"url":"` + srvURL(r) + `/img.png"}]}`))
+		case "/img.png":
+			_, _ = w.Write([]byte(imageContent))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	images, err := imagestore.Open(dir, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch := &model.Channel{
+		Name:        "sync",
+		BaseURL:     srv.URL,
+		ImageModels: []string{"img"},
+		ImageGen:    model.ImageGenConfig{Mode: model.ImageGenSync},
+	}
+	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
+		"model": "img", "prompt": "x",
+	}, "img", nil, ImagePersist{Store: images, BaseURL: "http://gateway.local"})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
+	}
+
+	var out struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(res.Body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Data) != 1 {
+		t.Fatalf("unexpected data: %s", res.Body)
+	}
+	url, _ := out.Data[0]["url"].(string)
+	if !strings.HasPrefix(url, "http://gateway.local"+imagestore.URLPrefix) {
+		t.Fatalf("url 未替换为网关地址: %q", url)
+	}
+	if _, ok := out.Data[0]["b64_json"]; ok {
+		t.Fatalf("未请求 b64_json 时不应返回: %s", res.Body)
+	}
+
+	name := strings.TrimPrefix(url, "http://gateway.local"+imagestore.URLPrefix)
+	stored, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(stored) != imageContent {
+		t.Fatalf("落盘内容不一致: %q", stored)
+	}
+}
+
+// TestGenerateImagePersistKeepsBase64 验证显式要求 b64_json 时同时返回 b64 与网关地址。
+func TestGenerateImagePersistKeepsBase64(t *testing.T) {
+	const imageContent = "raw-image-bytes"
+	b64 := base64.StdEncoding.EncodeToString([]byte(imageContent))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[{"b64_json":"data:image/png;base64,` + b64 + `"}]}`))
+	}))
+	defer srv.Close()
+
+	images, err := imagestore.Open(t.TempDir(), time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := &model.Channel{
+		Name:        "sync",
+		BaseURL:     srv.URL,
+		ImageModels: []string{"img"},
+		ImageGen:    model.ImageGenConfig{Mode: model.ImageGenSync},
+	}
+	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
+		"model": "img", "prompt": "x", "response_format": "b64_json",
+	}, "img", nil, ImagePersist{Store: images, BaseURL: "http://gateway.local/"})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
+	}
+
+	var out struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(res.Body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Data) != 1 {
+		t.Fatalf("unexpected data: %s", res.Body)
+	}
+	if out.Data[0]["b64_json"] != b64 {
+		t.Fatalf("b64_json = %v", out.Data[0]["b64_json"])
+	}
+	url, _ := out.Data[0]["url"].(string)
+	if !strings.HasPrefix(url, "http://gateway.local"+imagestore.URLPrefix) {
+		t.Fatalf("缺少网关地址: %q", url)
 	}
 }

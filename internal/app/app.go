@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/czg95/ai-gateway-v2/internal/adminmcp"
 	"github.com/czg95/ai-gateway-v2/internal/config"
 	"github.com/czg95/ai-gateway-v2/internal/httpapi"
+	"github.com/czg95/ai-gateway-v2/internal/imagestore"
 	"github.com/czg95/ai-gateway-v2/internal/mcp"
 	"github.com/czg95/ai-gateway-v2/internal/plugin"
 	"github.com/czg95/ai-gateway-v2/internal/pricing"
@@ -147,6 +149,16 @@ func (a *App) Start() error {
 
 	api := admin.NewAPI(st, host, pricer, a.cfg)
 	proxyHandler := proxy.New(st, pricer)
+
+	// 生图结果统一落盘，对外返回网关自己的地址；失败时退回上游原始结果。
+	images, err := imagestore.Open(filepath.Join(a.cfg.DataDir, "images"), imagestore.DefaultRetention)
+	if err != nil {
+		slog.Error("初始化生图结果目录失败，生图将返回上游原始地址", "err", err)
+		images = nil
+	}
+	proxyHandler.SetImageStore(images)
+	proxyHandler.SetPublicBaseURL(a.cfg.PublicBaseURL)
+
 	// 管理端可查询/重置上游密钥冷却状态
 	api.SetCooler(proxyHandler.Cooler())
 
@@ -188,10 +200,15 @@ func (a *App) Start() error {
 		Admin:    api,
 		MCP:      mcpHandler,
 		AdminMCP: adminMCPHandler,
+		Images:   images,
 	})
 	srv := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 15 * time.Second}
 
 	ctx, cancel := context.WithCancel(context.Background())
+
+	if images != nil {
+		go images.CleanupLoop(ctx)
+	}
 
 	a.mu.Lock()
 	a.store, a.host, a.mcpSvc, a.srv, a.cancel, a.running = st, host, mcpSvc, srv, cancel, true

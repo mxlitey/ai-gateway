@@ -1264,7 +1264,7 @@ func (a *API) probeImageUpstream(ch *model.Channel, key, upstreamModel, publicMo
 		client.Transport = a.client.Transport
 	}
 	start := time.Now()
-	out := proxy.GenerateImage(context.Background(), client, ch, key, payload, publicModel, nil)
+	out := proxy.GenerateImage(context.Background(), client, ch, key, payload, publicModel, nil, proxy.ImagePersist{})
 	res.DurationMS = time.Since(start).Milliseconds()
 	if out.StatusCode >= 200 && out.StatusCode < 300 {
 		res.Status = http.StatusOK

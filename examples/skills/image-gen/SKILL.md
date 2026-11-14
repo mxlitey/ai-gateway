@@ -65,9 +65,10 @@ curl -H "Authorization: Bearer sk-你的密钥" "<网关地址>/v1/models?type=i
 | `seed` | 复现同一张图时固定 |
 | `loras` | 原样透传的 LoRA 配置对象 |
 | `extra` | 其它上游参数，原样透传 |
-| `response_format` | 默认 `url`；`b64_json` 体积很大，一般不用 |
-| `download` | `true` 时把图存到本地并返回路径 |
+| `response_format` | 默认 `url`；`b64_json` 体积很大，一般不用（网关会同时给出网关地址） |
+| `download` | `true` 时把图下载到 MCP 服务所在机器并返回本地路径 |
 | `wait_seconds` | 本次最多阻塞秒数，默认 20 |
+| `request_id` | 幂等键（可选）。超时重试时带上同一个值，不会重复生图、重复计费 |
 
 ## 参考图
 
@@ -112,6 +113,15 @@ curl -H "Authorization: Bearer sk-你的密钥" "<网关地址>/v1/models?type=i
 
 ## 失败处理
 
+失败时工具返回 `isError=true`，`structuredContent.error` 里有机器可读信息：
+
+| 字段 | 含义 |
+| --- | --- |
+| `code` | 错误分类：`auth_missing` / `auth_failed` / `forbidden` / `invalid_request` / `rate_limited` / `upstream_timeout` / `timeout` / `server_busy` / `job_not_found` 等 |
+| `message` | 可读文案，含上游原文 |
+| `retryable` | 同样的请求重试是否可能成功；false 时先改参数，不要盲目重试 |
+| `upstream_status` | 上游/网关 HTTP 状态码（有值时才出现） |
+
 | 返回 | 处理 |
 | --- | --- |
 | `没有可用的 API 密钥` | 让用户在「MCP 服务器 → 生图 → 编辑 → 密钥」填 `sk-` 密钥 |
@@ -119,7 +129,7 @@ curl -H "Authorization: Bearer sk-你的密钥" "<网关地址>/v1/models?type=i
 | `网关拒绝（403）` | 密钥没有该 MCP 服务器权限，或没有渠道权限 |
 | `没有被标记为生图模型` | 到「渠道」把该模型加进「生图模型」并选同步/异步 |
 | `生图上游拒绝（HTTP 4xx）` | 多为参数或参考图问题，把上游原文转述给用户 |
-| `轮询超时` | 上游排队过久，建议稍后重试或换模型 |
+| `轮询超时` / `upstream_timeout` | 上游排队过久，建议稍后重试或换模型 |
 | `作业 xxx 不存在或已过期` | 本地服务重启会丢作业，重新 `generate_image` |
 | `无法连接网关` | 网关没启动或端口不对 |
 
@@ -128,9 +138,10 @@ curl -H "Authorization: Bearer sk-你的密钥" "<网关地址>/v1/models?type=i
 
 ## 交付
 
+- 默认返回 `url`，这是**网关自己的地址**（`/v1/images/files/<随机名>`），不是上游临时链接：
+  知道链接即可访问，网关保留 7 天。远端部署也能直接把链接给用户。
 - `download=true` 且返回了 `path`：用可点击的文件链接给出本地图片路径。注意 `path` 是**MCP 服务所在
-  机器**的路径；MCP 跑在远端时本地打不开，改成给出 `url`。
-- 只有 `url`：把链接给用户；链接是上游临时地址，可能过期，要长期保存就下载到本地。
+  机器**的路径；MCP 跑在远端时本地打不开，改用 `url`。
 - 一次生成多张就全部返回，不要只挑一张。
 - 不要把生成结果再交给别的工具"检查一遍"，也不要自己重画；用户要求修图时走
   `generate_image` 的参考图编辑路径，而不是用代码拼接。

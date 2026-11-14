@@ -164,6 +164,7 @@ Header : Authorization: Bearer sk-你的密钥
 | `-plugins-dir` | `AIGW_PLUGINS_DIR` | `./plugins` | 插件目录 |
 | `-log-level` | `AIGW_LOG_LEVEL` | `info` | 日志级别 `debug\|info\|warn\|error` |
 | `-admin-password` | `AIGW_ADMIN_PASSWORD` | 空 | 首次初始化管理员密码（已初始化则忽略） |
+| `-public-url` | `AIGW_PUBLIC_BASE_URL` | 空 | 对外访问地址（如 `https://gw.example.com`）；生图返回的图片链接用它拼接，容器/反代后建议显式配置 |
 | `-dev` | — | `false` | 开发模式（不自动拉起插件） |
 | `-no-browser` | — | `false` | 启动后不自动打开浏览器（`cmd/gateway` 默认即不打开） |
 

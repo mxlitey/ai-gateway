@@ -9,6 +9,7 @@ import (
 
 	"github.com/czg95/ai-gateway-v2/internal/admin"
 	"github.com/czg95/ai-gateway-v2/internal/adminmcp"
+	"github.com/czg95/ai-gateway-v2/internal/imagestore"
 	"github.com/czg95/ai-gateway-v2/internal/mcp"
 	"github.com/czg95/ai-gateway-v2/internal/proxy"
 	"github.com/czg95/ai-gateway-v2/web"
@@ -23,6 +24,8 @@ type Deps struct {
 	// AdminMCP 管理 MCP 入口（/admin/mcp）；为空表示未启用。
 	// 与 MCP 完全独立：工具由本进程实现，鉴权走管理令牌。
 	AdminMCP *adminmcp.Handler
+	// Images 生图结果存储；为空表示不提供图片访问路由。
+	Images *imagestore.Store
 }
 
 // NewRouter 组装完整路由。
@@ -33,6 +36,13 @@ func NewRouter(d Deps) http.Handler {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("AI Gateway is running."))
 	})
+
+	// 生图结果访问入口：文件名本身即凭证（高熵随机），无需密钥；
+	// 必须注册在 /v1/ 之前语义上更具体，ServeMux 会优先匹配。
+	if d.Images != nil {
+		mux.HandleFunc("GET "+imagestore.URLPrefix, d.Images.ServeHTTP)
+		mux.HandleFunc("HEAD "+imagestore.URLPrefix, d.Images.ServeHTTP)
+	}
 
 	// /v1/* 代理
 	mux.HandleFunc("/v1/", d.Proxy.Handle)

@@ -164,7 +164,12 @@ Header : Authorization: Bearer sk-你的密钥
 | `-plugins-dir` | `AIGW_PLUGINS_DIR` | `./plugins` | 插件目录 |
 | `-log-level` | `AIGW_LOG_LEVEL` | `info` | 日志级别 `debug\|info\|warn\|error` |
 | `-admin-password` | `AIGW_ADMIN_PASSWORD` | 空 | 首次初始化管理员密码（已初始化则忽略） |
-| `-public-url` | `AIGW_PUBLIC_BASE_URL` | 空 | 对外访问地址（如 `https://gw.example.com`）；生图返回的图片链接用它拼接，容器/反代后建议显式配置 |
+| `-public-url` | `AIGW_PUBLIC_BASE_URL` | 空 | 对外访问地址（如 `https://gw.example.com`）；生图与图床返回的图片链接用它拼接，容器/反代后建议显式配置 |
+| `-image-host` | `AIGW_IMAGE_HOST` | `true` | 开启内置图床（图片上传接口） |
+| `-image-host-public` | `AIGW_IMAGE_HOST_PUBLIC` | `auto` | 图床公网可达性声明 `auto\|on\|off`；`auto` 按 `AIGW_PUBLIC_BASE_URL` 字面量判断，`on` 必须同时配置对外地址 |
+| `-image-max-mb` | `AIGW_IMAGE_HOST_MAX_MB` | `100` | 图床上传单张大小上限（MB） |
+| `-image-ttl` | `AIGW_IMAGE_TTL_SECONDS` | `3600` | 生图结果保留秒数 |
+| `-upload-ttl` | `AIGW_UPLOAD_TTL_SECONDS` | `3600` | 上传图片保留秒数 |
 | `-dev` | — | `false` | 开发模式（不自动拉起插件） |
 | `-no-browser` | — | `false` | 启动后不自动打开浏览器（`cmd/gateway` 默认即不打开） |
 
@@ -215,7 +220,22 @@ mcp/
     └── requirements.txt  # 可选：有实际依赖时自动 pip 安装
 ```
 
-安装包与镜像都内置了 `mcp/github-search`（GitHub 仓库 / 代码 / issue / PR / 提交 / 用户搜索）与 `mcp/image-generation`（生图，别名 `image-gen`）。前者纯标准库、匿名即可用，在它的 `mcp.json` 的 `env` 里填 `GITHUB_TOKEN` 可提升额度并解锁代码搜索；后者调用网关的 `/v1/images/generations`，密钥在面板「MCP 服务器 → 生图 → 密钥」里配。想加自己的服务，参考仓库里的 `examples/mcp/local-demo`（最小实现），把目录整个复制到 `mcp/` 下即可。完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里把该密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
+安装包与镜像都内置了 `mcp/github-search`（GitHub 仓库 / 代码 / issue / PR / 提交 / 用户搜索）与 `mcp/image-generation`（生图，别名 `image-gen`）。前者纯标准库、匿名即可用，在它的 `mcp.json` 的 `env` 里填 `GITHUB_TOKEN` 可提升额度并解锁代码搜索；后者调用网关的 `/v1/images/generations`，密钥在面板「MCP 服务器 → 生图 → 密钥」里配。生图 MCP 的参考图接受公网 `image_url` 与本机 `image_path`；内网 `image_url` 由 MCP 自己下载后转 base64，超过单张 3 MB 时在图床公网可达的前提下上传换链接，不经过客户端上下文。想加自己的服务，参考仓库里的 `examples/mcp/local-demo`（最小实现），把目录整个复制到 `mcp/` 下即可。完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里把该密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
+
+### 内置图床
+
+网关默认开启图片托管能力（`AIGW_IMAGE_HOST=on`），用于把图片变成网关自己的 URL：
+
+- `POST /v1/images/uploads`：原始图片字节（`Content-Type: image/png|jpeg|webp|gif`），需要 API Key；返回 `{id, url, bytes, content_type, expires_at}`。
+- `GET /v1/images/host`：图床能力声明，需要 API Key；返回 `{enabled, public, public_base, url_prefix, max_mb, ttl_seconds}`。
+- `GET /v1/uploads/<id>`：公开只读，知道链接即可访问，支持 HEAD 与 Range。
+- `DELETE /v1/uploads/<id>`、`DELETE /v1/images/files/<id>`：需要 API Key，成功返回 204。
+- 单张上限默认 100 MB（`AIGW_IMAGE_HOST_MAX_MB`），按文件头判断类型，不接受 SVG；保留期默认 3600 秒（`AIGW_UPLOAD_TTL_SECONDS`）。
+- 链接用 `AIGW_PUBLIC_BASE_URL` 拼接。
+
+图床是否公网可达无法自动探测，只能由 `AIGW_IMAGE_HOST_PUBLIC` 声明：`auto`（默认）按 `AIGW_PUBLIC_BASE_URL` 的字面量判断，`on` 表示上游能访问，`off` 表示不能。声明为非公网时，网关会把请求里指向自己 `/v1/uploads/` 的参考图链接读成本地文件并转成 base64 再转发；单张超过 3 MB 或合计超过 7 M 字符时返回 `reference_exceeds_base64_limit`。网关不会抓取任意外部 URL。
+
+图床解决的是「把图变成 URL」；上游是否接受该图片（尺寸、体积、格式）仍由模型厂商决定。
 
 ## 🛠️ 从源码构建
 

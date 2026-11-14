@@ -26,6 +26,10 @@ type Deps struct {
 	AdminMCP *adminmcp.Handler
 	// Images 生图结果存储；为空表示不提供图片访问路由。
 	Images *imagestore.Store
+	// Uploads 图床上传存储；为空表示未开启图床。
+	Uploads *imagestore.Store
+	// ImageHost 图床上传与删除接口；为空表示未开启。
+	ImageHost *ImageHost
 }
 
 // NewRouter 组装完整路由。
@@ -42,6 +46,20 @@ func NewRouter(d Deps) http.Handler {
 	if d.Images != nil {
 		mux.HandleFunc("GET "+imagestore.URLPrefix, d.Images.ServeHTTP)
 		mux.HandleFunc("HEAD "+imagestore.URLPrefix, d.Images.ServeHTTP)
+	}
+	if d.Uploads != nil {
+		mux.HandleFunc("GET "+imagestore.UploadURLPrefix, d.Uploads.ServeHTTP)
+		mux.HandleFunc("HEAD "+imagestore.UploadURLPrefix, d.Uploads.ServeHTTP)
+	}
+	if d.ImageHost != nil {
+		mux.HandleFunc("GET /v1/images/host", d.ImageHost.Capabilities)
+		mux.HandleFunc("POST /v1/images/uploads", d.ImageHost.Upload)
+		if d.Images != nil {
+			mux.HandleFunc("DELETE "+imagestore.URLPrefix, d.ImageHost.Delete)
+		}
+		if d.Uploads != nil {
+			mux.HandleFunc("DELETE "+imagestore.UploadURLPrefix, d.ImageHost.Delete)
+		}
 	}
 
 	// /v1/* 代理

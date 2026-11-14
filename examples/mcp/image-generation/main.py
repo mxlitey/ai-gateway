@@ -22,21 +22,31 @@
   AIGW_IMAGE_TIMEOUT_SECONDS 单次生图整体超时，默认 600（应大于渠道轮询超时）
   AIGW_IMAGE_SAVE_DIR        图片保存目录，默认 $AIGW_MCP_DATA/images
   AIGW_IMAGE_MAX_CONCURRENCY 同时进行的生图任务上限，默认 4
+  AIGW_IMAGE_FETCH_CA        下载内网 https 图片时使用的 CA 文件（自签证书场景）
+  AIGW_IMAGE_FETCH_INSECURE  =1 时跳过内网图片的 TLS 校验（默认关闭，不推荐）
 
 返回约定：
-  - 图片统一返回网关地址（网关已把上游结果落盘，地址 7 天内有效）；
+  - 图片统一返回网关地址（网关已把上游结果落盘，链接有效期由网关配置决定，默认约 1 小时）；
   - 失败时 isError=true，structuredContent.error 含 code / message / retryable / upstream_status；
   - generate_image 支持 request_id 幂等键：相同 request_id 重复调用复用同一作业。
 
 提供的工具：
-  generate_image  生成图片（支持参考图 image_url、尺寸、数量等）
-  get_image_job   查询生图作业状态与结果
+  generate_image     生成图片（支持参考图 image_url、尺寸、数量等）
+  get_image_job      查询生图作业状态与结果
+  list_image_models  列出可用生图模型（等价于网关 /v1/models?type=image）
+
+自描述：initialize 会返回 instructions，说明模型查询、作业轮询、交付方式，
+以及网关内置图床的 HTTP 直传能力（不经过 MCP，不受 8 MB 请求体限制），
+客户端不依赖外部技能文档也能完成第一次调用。
 """
 
 import base64
+import ipaddress
 import json
 import os
 import re
+import socket
+import ssl
 import threading
 import time
 import uuid
@@ -58,16 +68,37 @@ MAX_DOWNLOAD_BYTES = 32 << 20
 DOWNLOAD_TIMEOUT = 60
 MAX_REQUEST_ID_LENGTH = 128
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]+$")
-# 参考图上限：网关 MCP 入口整体请求体上限 8 MB（internal/mcp/handler.go 的 maxRequestBody），
-# base64 会膨胀约 1/3 且不再额外转义，故 base64 字符数上限取 7 M（解码后约 5.5 MB），
-# 留约 0.6 MB 给提示词与 JSON 结构。单张解码后 3 MB 是上游更常见的容忍上限。
-MAX_REFERENCE_BYTES = 3 << 20
-MAX_REFERENCE_TOTAL_CHARS = 7 << 20
-B64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
+# 参考图预算：默认单张 3 MB、所有参考图 base64 合计 7 M 字符。
+# 这是上游服务商接收 base64 的上限，与 MCP 入口的 8 MB 请求体限制无关
+# （入口那份限制只约束客户端传来的短字符串入参）。
+def _env_int(name, default):
+    try:
+        return int((os.environ.get(name) or "").strip() or default)
+    except ValueError:
+        return default
+
+
+def _env_flag(name):
+    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+MAX_REFERENCE_MB = max(1, _env_int("AIGW_IMAGE_REF_MAX_MB", 3))
+MAX_REFERENCE_BYTES = MAX_REFERENCE_MB << 20
+MAX_REFERENCE_TOTAL_MB = max(MAX_REFERENCE_MB, _env_int("AIGW_IMAGE_REF_TOTAL_MB", 7))
+MAX_REFERENCE_TOTAL_CHARS = MAX_REFERENCE_TOTAL_MB << 20
+LINK_TTL_HINT = "链接有时效（默认约 1 小时，以网关配置为准）"
+# 参考图下载（内网 http/https）的边界：只转发，不落盘持久保存
+IMAGE_FETCH_MAX_BYTES = 32 << 20
+IMAGE_FETCH_TIMEOUT = 30
+IMAGE_FETCH_REDIRECTS = 3
+# 链路本地 / 组播 / 保留地址禁止访问（云元数据服务在 169.254.0.0/16）
+_BLOCKED_NETS = [
+    ipaddress.ip_network(n)
+    for n in ("169.254.0.0/16", "224.0.0.0/4", "0.0.0.0/8", "ff00::/8", "fe80::/10", "::/128")
+]
 REFERENCE_HINT = (
-    "参考图格式无法识别。可用的三种形式：公网 http(s) 图片地址、"
-    "data:image/...;base64,... 或纯 base64；如果图片已经是本机文件，直接传 image_path 文件路径即可。"
-    "对话里粘贴的图片不会自动进入 MCP 工具参数，需要传文件路径或链接。"
+    "参考图只接受公网 http(s) 图片地址；本机文件请用 image_path 传路径。"
+    "对话里粘贴的图片不会自动进入 MCP 工具参数。"
 )
 
 IMAGE_TOOLS = [
@@ -75,24 +106,33 @@ IMAGE_TOOLS = [
         "name": "generate_image",
         "description": (
             "调用网关的 /v1/images/generations 生成图片，支持文生图与参考图编辑（image_url）。"
+            "模型名不确定时先调用 list_image_models 查询，再显式传 model。"
             "单次生图通常需要 1-3 分钟：本工具最多阻塞 wait_seconds 秒（默认 20）；"
             "若返回 status=running，请每 5 秒调用 get_image_job(job_id) 直到 succeeded 或 failed。"
-            "参考图需是公网 URL、data URI、纯 base64，或本机文件路径（image_path）；"
-            "对话里粘贴的图片不会自动变成工具参数。"
+            "成功结果的 url 是网关自身地址（/v1/images/files/...），"
+            + LINK_TTL_HINT + "，可直接下载或给用户；重要结果建议 download=true 落本地。"
+            "参考图用公网 http(s) URL（image_url）或本机文件路径（image_path）；"
+            "内网 URL 由本服务下载后转发。对话里粘贴的图片不会自动变成工具参数。"
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "prompt": {"type": "string", "description": "提示词"},
-                "model": {"type": "string", "description": "生图模型名；留空使用环境变量 AIGW_IMAGE_MODEL"},
+                "model": {
+                    "type": "string",
+                    "description": (
+                        "生图模型名；不确定有哪些可用模型时先调用 list_image_models。"
+                        "留空时使用环境变量 AIGW_IMAGE_MODEL；该变量未配置且未传本字段会直接报错。"
+                    ),
+                },
                 "image_url": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "参考图数组，支持公网 http(s) URL、data:image/...;base64,... 或纯 base64；"
-                        "传单个字符串也可以。建议单张 ≤2 MB、最多 4 张，"
-                        "所有参考图 base64 合计不超过 7 M 字符（解码后约 5.5 MB）。"
-                        "对话里粘贴的图片不会被 MCP 工具自动读取，需要链接、base64 或改用 image_path。"
+                        "参考图数组，只接受公网 http(s) 地址；传单个字符串也可以。"
+                        "内网地址由本服务下载后转成 base64，或在上传图床后传链接，不经过客户端上下文。"
+                        "建议最多 4 张。"
+                        "对话里粘贴的图片不会被 MCP 工具自动读取，需要链接或改用 image_path。"
                     ),
                 },
                 "image_path": {
@@ -100,10 +140,11 @@ IMAGE_TOOLS = [
                     "items": {"type": "string"},
                     "description": (
                         "参考图的本机文件路径数组（传单个字符串也可以）。"
-                        "服务会读取文件转成 data URI 再发给网关，适合对话附件已落盘成本地文件的场景。"
+                        "服务会读取文件转成 base64 再发给网关，适合对话附件已落盘成本地文件的场景。"
                         "仅当本服务与文件在同一台机器上时可用；服务部署在远端时路径读不到，"
-                        "请改用 image_url 传公网链接或 base64。"
-                        "支持 PNG/JPEG/WebP/GIF，单张 ≤3 MB；相对路径按本服务目录解析。"
+                        "请改用 image_url 传内网或公网链接。"
+                        "支持 PNG/JPEG/WebP/GIF；"
+                        f"超过 {MAX_REFERENCE_MB} MB 时，若网关图床公网可达会自动上传换链接，否则报错。"
                     ),
                 },
                 "size": {"type": "string", "description": "图片尺寸，例如 1024x1024、1328x1328"},
@@ -139,7 +180,46 @@ IMAGE_TOOLS = [
             "required": ["job_id"],
         },
     },
+    {
+        "name": "list_image_models",
+        "description": (
+            "列出当前密钥可用的生图模型（来自网关 /v1/models?type=image）。"
+            "首次调用 generate_image 前用它确定 model 取值；返回 default_model 表示服务端已配置默认模型。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
 ]
+
+# initialize 返回的说明书：客户端不依赖外部技能包也能完成第一次调用。
+INSTRUCTIONS = (
+    "本服务把生图请求转发到 AI Gateway。推荐流程："
+    "1) 不确定模型时先调用 list_image_models，拿到 models 列表与 default_model；"
+    "2) 调用 generate_image，至少传 prompt；没有 default_model 时必须显式传 model；"
+    "3) 返回 status=running 时每 5 秒调用 get_image_job(job_id) 直到 succeeded/failed；"
+    "4) 成功结果的 images[].url 是网关自身地址，" + LINK_TTL_HINT + "，可直接下载或交给用户；"
+    "需要长期保存时用 download=true 落本地；"
+    "5) 失败时 isError=true，structuredContent.error 含 code/message/retryable/upstream_status；"
+    "6) 超时重试请带上同一个 request_id，服务端会复用已有作业，不会重复生图。"
+)
+
+
+def _instructions():
+    """在基础说明书后追加网关图床能力（HTTP 直连，不经过 MCP 工具）。"""
+    base = _base_url()
+    return (
+        INSTRUCTIONS
+        + "\n\n网关内置图床（默认开启；直接 HTTP 调用，不经过本服务，因此不受 8 MB 请求体限制）："
+        + "上传 POST " + base + "/v1/images/uploads，"
+        + "Authorization: Bearer <与调用本服务相同的 sk- 密钥>，"
+        + "Content-Type 为 image/png|jpeg|webp|gif，请求体是图片原始字节（不是 multipart/form-data），"
+        + "单张默认上限 100 MB；返回 {id,url,bytes,content_type,expires_at}，"
+        + LINK_TTL_HINT + "；"
+        + "能力查询 GET " + base + "/v1/images/host（enabled/public 等，public=false 表示上游取不到该地址）；"
+        + "删除 DELETE " + base + "/v1/uploads/<id>。"
+        + "上面的地址取自本服务配置，若你在远端且它指向回环/内网地址，请换用你连接 MCP 时使用的网关地址。"
+        + "适合把本机图片交给其它工具、或需要自己控制参考图链接的场景；"
+        + "只是给 generate_image 传参考图时，优先用 image_path / image_url，由本服务处理。"
+    )
 
 
 class ToolError(Exception):
@@ -148,19 +228,24 @@ class ToolError(Exception):
     code      稳定的错误分类，客户端可据此决定重试/换参/放弃
     retryable 同样的请求重试是否可能成功
     upstream_status 上游 HTTP 状态码（0 表示未拿到响应）
+    hint      给模型的补充建议（可选）
     """
 
-    def __init__(self, message, code="invalid_request", retryable=False, upstream_status=0):
+    def __init__(self, message, code="invalid_request", retryable=False,
+                 upstream_status=0, hint=""):
         super().__init__(message)
         self.message = message
         self.code = code
         self.retryable = bool(retryable)
         self.upstream_status = int(upstream_status or 0)
+        self.hint = hint
 
     def payload(self):
         out = {"code": self.code, "message": self.message, "retryable": self.retryable}
         if self.upstream_status:
             out["upstream_status"] = self.upstream_status
+        if self.hint:
+            out["hint"] = self.hint
         return out
 
 
@@ -200,7 +285,7 @@ def _save_dir():
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".images")
 
 
-# 访问本机网关不走系统代理；下载上游图片则沿用默认 opener（可能要走代理）
+# 访问本机网关不走系统代理；下载参考图同样直连（内网地址走代理只会失败）
 _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -611,120 +696,271 @@ def _mime_from_bytes(raw):
     }.get(ext, "")
 
 
-def _check_reference_size(raw, index):
-    if len(raw) > MAX_REFERENCE_BYTES:
-        raise ToolError(
-            "第 %d 张参考图解码后 %d MB，超过单张上限 %d MB；请压缩图片或改用公网 URL"
-            % (index, len(raw) >> 20, MAX_REFERENCE_BYTES >> 20)
-        )
+_IMAGE_HOST_CACHE = {"at": 0.0, "value": None}
+_IMAGE_HOST_LOCK = threading.Lock()
+_FETCH_OPENER = None
+_FETCH_OPENER_LOCK = threading.Lock()
 
 
-def _normalize_data_uri(text, index):
-    header, sep, payload = text.partition(",")
-    if not sep or "base64" not in header.lower():
-        raise ToolError("第 %d 张参考图的 data URI 不是 base64 形式；%s" % (index, REFERENCE_HINT))
-    compact = re.sub(r"\s+", "", payload)
-    if not B64_RE.match(compact):
-        raise ToolError("第 %d 张参考图的 base64 内容非法；%s" % (index, REFERENCE_HINT))
-    try:
-        raw = base64.b64decode(compact, validate=True)
-    except Exception:
-        raise ToolError("第 %d 张参考图的 base64 解码失败；%s" % (index, REFERENCE_HINT))
-    _check_reference_size(raw, index)
-    mime = header[5:].split(";")[0].strip().lower()
-    if not mime.startswith("image/"):
-        mime = _mime_from_bytes(raw)
-    if not mime:
-        raise ToolError("第 %d 张参考图不是可识别的图片（PNG/JPEG/WebP/GIF）" % index)
-    return "data:%s;base64,%s" % (mime, compact)
+class _GuardedRedirect(urllib.request.HTTPRedirectHandler):
+    """限制重定向跳数，并对每一跳重新做地址校验。"""
+
+    max_redirections = IMAGE_FETCH_REDIRECTS
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        _guard_fetch_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def _normalize_reference(value, index):
-    """把参考图统一成网关可直接透传的字符串。
-
-    支持：公网 URL、data URI、纯 base64（自动补 data URI 前缀）。
-    """
-    text = str(value or "").strip()
-    if not text:
-        raise ToolError("第 %d 张参考图为空" % index)
-    lower = text.lower()
-    if lower.startswith(("http://", "https://")):
-        return text
-    if lower.startswith("data:"):
-        return _normalize_data_uri(text, index)
-
-    compact = re.sub(r"\s+", "", text)
-    if B64_RE.match(compact):
-        try:
-            raw = base64.b64decode(compact, validate=True)
-        except Exception:
-            raise ToolError("第 %d 张参考图的 base64 解码失败；%s" % (index, REFERENCE_HINT))
-        _check_reference_size(raw, index)
-        mime = _mime_from_bytes(raw)
-        if not mime:
-            raise ToolError("第 %d 张参考图不是可识别的图片（PNG/JPEG/WebP/GIF）" % index)
-        return "data:%s;base64,%s" % (mime, compact)
-
-    raise ToolError("第 %d 张参考图无法识别。%s" % (index, REFERENCE_HINT))
-
-
-def _reference_from_path(value, index):
-    """读取本机图片文件并转成 data URI。"""
-    raw_path = str(value or "").strip()
-    if not raw_path:
-        raise ToolError("第 %d 张参考图路径为空" % index)
-    path = raw_path if os.path.isabs(raw_path) else os.path.join(os.path.dirname(os.path.abspath(__file__)), raw_path)
-    if not os.path.isfile(path):
-        raise ToolError(
-            "第 %d 张参考图文件不存在：%s（请确认路径；本服务若部署在远端，本机路径一定读不到，"
-            "改用 image_url 传公网链接或 base64）"
-            % (index, _clip(path, 200))
-        )
-    try:
-        if os.path.getsize(path) > MAX_REFERENCE_BYTES:
-            raise ToolError(
-                "第 %d 张参考图 %d MB，超过单张上限 %d MB；请压缩图片或改用公网 URL"
-                % (index, os.path.getsize(path) >> 20, MAX_REFERENCE_BYTES >> 20)
+def _fetch_opener():
+    global _FETCH_OPENER
+    with _FETCH_OPENER_LOCK:
+        if _FETCH_OPENER is None:
+            if _env_flag("AIGW_IMAGE_FETCH_INSECURE"):
+                ctx = ssl._create_unverified_context()
+            else:
+                ca = (os.environ.get("AIGW_IMAGE_FETCH_CA") or "").strip()
+                ctx = ssl.create_default_context(cafile=ca or None)
+            _FETCH_OPENER = urllib.request.build_opener(
+                urllib.request.ProxyHandler({}),
+                _GuardedRedirect(),
+                urllib.request.HTTPSHandler(context=ctx),
             )
-        with open(path, "rb") as fh:
-            raw = fh.read(MAX_REFERENCE_BYTES + 1)
+        return _FETCH_OPENER
+
+
+def _is_public_url(text):
+    """按字面量判断链接是否公网可达；不解析 DNS、不发探测。"""
+    host = (urllib.parse.urlsplit(text).hostname or "").strip().lower()
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".local"):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return "." in host
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+
+
+def _guard_fetch_url(url):
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise ToolError("参考图链接只支持 http/https", code="image_fetch_failed")
+    host = parts.hostname
+    if not host:
+        raise ToolError("参考图链接缺少主机名", code="image_fetch_failed")
+    try:
+        ips = [ipaddress.ip_address(host)]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(
+                host, parts.port or (443 if parts.scheme == "https" else 80),
+                proto=socket.IPPROTO_TCP,
+            )
+        except OSError as exc:
+            raise ToolError("无法解析参考图地址 %s: %s" % (host, exc),
+                            code="image_fetch_failed") from exc
+        ips = []
+        for info in infos:
+            try:
+                ips.append(ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]))
+            except ValueError:
+                continue
+    for ip in ips:
+        for net in _BLOCKED_NETS:
+            if ip in net:
+                raise ToolError("参考图地址 %s 指向受限网段，已拒绝访问" % host,
+                                code="image_fetch_failed")
+
+
+def _fetch_reference(url, index):
+    _guard_fetch_url(url)
+    req = urllib.request.Request(url, headers={"User-Agent": "ai-gateway-image-mcp"})
+    try:
+        with _fetch_opener().open(req, timeout=IMAGE_FETCH_TIMEOUT) as resp:
+            raw = resp.read(IMAGE_FETCH_MAX_BYTES + 1)
     except ToolError:
         raise
-    except OSError as exc:
-        raise ToolError("第 %d 张参考图读取失败：%s" % (index, exc))
-    _check_reference_size(raw, index)
+    except urllib.error.HTTPError as exc:
+        raise ToolError("第 %d 张参考图下载失败: HTTP %d" % (index, exc.code),
+                        code="image_fetch_failed") from exc
+    except Exception as exc:
+        raise ToolError("第 %d 张参考图下载失败: %s" % (index, exc),
+                        code="image_fetch_failed") from exc
+    if len(raw) > IMAGE_FETCH_MAX_BYTES:
+        raise ToolError("第 %d 张参考图超过 %d MB，无法转发"
+                        % (index, IMAGE_FETCH_MAX_BYTES >> 20),
+                        code="reference_too_large")
     mime = _mime_from_bytes(raw)
     if not mime:
-        raise ToolError("第 %d 张参考图不是可识别的图片（PNG/JPEG/WebP/GIF）：%s" % (index, _clip(path, 160)))
-    return "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
+        raise ToolError("第 %d 张参考图不是支持的图片格式（PNG/JPEG/WebP/GIF）" % index,
+                        code="image_fetch_failed")
+    return raw, mime
 
 
-def _collect_references(args):
+def _gateway_image_host(key):
+    """查询网关图床是否开启、是否声明公网可达；失败按不可用处理。"""
+    now = time.time()
+    with _IMAGE_HOST_LOCK:
+        value = _IMAGE_HOST_CACHE["value"]
+        if value is not None and now - _IMAGE_HOST_CACHE["at"] < 300:
+            return value
+    key = (key or "").strip() or _api_key()
+    req = urllib.request.Request(_base_url() + "/v1/images/host", method="GET")
+    req.add_header("User-Agent", "ai-gateway-image-mcp")
+    if key:
+        req.add_header("Authorization", "Bearer " + key)
+    try:
+        with _LOCAL_OPENER.open(req, timeout=10) as resp:
+            data = json.loads(resp.read(1 << 20).decode("utf-8", "replace"))
+    except Exception:
+        return {"enabled": False, "public": False}
+    if not isinstance(data, dict):
+        return {"enabled": False, "public": False}
+    value = {
+        "enabled": bool(data.get("enabled")),
+        "public": bool(data.get("public")),
+        "max_mb": int(data.get("max_mb") or 0),
+    }
+    with _IMAGE_HOST_LOCK:
+        _IMAGE_HOST_CACHE["at"] = now
+        _IMAGE_HOST_CACHE["value"] = value
+    return value
+
+
+def _upload_reference(raw, mime, index, key):
+    key = (key or "").strip() or _api_key()
+    if not key:
+        raise ToolError("第 %d 张参考图超过 base64 上限，上传图床需要 AIGW_IMAGE_API_KEY" % index,
+                        code="auth_missing")
+    req = urllib.request.Request(_base_url() + "/v1/images/uploads", data=raw, method="POST")
+    req.add_header("Content-Type", mime)
+    req.add_header("Authorization", "Bearer " + key)
+    req.add_header("User-Agent", "ai-gateway-image-mcp")
+    try:
+        with _LOCAL_OPENER.open(req, timeout=60) as resp:
+            data = json.loads(resp.read(1 << 20).decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read(4096).decode("utf-8", "replace")
+        except Exception:
+            pass
+        hint = "网关图床可能未开启或不可用"
+        if exc.code == 413:
+            hint = "图片超过网关图床单张上限"
+        raise ToolError(("第 %d 张参考图上传失败: HTTP %d %s" % (index, exc.code, detail)).strip(),
+                        code="image_upload_failed", hint=hint) from exc
+    except Exception as exc:
+        raise ToolError("第 %d 张参考图上传失败: %s" % (index, exc),
+                        code="image_upload_failed") from exc
+    url = data.get("url") if isinstance(data, dict) else None
+    if not url:
+        raise ToolError("第 %d 张参考图上传后没有拿到链接" % index, code="image_upload_failed")
+    return str(url)
+
+
+def _reference_from_bytes(raw, mime, index, key):
+    """预算内直接转 base64；超预算时只有图床公网可达才能换成链接。"""
+    if len(raw) <= MAX_REFERENCE_BYTES:
+        return "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
+    size = "%.1f MB" % (len(raw) / (1 << 20))
+    cap = _gateway_image_host(key)
+    if not cap.get("enabled"):
+        raise ToolError(
+            "第 %d 张参考图 %s，超过单张上限 %d MB；网关图床未开启，无法换成公网链接"
+            % (index, size, MAX_REFERENCE_MB),
+            code="reference_exceeds_base64_limit",
+            hint="请压缩图片后重试，或改用公网图片地址。",
+        )
+    if not cap.get("public"):
+        raise ToolError(
+            "第 %d 张参考图 %s，超过单张上限 %d MB；"
+            "网关图床不可公网访问，上传后的链接上游取不到"
+            % (index, size, MAX_REFERENCE_MB),
+            code="reference_exceeds_base64_limit",
+            hint="请压缩图片后重试，或改用公网图片地址。",
+        )
+    return _upload_reference(raw, mime, index, key)
+
+
+def _normalize_reference(value, index, key):
+    """公网链接原样透传；内网链接由本服务下载后再决定 base64 还是上传。"""
+    text = str(value or "").strip()
+    if not text:
+        raise ToolError("第 %d 张参考图为空" % index, code="invalid_reference")
+    if not text.lower().startswith(("http://", "https://")):
+        raise ToolError("第 %d 张参考图无法识别。%s" % (index, REFERENCE_HINT),
+                        code="invalid_reference")
+    if _is_public_url(text):
+        return text
+    raw, mime = _fetch_reference(text, index)
+    return _reference_from_bytes(raw, mime, index, key)
+
+
+def _reference_from_path(value, index, key):
+    """读取本机图片文件，按预算决定转 base64 还是上传图床。"""
+    raw_path = str(value or "").strip()
+    if not raw_path:
+        raise ToolError("第 %d 张参考图路径为空" % index, code="invalid_reference")
+    path = raw_path if os.path.isabs(raw_path) else os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), raw_path)
+    if not os.path.isfile(path):
+        raise ToolError(
+            "第 %d 张参考图文件不存在：%s（请确认路径；本服务若部署在远端，本机路径一定读不到）"
+            % (index, _clip(path, 200)),
+            code="invalid_reference",
+        )
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(IMAGE_FETCH_MAX_BYTES + 1)
+    except OSError as exc:
+        raise ToolError("第 %d 张参考图读取失败：%s" % (index, exc),
+                        code="invalid_reference") from exc
+    if len(raw) > IMAGE_FETCH_MAX_BYTES:
+        raise ToolError("第 %d 张参考图超过 %d MB，无法转发：%s"
+                        % (index, IMAGE_FETCH_MAX_BYTES >> 20, _clip(path, 160)),
+                        code="reference_too_large")
+    mime = _mime_from_bytes(raw)
+    if not mime:
+        raise ToolError("第 %d 张参考图不是可识别的图片（PNG/JPEG/WebP/GIF）：%s"
+                        % (index, _clip(path, 160)),
+                        code="invalid_reference")
+    return _reference_from_bytes(raw, mime, index, key)
+
+
+def _collect_references(args, key):
     refs = []
     image_url = args.get("image_url")
     if isinstance(image_url, str) and image_url.strip():
-        refs.append(_normalize_reference(image_url, 1))
+        refs.append(_normalize_reference(image_url, 1, key))
     elif isinstance(image_url, list):
-        refs.extend(_normalize_reference(u, i) for i, u in enumerate(image_url, 1) if str(u).strip())
+        refs.extend(_normalize_reference(u, i, key)
+                    for i, u in enumerate(image_url, 1) if str(u).strip())
 
     image_path = args.get("image_path")
     start = len(refs) + 1
     if isinstance(image_path, str) and image_path.strip():
-        refs.append(_reference_from_path(image_path, start))
+        refs.append(_reference_from_path(image_path, start, key))
     elif isinstance(image_path, list):
-        refs.extend(_reference_from_path(p, start + i) for i, p in enumerate(image_path)
-                    if str(p).strip())
+        refs.extend(_reference_from_path(p, start + i, key)
+                    for i, p in enumerate(image_path) if str(p).strip())
     return refs
 
 
-def _build_payload(args):
+def _build_payload(args, key=""):
     prompt = str(args.get("prompt") or "").strip()
     if not prompt:
         raise ToolError("缺少参数 prompt")
 
     model = str(args.get("model") or "").strip() or _default_model()
     if not model:
-        raise ToolError("缺少参数 model；也可以在 mcp.json 的 env 里设置 AIGW_IMAGE_MODEL 作为默认模型")
+        raise ToolError(
+            "缺少参数 model；可先调用 list_image_models 查看可用模型，"
+            "或在 mcp.json 的 env 里设置 AIGW_IMAGE_MODEL 作为默认模型"
+        )
 
     response_format = str(args.get("response_format") or "url").strip().lower()
     if response_format not in ("url", "b64_json"):
@@ -737,14 +973,16 @@ def _build_payload(args):
         "response_format": response_format,
     }
 
-    refs = _collect_references(args)
+    refs = _collect_references(args, key)
     if refs:
         total_chars = sum(len(r) for r in refs)
         if total_chars > MAX_REFERENCE_TOTAL_CHARS:
             raise ToolError(
                 "参考图总量过大（base64 共 %.1f M 字符，上限 %.1f M）；"
-                "网关 MCP 入口请求体上限 8 MB，请压缩图片、减少张数，或改用公网 URL"
-                % (total_chars / 1048576.0, MAX_REFERENCE_TOTAL_CHARS / 1048576.0)
+                "请压缩图片、减少张数，或改用公网 URL"
+                % (total_chars / 1048576.0, MAX_REFERENCE_TOTAL_CHARS / 1048576.0),
+                code="too_large",
+                hint="也可以把图片放到公网地址，用 image_url 直接透传。",
             )
         # 只有一张参考图时按上游习惯发字符串，多张发数组
         payload["image_url"] = refs[0] if len(refs) == 1 else refs
@@ -777,8 +1015,67 @@ def _request_id(args):
     return raw
 
 
+def _list_models(key=""):
+    """列出当前密钥可用的生图模型，免去客户端自己拼 HTTP 请求。"""
+    key = (key or "").strip() or _api_key()
+    if not key:
+        raise ToolError(
+            "没有可用的 API 密钥：请在「MCP 服务器 → 生图 → 编辑 → 密钥」里填入面板签发的 sk- 密钥"
+            "（也可在 mcp.json 的 env 里设置 AIGW_IMAGE_API_KEY）",
+            code="auth_missing",
+        )
+
+    req = urllib.request.Request(_base_url() + "/v1/models?type=image", method="GET")
+    req.add_header("Authorization", "Bearer " + key)
+    req.add_header("User-Agent", "ai-gateway-image-mcp/1.0")
+    try:
+        with _LOCAL_OPENER.open(req, timeout=15) as resp:
+            raw = resp.read(4 << 20)
+    except urllib.error.HTTPError as exc:
+        message, code, retryable = _gateway_error(exc)
+        raise ToolError(message, code=code, retryable=retryable, upstream_status=exc.code)
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        raise ToolError(
+            "无法连接网关 %s：%s（确认网关已启动、端口正确）" % (_base_url(), reason),
+            code="timeout" if isinstance(reason, TimeoutError) else "gateway_unreachable",
+            retryable=True,
+        )
+    except TimeoutError:
+        raise ToolError("查询生图模型超时（15 秒）", code="timeout", retryable=True)
+
+    try:
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        raise ToolError(
+            "网关返回的不是 JSON：%s" % _clip(raw.decode("utf-8", "replace"), 300),
+            code="invalid_response",
+            retryable=True,
+        )
+
+    items = data.get("data") if isinstance(data, dict) else None
+    models = []
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict) and item.get("id"):
+                models.append(str(item["id"]))
+    if not models:
+        raise ToolError(
+            "当前没有可用的生图模型：请到面板「渠道」把模型加入「生图模型」并选择同步或异步",
+            code="no_image_models",
+        )
+
+    payload = {"status": "succeeded", "count": len(models), "models": models}
+    default = _default_model()
+    if default:
+        payload["default_model"] = default
+    else:
+        payload["hint"] = "generate_image 需要显式传 model（或在 mcp.json 的 env 里设置 AIGW_IMAGE_MODEL）"
+    return payload
+
+
 def _generate(args, key=""):
-    payload = _build_payload(args)
+    payload = _build_payload(args, key)
     download = _bool_arg(args, "download", False)
     wait_seconds = _int_arg(args, "wait_seconds", DEFAULT_WAIT_SECONDS, 0, MAX_WAIT_SECONDS)
     request_id = _request_id(args)
@@ -798,7 +1095,9 @@ def _generate(args, key=""):
                     "hint": "相同 request_id 的作业仍在进行，请每 5 秒调用 get_image_job(job_id=\"%s\")"
                             % snap["job_id"],
                 }
-            return _finish_result(snap)
+            result = _finish_result(snap)
+            result["reused"] = True
+            return result
 
     job = _new_job(payload, request_id)
     thread = threading.Thread(target=_run_job, args=(job, payload, download, key), daemon=True)
@@ -817,11 +1116,14 @@ def _generate(args, key=""):
             "status": "running",
             "job_id": snap["job_id"],
             "elapsed_ms": snap["elapsed_ms"],
+            "reused": False,
             "hint": "生图仍在进行，请每 5 秒调用 get_image_job(job_id=\"%s\")；整体超时 %d 秒"
                     % (snap["job_id"], _timeout_seconds()),
         }
 
-    return _finish_result(snap)
+    result = _finish_result(snap)
+    result["reused"] = False
+    return result
 
 
 def _finish_result(snap):
@@ -891,6 +1193,8 @@ def call_tool(name, arguments, key=""):
             payload = _generate(arguments, key)
         elif name == "get_image_job":
             payload = _job_status(arguments)
+        elif name == "list_image_models":
+            payload = _list_models(key)
         else:
             return _error_result("未知工具: %s" % name, code="unknown_tool")
     except ToolError as exc:
@@ -1015,7 +1319,8 @@ class Handler(BaseHTTPRequestHandler):
             result = {
                 "protocolVersion": _negotiate(params.get("protocolVersion")),
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "image-generation", "version": "1.0.0"},
+                "serverInfo": {"name": "image-generation", "version": "1.1.0"},
+                "instructions": _instructions(),
             }
         elif method == "tools/list":
             result = {"tools": IMAGE_TOOLS}

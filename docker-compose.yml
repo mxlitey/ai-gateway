@@ -46,6 +46,16 @@ services:
       # 客户端经公网域名/反向代理访问时必须填，否则可能拿到容器内 127.0.0.1 的地址。
       # 从宿主机环境或同目录 .env 注入（export AIGW_PUBLIC_BASE_URL=...）；未设置时为空，按请求推导。
       AIGW_PUBLIC_BASE_URL: ${AIGW_PUBLIC_BASE_URL:-}
+      # 内置图床：默认开启，提供 POST /v1/images/uploads（需要 API Key）
+      AIGW_IMAGE_HOST: ${AIGW_IMAGE_HOST:-on}
+      # 图床公网可达性声明：auto | on | off。
+      # auto 按 AIGW_PUBLIC_BASE_URL 字面量判断；对公网域名填 on 更稳妥（需同时配置该地址）。
+      # 声明为非公网时，网关会把指向自己的参考图链接转成 base64 再转发。
+      AIGW_IMAGE_HOST_PUBLIC: ${AIGW_IMAGE_HOST_PUBLIC:-auto}
+      AIGW_IMAGE_HOST_MAX_MB: ${AIGW_IMAGE_HOST_MAX_MB:-100}
+      # 生图结果与上传图片的保留秒数
+      AIGW_IMAGE_TTL_SECONDS: ${AIGW_IMAGE_TTL_SECONDS:-3600}
+      AIGW_UPLOAD_TTL_SECONDS: ${AIGW_UPLOAD_TTL_SECONDS:-3600}
     volumes:
       - ai-gateway-data:/data
       - ai-gateway-plugins:/plugins

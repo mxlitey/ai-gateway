@@ -9,8 +9,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -151,13 +154,39 @@ func (a *App) Start() error {
 	proxyHandler := proxy.New(st, pricer)
 
 	// 生图结果统一落盘，对外返回网关自己的地址；失败时退回上游原始结果。
-	images, err := imagestore.Open(filepath.Join(a.cfg.DataDir, "images"), imagestore.DefaultRetention)
+	images, err := imagestore.Open(filepath.Join(a.cfg.DataDir, "images"), a.cfg.ImageTTL())
 	if err != nil {
 		slog.Error("初始化生图结果目录失败，生图将返回上游原始地址", "err", err)
 		images = nil
 	}
 	proxyHandler.SetImageStore(images)
 	proxyHandler.SetPublicBaseURL(a.cfg.PublicBaseURL)
+
+	// 内置图床：独立目录与保留期，默认关闭。
+	var uploads *imagestore.Store
+	var imageHost *httpapi.ImageHost
+	if a.cfg.ImageHost {
+		uploads, err = imagestore.OpenWith(
+			filepath.Join(a.cfg.DataDir, "uploads"),
+			imagestore.UploadURLPrefix,
+			a.cfg.UploadTTL(),
+			a.cfg.ImageUploadMaxBytes(),
+		)
+		if err != nil {
+			slog.Error("初始化图床目录失败，图床不可用", "err", err)
+			uploads = nil
+		} else {
+			public := imageHostPubliclyReachable(a.cfg.ImageHostPublicMode(), a.cfg.PublicBaseURL)
+			imageHost = httpapi.NewImageHost(uploads, images, st, a.cfg.PublicBaseURL, public)
+			proxyHandler.SetImageUploads(uploads, public)
+			if public {
+				slog.Info("内置图床已开启，上传链接可直接交给上游", "public_base_url", a.cfg.PublicBaseURL)
+			} else {
+				slog.Warn("内置图床未声明公网可达，上游取不到上传链接，网关会把参考图转成 base64",
+					"public_base_url", a.cfg.PublicBaseURL, "mode", a.cfg.ImageHostPublicMode())
+			}
+		}
+	}
 
 	// 管理端可查询/重置上游密钥冷却状态
 	api.SetCooler(proxyHandler.Cooler())
@@ -196,11 +225,13 @@ func (a *App) Start() error {
 	}
 
 	router := httpapi.NewRouter(httpapi.Deps{
-		Proxy:    proxyHandler,
-		Admin:    api,
-		MCP:      mcpHandler,
-		AdminMCP: adminMCPHandler,
-		Images:   images,
+		Proxy:     proxyHandler,
+		Admin:     api,
+		MCP:       mcpHandler,
+		AdminMCP:  adminMCPHandler,
+		Images:    images,
+		Uploads:   uploads,
+		ImageHost: imageHost,
 	})
 	srv := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 15 * time.Second}
 
@@ -208,6 +239,9 @@ func (a *App) Start() error {
 
 	if images != nil {
 		go images.CleanupLoop(ctx)
+	}
+	if uploads != nil {
+		go uploads.CleanupLoop(ctx)
 	}
 
 	a.mu.Lock()
@@ -266,6 +300,51 @@ func (a *App) Start() error {
 	}()
 
 	return nil
+}
+
+// imageHostPubliclyReachable 按声明判断图床是否公网可达。
+//
+// auto 只做字面量判断：没有对外地址、或地址是内网/回环，就认为上游取不到。
+// 这是声明而不是探测，无法证明 NAT / 防火墙真的放行。
+func imageHostPubliclyReachable(mode, base string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "on":
+		return true
+	case "off":
+		return false
+	}
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	return !isPrivateHost(u.Hostname())
+}
+
+// isPrivateHost 判断常见的内网/回环/链路本地地址。
+func isPrivateHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return true
+	}
+	if host == "localhost" || strings.HasSuffix(host, ".local") ||
+		strings.HasPrefix(host, "127.") || strings.HasPrefix(host, "10.") ||
+		strings.HasPrefix(host, "192.168.") || strings.HasPrefix(host, "169.254.") ||
+		isPrivate172(host) {
+		return true
+	}
+	// IPv6 回环与链路本地/唯一本地地址
+	return host == "::1" || strings.HasPrefix(host, "fe80:") ||
+		strings.HasPrefix(host, "fc") || strings.HasPrefix(host, "fd")
+}
+
+// isPrivate172 判断 172.16.0.0/12。
+func isPrivate172(host string) bool {
+	parts := strings.Split(host, ".")
+	if len(parts) != 4 || parts[0] != "172" {
+		return false
+	}
+	n, err := strconv.Atoi(parts[1])
+	return err == nil && n >= 16 && n <= 31
 }
 
 // loadRuntimeSettings 读取运行期设置；失败时回退为默认值。

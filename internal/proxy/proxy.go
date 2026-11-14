@@ -36,6 +36,10 @@ type Handler struct {
 	cooler      *penalty.Cooler
 	// images 生图结果落盘；nil 表示保留上游原始结果。
 	images *imagestore.Store
+	// uploads 图床上传目录；nil 表示图床未开启。
+	uploads *imagestore.Store
+	// imageHostPublic 图床是否声明为公网可达；false 时把自家链接转成 base64。
+	imageHostPublic bool
 	// publicBase 对外访问地址；为空时按请求推导。
 	publicBase string
 }
@@ -103,6 +107,13 @@ func (h *Handler) Cooler() *penalty.Cooler { return h.cooler }
 // SetImageStore 注入图片存储（生图结果落盘）。传 nil 表示不落盘。
 func (h *Handler) SetImageStore(s *imagestore.Store) { h.images = s }
 
+// SetImageUploads 注入图床存储，并声明其是否公网可达。
+// 非公网时，请求里指向本图床的参考图链接会在转发前转成 base64。
+func (h *Handler) SetImageUploads(s *imagestore.Store, public bool) {
+	h.uploads = s
+	h.imageHostPublic = public
+}
+
 // SetPublicBaseURL 设置对外访问地址（如 https://gw.example.com）。
 // 为空时按请求的 Host / X-Forwarded-* 推导。
 func (h *Handler) SetPublicBaseURL(base string) {
@@ -116,13 +127,13 @@ func (h *Handler) imagePersist(r *http.Request) ImagePersist {
 	}
 	base := h.publicBase
 	if base == "" {
-		base = publicBaseURL(r)
+		base = PublicBaseURL(r)
 	}
 	return ImagePersist{Store: h.images, BaseURL: base}
 }
 
-// publicBaseURL 推导客户端访问网关所用的地址。
-func publicBaseURL(r *http.Request) string {
+// PublicBaseURL 推导客户端访问网关所用的地址。
+func PublicBaseURL(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
@@ -392,6 +403,15 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 		h.logGatewayError("", http.StatusBadRequest, "生图请求被拒绝: "+msg)
 		rec.Finish(http.StatusBadRequest, msg)
 		jsonError(w, http.StatusBadRequest, msg, "invalid_request_error")
+		return
+	}
+
+	if err := h.rewriteImageRefs(body); err != nil {
+		status, code := imageRefErrorStatus(err)
+		msg := err.Error()
+		h.logGatewayError(modelName, status, "生图请求被拒绝: "+msg)
+		rec.Finish(status, msg)
+		jsonErrorCode(w, status, msg, code)
 		return
 	}
 

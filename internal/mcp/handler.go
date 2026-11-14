@@ -138,9 +138,37 @@ func (h *Handler) handleInitialize(w http.ResponseWriter, req request, alias str
 		"capabilities":    caps,
 		"serverInfo": map[string]any{
 			"name":    "ai-gateway-mcp",
-			"version": "1.0.0",
+			"version": "1.1.0",
 		},
+		// 上游服务器的 instructions 这里不透传（多次转发易失真），
+		// 统一给一份操作路径；具体工具用法由 tools/list 里的描述自述。
+		"instructions": instructionsFor(alias, h.imageHostEnabled()),
 	})
+}
+
+// imageHostEnabled 读取图床开关，用于决定说明书中是否介绍直传能力。
+func (h *Handler) imageHostEnabled() bool {
+	return h.svc != nil && h.svc.cfg != nil && h.svc.cfg.ImageHost
+}
+
+// instructionsFor 生成 initialize 的说明书，让客户端不依赖外部文档也能上手。
+func instructionsFor(alias string, imageHost bool) string {
+	text := "AI Gateway 把多个上游 MCP 服务器的工具聚合在一个入口，工具名可能带服务器前缀。" +
+		"先调用 tools/list 获取工具与参数说明，再调用 tools/call；" +
+		"失败时返回 isError=true，错误详情在 structuredContent.error（含 code / retryable / upstream_status）。"
+	if alias != "" {
+		text = "当前直连 MCP 服务器 " + alias + "。先调用 tools/list 查看工具名与参数说明，" +
+			"再调用 tools/call；失败时返回 isError=true，错误详情在 structuredContent.error（含 code / retryable）。"
+	}
+	if !imageHost {
+		return text
+	}
+	// 图床是网关自身能力，不经过 MCP，因此不受 8 MB 请求体限制。
+	return text + "\n\n网关内置图床（默认开启）：直接 HTTP 调用网关，不经过 MCP，不受 8 MB 请求体限制。" +
+		"上传 POST <网关地址>/v1/images/uploads，Authorization: Bearer <调用 MCP 时同一把 sk- 密钥>，" +
+		"Content-Type 为 image/png|jpeg|webp|gif，请求体是图片原始字节（不是 multipart/form-data），" +
+		"单张默认上限 100 MB，返回 {id,url,...}，链接有时效。" +
+		"能力查询 GET <网关地址>/v1/images/host，删除 DELETE <网关地址>/v1/uploads/<id>。"
 }
 
 // negotiateVersion 取交集：客户端声明的版本受支持就用它，否则回退到最新版本。

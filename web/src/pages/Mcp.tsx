@@ -50,8 +50,8 @@ type FormState = {
 }
 
 const KEY_STRATEGIES = [
-  { value: 'rotate', label: '轮询', desc: '按顺序轮换首选密钥（K1→K2→K3…），把调用均衡分摊到各密钥' },
-  { value: 'ordered', label: '故障转移', desc: '按配置顺序依次尝试，前一个失败才用下一个' },
+  { value: 'rotate', label: '负载均衡', desc: '多密钥轮流承担调用，把流量分摊到各密钥' },
+  { value: 'ordered', label: '故障转移', desc: '按顺序尝试，前一个失败才用下一个' },
 ] as const
 
 const BILLABLE_MODES = [
@@ -346,8 +346,7 @@ export default function Mcp() {
                         </Button>
                         <Button
                           size="sm"
-                          variant="ghost"
-                          className="text-red-600 dark:text-red-400"
+                          variant="softDanger"
                           onClick={(e) => {
                             e.stopPropagation()
                             setFlippedId(null)
@@ -493,15 +492,11 @@ export default function Mcp() {
                   </IconButton>
                 </div>
               ))}
-              <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                日上限按「计费调用」计数（默认成功即计费，可改按响应标记），每天 0 点重置；留空或 -1
-                表示不限，0 表示不允许调用。
-              </p>
             </div>
 
             <Field
               label="计费口径"
-              hint="决定哪些调用计入「次数」与日上限；选「按响应标记计费」后需填写标记串"
+              hint="决定哪些调用计入日上限"
             >
               <Segmented
                 value={form.billableMode}
@@ -516,7 +511,7 @@ export default function Mcp() {
             {form.billableMode === 'marker' ? (
               <Field
                 label="计费标记"
-                hint="上游响应正文包含该字符串时才算一次；留空会退化为「成功即计费」"
+                hint="响应正文包含该串才计一次"
               >
                 <Input
                   value={form.billableMarker}
@@ -633,10 +628,8 @@ function ToolLimitsField({
 
   if (!form.id) {
     return (
-      <Field label="工具日上限" hint="保存后会拉取工具列表，届时可在编辑里为每个工具单独设上限">
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          新建服务器时还没有工具清单，先保存即可。
-        </p>
+      <Field label="工具日上限" hint="保存并拉取工具列表后可逐工具设置">
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">先保存服务器。</p>
       </Field>
     )
   }
@@ -644,13 +637,13 @@ function ToolLimitsField({
   return (
     <Field
       label="工具日上限"
-      hint="按上游工具名匹配，上限按每条上游密钥独立计算。不填时默认 0（显示为「共享」）：该工具不单独限量，共享上游密钥的剩余次数，用完即不能调用；-1（显示为「不限」）：完全不限，也不校验密钥次数；正数：该工具每条密钥的每日上限。"
+      hint="按工具名匹配；正数为每条密钥每日上限，0 共享密钥额度，-1 不限"
     >
       {tools.isLoading ? (
         <Loading />
       ) : rows.length === 0 ? (
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          还没有工具缓存，先点卡片上的「重新拉取工具列表」。
+          暂无工具缓存，先重新拉取工具列表。
         </p>
       ) : (
         <div className="space-y-2">
@@ -1089,11 +1082,6 @@ function ClientAccessCard() {
         <pre className="overflow-x-auto rounded-lg border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs leading-relaxed text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
           {snippet}
         </pre>
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          使用「API 密钥」页生成的 <code>sk-</code> 密钥，通过
-          <code> Authorization: Bearer</code> 或 <code>x-api-key</code> 传递。聚合模式下工具名带
-          <code> 命名空间__</code> 前缀，避免多台服务器重名。
-        </p>
       </div>
     </Card>
   )

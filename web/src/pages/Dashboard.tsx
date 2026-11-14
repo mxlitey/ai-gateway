@@ -57,7 +57,7 @@ export default function Dashboard() {
   const maxErrors = Math.max(1, ...errorGroups.map((g) => g.errors.length))
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <h1 className="text-base font-semibold text-zinc-800 dark:text-zinc-100">仪表盘</h1>
 
       {errors.isError ? <ErrorText text={(errors.error as Error).message} /> : null}

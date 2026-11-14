@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/czg95/ai-gateway-v2/internal/model"
 )
@@ -205,4 +206,129 @@ func srvURL(r *http.Request) string {
 		scheme = "https"
 	}
 	return scheme + "://" + r.Host
+}
+
+// TestGenerateImageSyncTimeout 验证同步生图按渠道配置的超时终止，并返回 504。
+func TestGenerateImageSyncTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(1200 * time.Millisecond)
+		_, _ = w.Write([]byte(`{"data":[{"url":"https://x/y.png"}]}`))
+	}))
+	defer srv.Close()
+
+	ch := &model.Channel{
+		Name:        "sync",
+		BaseURL:     srv.URL,
+		ImageModels: []string{"img"},
+		// Normalized 会把小于 1 秒的值提升到 1 秒，这里用 1 秒并让上游慢 1.2 秒
+		ImageGen: model.ImageGenConfig{Mode: model.ImageGenSync, SyncTimeoutMS: 1000},
+	}
+	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
+		"model": "img", "prompt": "x",
+	}, "img", nil)
+	if res.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, body = %s", res.StatusCode, res.Body)
+	}
+	if !strings.Contains(res.Error, "超时") {
+		t.Fatalf("error = %s", res.Error)
+	}
+}
+
+// TestGenerateImageEditMapping 验证参考图分流到编辑接口，并按配置重塑字段与参数。
+func TestGenerateImageEditMapping(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/images/edits" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"data":[{"url":"https://x/e.png"}]}`))
+	}))
+	defer srv.Close()
+
+	ch := &model.Channel{
+		Name:        "sync",
+		BaseURL:     srv.URL,
+		ImageModels: []string{"img"},
+		ImageGen: model.ImageGenConfig{
+			Mode:               model.ImageGenSync,
+			EditPath:           "/images/edits",
+			ReferenceField:     "images",
+			ReferenceShape:     model.ImageRefImageURLObjectArray,
+			ParamMap:           map[string]string{"size": "image_size"},
+			StaticParams:       map[string]any{"watermark": false},
+			DropParams:         []string{"negative_prompt"},
+			ResponseFormatMode: model.ImageFormatURL,
+		},
+	}
+	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
+		"model":           "img",
+		"prompt":          "x",
+		"size":            "1024x1024",
+		"image_url":       []any{"https://a/1.png"},
+		"negative_prompt": "blur",
+	}, "img", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
+	}
+
+	if _, ok := got["image_url"]; ok {
+		t.Fatalf("image_url 应被移到编辑字段: %v", got)
+	}
+	list, _ := got["images"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("images = %v", got["images"])
+	}
+	first, _ := list[0].(map[string]any)
+	if first["image_url"] != "https://a/1.png" {
+		t.Fatalf("images[0] = %v", first)
+	}
+	if got["image_size"] != "1024x1024" {
+		t.Fatalf("param_map 未生效: %v", got)
+	}
+	if _, ok := got["size"]; ok {
+		t.Fatalf("原参数名应被删除: %v", got)
+	}
+	if _, ok := got["negative_prompt"]; ok {
+		t.Fatalf("drop_params 未生效: %v", got)
+	}
+	if got["watermark"] != false {
+		t.Fatalf("static_params 未生效: %v", got)
+	}
+	if got["response_format"] != "url" {
+		t.Fatalf("response_format 策略未生效: %v", got)
+	}
+}
+
+// TestGenerateImageNestedImagesPath 验证图片字段支持嵌套路径写法。
+func TestGenerateImageNestedImagesPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"result":{"images":[{"url":"https://x/a.png"},{"url":"https://x/b.png"}]}}`))
+	}))
+	defer srv.Close()
+
+	ch := &model.Channel{
+		Name:        "sync",
+		BaseURL:     srv.URL,
+		ImageModels: []string{"img"},
+		ImageGen: model.ImageGenConfig{
+			Mode:        model.ImageGenSync,
+			ImagesField: "result.images[].url",
+		},
+	}
+	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
+		"model": "img", "prompt": "x",
+	}, "img", nil)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
+	}
+	var out struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(res.Body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Data) != 2 || out.Data[1]["url"] != "https://x/b.png" {
+		t.Fatalf("unexpected data: %s", res.Body)
+	}
 }

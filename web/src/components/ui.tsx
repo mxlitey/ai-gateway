@@ -10,7 +10,7 @@ import { onToast, type ToastItem } from '../lib/toast'
 
 /* ---------- Button ---------- */
 
-type ButtonVariant = 'default' | 'primary' | 'danger' | 'ghost'
+type ButtonVariant = 'default' | 'primary' | 'danger' | 'softDanger' | 'ghost'
 type ButtonSize = 'md' | 'sm'
 
 const buttonStyles: Record<ButtonVariant, string> = {
@@ -19,6 +19,9 @@ const buttonStyles: Record<ButtonVariant, string> = {
     'bg-zinc-100 text-zinc-800 border border-transparent hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700',
   primary: 'bg-emerald-600 text-white border border-emerald-600 hover:bg-emerald-500',
   danger: 'bg-red-600 text-white border border-red-600 hover:bg-red-500',
+  // 浅红描边：与默认按钮同为浅底，避免实心色块在紧凑按钮组里显得偏大
+  softDanger:
+    'bg-red-50 text-red-600 border border-red-200 hover:bg-red-100 dark:bg-red-950/60 dark:text-red-300 dark:border-red-900 dark:hover:bg-red-950',
   ghost:
     'bg-transparent text-zinc-600 border border-transparent hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800',
 }

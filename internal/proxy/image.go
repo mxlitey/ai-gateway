@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,16 +48,39 @@ func GenerateImage(ctx context.Context, client *http.Client, ch *model.Channel, 
 	}
 
 	responseFormat, _ := input["response_format"].(string)
-	payload := cloneImagePayload(input)
-	payload["model"] = upstreamModel
-	// response_format 是网关输出偏好，不传给上游（异步服务商通常不认识该字段）
-	delete(payload, "response_format")
 
-	submitURL := channel.BaseURL(ch) + cfg.Path
-	slog.Debug("[image] -> submit", "channel", ch.Name, "url", submitURL, "mode", cfg.Mode)
+	// 带参考图且配置了编辑路径时改走编辑接口，参考图按渠道配置的形态重塑。
+	refs := referenceURLs(input)
+	submitPath := cfg.Path
+	useEdit := len(refs) > 0 && cfg.EditPath != ""
+	if useEdit {
+		submitPath = cfg.EditPath
+	}
+	payload := buildImagePayload(input, cfg, upstreamModel, responseFormat, refs, useEdit)
 
-	raw, status, err := doImageRequest(ctx, client, http.MethodPost, submitURL, payload, ch, key, cfg.SubmitHeaders, clientReq)
+	// 同步生图可能要等上游数分钟：用渠道级超时兜底，而不是共享 Transport 的响应头超时。
+	syncTimeout := cfg.SyncTimeoutMS
+	if syncTimeout <= 0 {
+		syncTimeout = cfg.TimeoutMS
+	}
+	if syncTimeout <= 0 {
+		// 未经 Normalized 的配置兜底为 120 秒，与历史行为一致
+		syncTimeout = 120000
+	}
+	submitCtx, cancel := context.WithTimeout(ctx, time.Duration(syncTimeout)*time.Millisecond)
+	defer cancel()
+
+	submitURL := channel.BaseURL(ch) + submitPath
+	slog.Debug("[image] -> submit", "channel", ch.Name, "url", submitURL, "mode", cfg.Mode, "edit", useEdit)
+
+	raw, status, err := doImageRequest(submitCtx, client, http.MethodPost, submitURL, payload, ch, key, cfg.SubmitHeaders, clientReq)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return ImageGenResult{
+				StatusCode: http.StatusGatewayTimeout,
+				Error:      fmt.Sprintf("生图上游响应超时（%s）", time.Duration(syncTimeout)*time.Millisecond),
+			}
+		}
 		return ImageGenResult{StatusCode: http.StatusBadGateway, UpstreamStatus: 0, Error: "请求上游失败: " + err.Error()}
 	}
 	if status < 200 || status >= 300 {
@@ -237,14 +262,14 @@ func normalizeImageResponse(ctx context.Context, client *http.Client, upstream m
 }
 
 // extractImages 从上游对象中提取图片列表，兼容字符串数组与对象数组。
-func extractImages(obj map[string]any, field string) []map[string]any {
+func extractImages(obj map[string]any, path string) []map[string]any {
 	if obj == nil {
 		return nil
 	}
-	list, _ := lookupField(obj, field).([]any)
+	list := imageListFrom(lookupPath(obj, path))
 	if len(list) == 0 {
 		// 兼容同步型服务商返回标准 OpenAI data 字段的场景
-		list, _ = obj["data"].([]any)
+		list = imageListFrom(obj["data"])
 	}
 	out := make([]map[string]any, 0, len(list))
 	for _, item := range list {
@@ -269,24 +294,69 @@ func extractImages(obj map[string]any, field string) []map[string]any {
 	return out
 }
 
-// lookupField 按字段名取顶层值。
-func lookupField(obj map[string]any, field string) any {
-	if field == "" {
-		return nil
+// imageListFrom 把路径取值结果归一化成列表。
+func imageListFrom(v any) []any {
+	switch x := v.(type) {
+	case []any:
+		return x
+	case map[string]any, string:
+		return []any{x}
 	}
-	return obj[field]
+	return nil
 }
 
-// stringField 读取字符串字段。
-func stringField(obj map[string]any, field string) string {
-	v, _ := lookupField(obj, field).(string)
+// lookupPath 按路径读取嵌套字段，支持 a.b、a.0.b 与 a[].b（[] 表示遍历数组逐个取值）。
+func lookupPath(obj map[string]any, path string) any {
+	path = strings.TrimSpace(path)
+	if path == "" || obj == nil {
+		return nil
+	}
+	return walkPath(obj, strings.Split(path, "."))
+}
+
+func walkPath(cur any, segs []string) any {
+	for len(segs) > 0 {
+		seg := strings.TrimSpace(segs[0])
+		segs = segs[1:]
+		if seg == "" {
+			continue
+		}
+		seg = strings.TrimSuffix(seg, "[]")
+		switch node := cur.(type) {
+		case map[string]any:
+			cur = node[seg]
+		case []any:
+			if idx, err := strconv.Atoi(seg); err == nil {
+				if idx < 0 || idx >= len(node) {
+					return nil
+				}
+				cur = node[idx]
+				continue
+			}
+			next := make([]any, 0, len(node))
+			for _, item := range node {
+				if m, ok := item.(map[string]any); ok {
+					next = append(next, lookupPath(m, seg))
+				}
+			}
+			cur = next
+		default:
+			return nil
+		}
+	}
+	return cur
+}
+
+// stringField 按路径读取字符串值。
+func stringField(obj map[string]any, path string) string {
+	v, _ := lookupPath(obj, path).(string)
 	return strings.TrimSpace(v)
 }
 
 // imageErrorText 从上游响应中提取失败原因。
 func imageErrorText(obj map[string]any, field string) string {
 	if field != "" {
-		if msg := errorMessageValue(obj[field]); msg != "" {
+		if msg := errorMessageValue(lookupPath(obj, field)); msg != "" {
 			return msg
 		}
 	}
@@ -350,6 +420,117 @@ func cloneImagePayload(in map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// buildImagePayload 按渠道配置把客户端请求转换成上游请求体。
+//
+// 转换顺序：编辑分流 -> 参数改名 -> 删除参数 -> 固定参数 -> response_format 策略。
+// 所有能力都由渠道配置驱动，不针对具体服务商写死。
+func buildImagePayload(input map[string]any, cfg model.ImageGenConfig, upstreamModel, responseFormat string, refs []string, useEdit bool) map[string]any {
+	payload := cloneImagePayload(input)
+	payload["model"] = upstreamModel
+	delete(payload, "response_format")
+
+	if useEdit {
+		field := strings.TrimSpace(cfg.ReferenceField)
+		if field == "" {
+			field = "image_url"
+		}
+		delete(payload, "image_url")
+		payload[field] = shapeReference(refs, cfg.ReferenceShape)
+	}
+
+	for from, to := range cfg.ParamMap {
+		from, to = strings.TrimSpace(from), strings.TrimSpace(to)
+		if from == "" || to == "" || from == to {
+			continue
+		}
+		v, ok := payload[from]
+		if !ok {
+			continue
+		}
+		payload[to] = v
+		delete(payload, from)
+	}
+
+	for _, name := range cfg.DropParams {
+		if name = strings.TrimSpace(name); name != "" {
+			delete(payload, name)
+		}
+	}
+
+	for k, v := range cfg.StaticParams {
+		if _, exists := payload[k]; !exists {
+			payload[k] = v
+		}
+	}
+
+	switch cfg.ResponseFormatMode {
+	case model.ImageFormatPass:
+		if strings.TrimSpace(responseFormat) != "" {
+			payload["response_format"] = responseFormat
+		}
+	case model.ImageFormatURL:
+		payload["response_format"] = "url"
+	case model.ImageFormatB64:
+		payload["response_format"] = "b64_json"
+	}
+	return payload
+}
+
+// referenceURLs 读取客户端传入的参考图地址（字符串或字符串数组）。
+func referenceURLs(input map[string]any) []string {
+	v, ok := input["image_url"]
+	if !ok {
+		return nil
+	}
+	var out []string
+	switch x := v.(type) {
+	case string:
+		if s := strings.TrimSpace(x); s != "" {
+			out = append(out, s)
+		}
+	case []string:
+		for _, s := range x {
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+	case []any:
+		for _, item := range x {
+			if s, ok := item.(string); ok {
+				if s = strings.TrimSpace(s); s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// shapeReference 按渠道配置把参考图地址转换成上游期望的形态。
+func shapeReference(refs []string, shape string) any {
+	switch shape {
+	case model.ImageRefSingleURL:
+		if len(refs) > 0 {
+			return refs[0]
+		}
+		return ""
+	case model.ImageRefURLObjectArray:
+		out := make([]map[string]any, 0, len(refs))
+		for _, u := range refs {
+			out = append(out, map[string]any{"url": u})
+		}
+		return out
+	case model.ImageRefImageURLObjectArray:
+		out := make([]map[string]any, 0, len(refs))
+		for _, u := range refs {
+			out = append(out, map[string]any{"image_url": u})
+		}
+		return out
+	default:
+		return refs
+	}
 }
 
 func truncateImageText(raw []byte, n int) string {

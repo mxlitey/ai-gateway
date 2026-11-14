@@ -19,7 +19,7 @@ const navItems = [
 
 export default function Layout({ children }: { children: ReactNode }) {
   const { signOut } = useAuth()
-  // 与「设置 → 运行信息」同一来源，保证左下角展示的 API 地址一致
+  // 与「设置 → 运行信息」同一来源，左下角展示构建版本号
   const runtime = useQuery({ queryKey: ['runtime'], queryFn: api.runtimeInfo })
 
   // 窄屏（手机竖屏 / 小平板）把侧边栏收起为抽屉
@@ -46,7 +46,7 @@ export default function Layout({ children }: { children: ReactNode }) {
     }
   }, [drawerOpen])
 
-  const apiUrl = runtime.data?.api_url ?? `${window.location.origin}/v1`
+  const version = runtime.data?.version ? `v${runtime.data.version}` : '—'
 
   const nav = (
     <nav className="flex-1 space-y-0.5 overflow-y-auto p-2">
@@ -71,10 +71,9 @@ export default function Layout({ children }: { children: ReactNode }) {
 
   const footer = (
     <div className="border-t border-zinc-200 p-3 dark:border-zinc-800">
-      <p className="mb-2 text-xs leading-relaxed text-zinc-500 dark:text-zinc-500">
-        API 地址
-        <br />
-        <code className="text-[11px] break-all text-zinc-600 dark:text-zinc-400">{apiUrl}</code>
+      <p className="mb-2 flex items-baseline gap-1.5 text-xs text-zinc-500 dark:text-zinc-500">
+        版本
+        <span className="font-mono text-[11px] text-zinc-600 dark:text-zinc-400">{version}</span>
       </p>
       <button
         onClick={signOut}

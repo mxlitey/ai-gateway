@@ -41,6 +41,30 @@ const (
 	ImageGenAsync = "async"
 )
 
+// response_format 的处理策略。
+const (
+	// ImageFormatDrop 不把 response_format 传给上游（默认，兼容不认识该字段的服务商）。
+	ImageFormatDrop = "drop"
+	// ImageFormatPass 原样透传客户端传入的 response_format。
+	ImageFormatPass = "pass"
+	// ImageFormatURL 强制要求上游返回图片地址。
+	ImageFormatURL = "url"
+	// ImageFormatB64 强制要求上游返回 base64。
+	ImageFormatB64 = "b64_json"
+)
+
+// 参考图在上游请求体里的形态。
+const (
+	// ImageRefURLArray {"image_url":["u1","u2"]}，默认。
+	ImageRefURLArray = "url_array"
+	// ImageRefSingleURL {"image_url":"u1"}。
+	ImageRefSingleURL = "single_url"
+	// ImageRefURLObjectArray {"image_url":[{"url":"u1"}]}。
+	ImageRefURLObjectArray = "url_object_array"
+	// ImageRefImageURLObjectArray {"images":[{"image_url":"u1"}]}。
+	ImageRefImageURLObjectArray = "image_url_object_array"
+)
+
 // ImageGenConfig 渠道级生图配置。
 //
 // 生图与对话是两套上游协议，但对外都收敛为 OpenAI 兼容的 /v1/images/generations。
@@ -65,9 +89,29 @@ type ImageGenConfig struct {
 	SuccessStatus string `json:"success_status"`
 	FailedStatus  string `json:"failed_status"`
 	// ImagesField 图片列表字段名（同步/异步共用），默认 output_images。
+	// 支持以 . 分隔的路径与 [] 表示遍历数组，例如 data[].url、result.images[].b64_json。
 	ImagesField string `json:"images_field"`
-	// ErrorField 失败原因字段名，默认 error。
+	// ErrorField 失败原因字段名，默认 error，同样支持路径。
 	ErrorField string `json:"error_field"`
+
+	// SyncTimeoutMS 同步生图等待上游响应的总超时（毫秒）。
+	// 0 表示沿用 timeout_ms。仅 sync 模式生效，异步轮询仍由 timeout_ms 控制。
+	SyncTimeoutMS int `json:"sync_timeout_ms"`
+	// ResponseFormatMode response_format 的处理策略：drop（默认）/ pass / url / b64_json。
+	ResponseFormatMode string `json:"response_format_mode"`
+	// ParamMap 客户端参数名到上游参数名的映射，例如 {"size":"image_size"}。
+	ParamMap map[string]string `json:"param_map"`
+	// StaticParams 固定附加到上游请求体的参数；客户端已显式传入的同名字段不会被覆盖。
+	StaticParams map[string]any `json:"static_params"`
+	// DropParams 从上游请求体中删除的参数名。
+	DropParams []string `json:"drop_params"`
+	// EditPath 带参考图时的提交路径；为空表示仍用 path。
+	EditPath string `json:"edit_path"`
+	// ReferenceField 参考图在上游请求体里的字段名，默认 image_url。
+	ReferenceField string `json:"reference_field"`
+	// ReferenceShape 参考图形态，默认 url_array；另支持 single_url、url_object_array、
+	// image_url_object_array。
+	ReferenceShape string `json:"reference_shape"`
 }
 
 // Normalized 补齐生图配置的默认值并归一化模式。
@@ -100,6 +144,45 @@ func (g ImageGenConfig) Normalized() ImageGenConfig {
 	g.FailedStatus = defaultField(g.FailedStatus, "FAILED")
 	g.ImagesField = defaultField(g.ImagesField, "output_images")
 	g.ErrorField = defaultField(g.ErrorField, "error")
+
+	g.EditPath = normalizePath(g.EditPath, "")
+	// SyncTimeoutMS 留 0 表示沿用 timeout_ms，避免把默认值写回配置、让面板无法区分“未设置”。
+	if g.SyncTimeoutMS > 0 && g.SyncTimeoutMS < 1000 {
+		g.SyncTimeoutMS = 1000
+	}
+	if g.SyncTimeoutMS > 1800000 {
+		g.SyncTimeoutMS = 1800000
+	}
+	switch strings.ToLower(strings.TrimSpace(g.ResponseFormatMode)) {
+	case ImageFormatPass:
+		g.ResponseFormatMode = ImageFormatPass
+	case ImageFormatURL:
+		g.ResponseFormatMode = ImageFormatURL
+	case ImageFormatB64:
+		g.ResponseFormatMode = ImageFormatB64
+	default:
+		g.ResponseFormatMode = ImageFormatDrop
+	}
+	if g.ParamMap == nil {
+		g.ParamMap = map[string]string{}
+	}
+	if g.StaticParams == nil {
+		g.StaticParams = map[string]any{}
+	}
+	if g.DropParams == nil {
+		g.DropParams = []string{}
+	}
+	g.ReferenceField = defaultField(g.ReferenceField, "image_url")
+	switch strings.ToLower(strings.TrimSpace(g.ReferenceShape)) {
+	case ImageRefSingleURL:
+		g.ReferenceShape = ImageRefSingleURL
+	case ImageRefURLObjectArray:
+		g.ReferenceShape = ImageRefURLObjectArray
+	case ImageRefImageURLObjectArray:
+		g.ReferenceShape = ImageRefImageURLObjectArray
+	default:
+		g.ReferenceShape = ImageRefURLArray
+	}
 	if g.SubmitHeaders == nil {
 		g.SubmitHeaders = []Header{}
 	}

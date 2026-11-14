@@ -25,6 +25,7 @@ import (
 	"github.com/czg95/ai-gateway-v2/internal/pricing"
 	"github.com/czg95/ai-gateway-v2/internal/proxy"
 	"github.com/czg95/ai-gateway-v2/internal/store"
+	"github.com/czg95/ai-gateway-v2/internal/version"
 )
 
 // API 管理接口处理器。
@@ -754,6 +755,7 @@ func (a *API) runtimeInfo(w http.ResponseWriter) {
 		"access_url":  base,
 		"api_url":     base + "/v1",
 		"data_dir":    cfg.DataDir,
+		"version":     version.Version,
 	})
 }
 

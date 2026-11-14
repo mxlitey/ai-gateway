@@ -1,13 +1,15 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { api, type ProbeResult } from '../lib/api'
+import { api, type ProbeResult, type RouteGroup } from '../lib/api'
 import { toast } from '../lib/toast'
-import { Badge, Button, Card, Empty, ErrorText, Input, Loading, Modal, Switch } from '../components/ui'
+import { Badge, Button, Card, Empty, ErrorText, Input, Loading, Modal, Segmented, Switch } from '../components/ui'
 
 export default function ModelRoutes() {
   const queryClient = useQueryClient()
   const routes = useQuery({ queryKey: ['routes'], queryFn: api.routes })
+  // 对话模型与生图模型分开展示
+  const [tab, setTab] = useState<'chat' | 'image'>('chat')
   // key = `${model}::${channelId}` -> 输入框中的字符串
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [diag, setDiag] = useState<{ model: string; targets: Record<string, boolean> } | null>(null)
@@ -46,6 +48,9 @@ export default function ModelRoutes() {
   if (routes.isError) return <ErrorText text={(routes.error as Error).message} />
 
   const groups = routes.data ?? []
+  // 任一渠道把它标记为生图模型，就归入生图分类
+  const isImageGroup = (g: RouteGroup) => g.routes.some((r) => r.image)
+  const visibleGroups = groups.filter((g) => (tab === 'image' ? isImageGroup(g) : !isImageGroup(g)))
   const diagGroup = diag ? groups.find((g) => g.model === diag.model) : undefined
   const selectedCount = diagGroup
     ? diagGroup.routes.filter((r) => diag?.targets[r.channel_id]).length
@@ -84,7 +89,17 @@ export default function ModelRoutes() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-base font-semibold text-zinc-800 dark:text-zinc-100">模型路由</h1>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h1 className="text-base font-semibold text-zinc-800 dark:text-zinc-100">模型路由</h1>
+        <Segmented
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: 'chat', label: '对话模型' },
+            { value: 'image', label: '生图模型' },
+          ]}
+        />
+      </div>
 
       {groups.length === 0 ? (
         <Card>
@@ -97,9 +112,13 @@ export default function ModelRoutes() {
             }
           />
         </Card>
+      ) : visibleGroups.length === 0 ? (
+        <Card>
+          <Empty text={tab === 'chat' ? '还没有可路由的对话模型' : '还没有可路由的生图模型'} />
+        </Card>
       ) : (
         <div className="space-y-3">
-          {groups.map((group) => (
+          {visibleGroups.map((group) => (
             <Card
               key={group.model}
               title={<code className="text-sm">{group.model}</code>}
@@ -145,8 +164,11 @@ export default function ModelRoutes() {
                               <code className="min-w-0 truncate font-mono text-xs text-zinc-600 dark:text-zinc-400">
                                 {route.upstream_model}
                               </code>
-                              {route.direct ? <Badge tone="info">透传</Badge> : null}
-                              {route.image ? <Badge tone="ok">生图</Badge> : null}
+                              {route.direct ? (
+                                <Badge tone="info">透传</Badge>
+                              ) : (
+                                <Badge tone="warn">映射</Badge>
+                              )}
                             </div>
                           </td>
                           <td className="py-2 pr-3">

@@ -109,18 +109,9 @@ export default function Plugins() {
         <Card>
           <Empty text="尚未发现插件" />
           <div className="mx-auto max-w-xl space-y-2 rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-400">
-            <p className="font-medium text-zinc-700 dark:text-zinc-300">如何安装插件</p>
             <p>
-              1. 在程序目录下新建 <code className="text-xs">plugins/&lt;插件id&gt;/</code>
-              （目录名就是插件 id，用小写字母、数字、- 或 _）
-            </p>
-            <p>
-              2. 放入 <code className="text-xs">plugin.json</code> 与入口文件
-            </p>
-            <p>3. 点上方「重新扫描」，插件会被拉起并自动注册为渠道</p>
-            <p className="pt-1 text-xs text-zinc-500">
-              仓库内置了一个可直接试用的示例：把 <code>examples/plugins/workbuddy</code> 复制到{' '}
-              <code>plugins/workbuddy</code> 即可
+              把插件目录放到 <code className="text-xs">plugins/&lt;插件id&gt;/</code>（含{' '}
+              <code className="text-xs">plugin.json</code> 与入口文件），再点右上角重新扫描即可。
             </p>
           </div>
         </Card>
@@ -458,7 +449,7 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
 
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-zinc-500 dark:text-zinc-400">
-            账号与凭据由插件负责，界面由面板统一渲染 · 共 {items.length} 个账号
+            共 {items.length} 个账号
             {autoRefreshing ? ' · 正在刷新额度…' : ''}
           </p>
           <div className="flex flex-wrap gap-2">
@@ -550,8 +541,7 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
             {login.status === 'pending' ? (
               <div className="space-y-1.5 border-t border-emerald-200 pt-2 dark:border-emerald-900">
                 <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                  Docker 部署时回调端口只在容器内，浏览器打不开属正常现象：
-                  把地址栏里的完整链接粘贴到下面，由网关转交给插件处理。
+                  Docker 部署时回调页打不开属正常：把地址栏完整链接粘贴到下面提交。
                 </p>
                 <div className="flex items-center gap-2">
                   <Input

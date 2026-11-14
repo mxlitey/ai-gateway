@@ -18,6 +18,22 @@ export type ImageGenConfig = {
   failed_status: string
   images_field: string
   error_field: string
+  /** 同步生图等待上游的总超时（毫秒），0 表示沿用 timeout_ms */
+  sync_timeout_ms?: number
+  /** response_format 策略：drop=不传上游，pass=透传，url/b64_json=强制指定 */
+  response_format_mode?: string
+  /** 客户端参数名 → 上游参数名 */
+  param_map?: Record<string, string>
+  /** 固定附加到上游请求体的参数 */
+  static_params?: Record<string, unknown>
+  /** 从上游请求体删除的参数名 */
+  drop_params?: string[]
+  /** 带参考图时改用的提交路径，空表示仍用 path */
+  edit_path?: string
+  /** 参考图在上游请求体里的字段名 */
+  reference_field?: string
+  /** 参考图形态：url_array / single_url / url_object_array / image_url_object_array */
+  reference_shape?: string
 }
 
 export type Channel = {
@@ -263,6 +279,7 @@ export type RuntimeInfo = {
   access_url: string
   api_url: string
   data_dir: string
+  version: string
 }
 
 /** 可在面板调整的运行期设置；字符串项为空表示沿用启动参数 / 环境变量。 */

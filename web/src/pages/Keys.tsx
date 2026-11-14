@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type APIKey, type Channel, type MCPServer } from '../lib/api'
 import { toast } from '../lib/toast'
-import { Button, Card, Empty, ErrorText, Field, Input, Loading, Modal, Switch } from '../components/ui'
+import { Button, Card, Empty, ErrorText, Field, Input, Loading, Modal, Segmented, Switch } from '../components/ui'
 
 // Scope 密钥在某类资源上的权限范围：全部 / 仅勾选 / 禁用。
 type Scope = APIKey['channel_scope']
@@ -178,7 +178,7 @@ export default function Keys() {
                       toggleFlip()
                     }
                   }}
-                  className={`flip-card h-40 cursor-pointer ${flipped ? 'flipped' : ''}`}
+                  className={`flip-card h-40 max-sm:h-44 cursor-pointer ${flipped ? 'flipped' : ''}`}
                 >
                   <div className="flip-card-inner">
                     {/* 正面：概览 */}
@@ -230,8 +230,7 @@ export default function Keys() {
                         </Button>
                         <Button
                           size="sm"
-                          variant="ghost"
-                          className="text-red-600 dark:text-red-400"
+                          variant="softDanger"
                           onClick={(e) => {
                             e.stopPropagation()
                             setFlippedId(null)
@@ -273,7 +272,7 @@ export default function Keys() {
                 autoFocus
               />
             </Field>
-            <Field label="渠道权限" hint="「全部」含之后新增的渠道；「禁用」表示这把密钥不能调用 /v1 接口">
+            <Field label="渠道权限">
               <div className="space-y-2">
                 <ScopePicker value={channelScope} onChange={setChannelScope} />
                 {channelScope === 'selected' ? (
@@ -287,10 +286,7 @@ export default function Keys() {
                 ) : null}
               </div>
             </Field>
-            <Field
-              label="MCP 权限"
-              hint="「全部」含之后新增的服务器；「禁用」表示这把密钥不能调用 /mcp 接口"
-            >
+            <Field label="MCP 权限">
               <div className="space-y-2">
                 <ScopePicker value={mcpScope} onChange={setMcpScope} />
                 {mcpScope === 'selected' ? (
@@ -320,9 +316,6 @@ export default function Keys() {
           }
         >
           <div className="space-y-3">
-            <p className="text-sm text-zinc-500 dark:text-zinc-400">
-              密钥已保存，之后在列表里可以随时点「复制」取用。
-            </p>
             <div className="flex flex-wrap items-center gap-2">
               <Input readOnly value={created.key} className="min-w-0 flex-1 basis-48 font-mono" />
               <Button onClick={() => copyKey(created.key)}>复制</Button>
@@ -349,7 +342,7 @@ export default function Keys() {
             <Field label="名称">
               <Input value={editName} onChange={(e) => setEditName(e.target.value)} autoFocus />
             </Field>
-            <Field label="渠道权限" hint="「全部」含之后新增的渠道；「禁用」表示这把密钥不能调用 /v1 接口">
+            <Field label="渠道权限">
               <div className="space-y-2">
                 <ScopePicker value={editChannelScope} onChange={setEditChannelScope} />
                 {editChannelScope === 'selected' ? (
@@ -363,10 +356,7 @@ export default function Keys() {
                 ) : null}
               </div>
             </Field>
-            <Field
-              label="MCP 权限"
-              hint="「全部」含之后新增的服务器；「禁用」表示这把密钥不能调用 /mcp 接口"
-            >
+            <Field label="MCP 权限">
               <div className="space-y-2">
                 <ScopePicker value={editMcpScope} onChange={setEditMcpScope} />
                 {editMcpScope === 'selected' ? (
@@ -450,27 +440,7 @@ function ScopePicker({ value, onChange }: { value: Scope; onChange: (v: Scope) =
     { value: 'selected', label: '仅勾选' },
     { value: 'none', label: '禁用' },
   ]
-  return (
-    <div className="flex gap-1.5">
-      {options.map((o) => {
-        const active = value === o.value
-        return (
-          <button
-            key={o.value}
-            type="button"
-            onClick={() => onChange(o.value)}
-            className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${
-              active
-                ? 'border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900'
-                : 'border-zinc-200 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
-            }`}
-          >
-            {o.label}
-          </button>
-        )
-      })}
-    </div>
-  )
+  return <Segmented value={value} onChange={onChange} options={options} />
 }
 
 // ChannelPicker 渲染「限定可用渠道」的多选列表（生成与编辑共用）。

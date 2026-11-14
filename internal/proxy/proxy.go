@@ -27,16 +27,17 @@ import (
 
 // Handler 代理处理器。
 type Handler struct {
-	store    *store.Store
-	client   *http.Client
-	balancer *routing.Balancer
-	pricer   *pricing.Resolver
-	cooler   *penalty.Cooler
+	store       *store.Store
+	client      *http.Client
+	imageClient *http.Client
+	balancer    *routing.Balancer
+	pricer      *pricing.Resolver
+	cooler      *penalty.Cooler
 }
 
-// New 创建代理处理器。pricer 可为 nil（不估算费用）。
-func New(s *store.Store, pricer *pricing.Resolver) *Handler {
-	transport := &http.Transport{
+// newTransport 构造出站 Transport。headerTimeout 为 0 时不限制等待响应头的时间。
+func newTransport(headerTimeout time.Duration) *http.Transport {
+	return &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
 			Timeout:   15 * time.Second,
@@ -45,11 +46,15 @@ func New(s *store.Store, pricer *pricing.Resolver) *Handler {
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: 120 * time.Second,
+		ResponseHeaderTimeout: headerTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 		// SSE 不能压缩，否则代理会缓冲整个流
 		DisableCompression: true,
 	}
+}
+
+// New 创建代理处理器。pricer 可为 nil（不估算费用）。
+func New(s *store.Store, pricer *pricing.Resolver) *Handler {
 	balancer := routing.New(s)
 	cooler := penalty.New(s, penalty.DefaultConfig())
 	// 选路时严格屏蔽冷却中的密钥
@@ -60,7 +65,10 @@ func New(s *store.Store, pricer *pricing.Resolver) *Handler {
 		pricer:   pricer,
 		cooler:   cooler,
 		// 不设置 Client.Timeout：长连接流式不能被总超时打断
-		client: &http.Client{Transport: transport},
+		client: &http.Client{Transport: newTransport(120 * time.Second)},
+		// 生图同步模式可能要等上游数分钟，响应头超时交给渠道级 context 控制；
+		// 对话链路保持 120 秒，避免坏上游拖慢故障转移。
+		imageClient: &http.Client{Transport: newTransport(0)},
 	}
 }
 
@@ -354,7 +362,7 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 	var lastErr string
 	for _, t := range targets {
 		rec.Attempt()
-		res := GenerateImage(r.Context(), h.client, t.Channel, t.Key, body, modelName, r)
+		res := GenerateImage(r.Context(), h.imageClient, t.Channel, t.Key, body, modelName, r)
 		if res.StatusCode >= 200 && res.StatusCode < 300 {
 			h.cooler.Success(t.Channel.ID, t.Key)
 			rec.Served(t)

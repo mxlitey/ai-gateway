@@ -208,7 +208,7 @@ export default function Settings() {
           </dd>
         </dl>
         <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
-          安全提示：默认仅监听本机回环地址。若改为对外监听，请自行确认网络与访问控制。
+          默认仅监听本机；对外监听请自行确认访问控制。
         </p>
       </Card>
 
@@ -218,11 +218,6 @@ export default function Settings() {
             <ErrorText text={(adminMCP.error as Error).message} />
           </div>
         ) : null}
-        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
-          把网关自身的管理能力（用量、渠道、密钥冷却、插件、MCP 上游、上游诊断等）暴露为一个独立的 MCP 服务器，
-          供 AI 客户端查询与操作。它与「MCP 服务器」页聚合的上游工具互不影响，鉴权使用独立管理令牌。
-        </p>
-
         <div className="max-w-2xl space-y-4">
           <Field label="启用管理 MCP" hint={`端点为 ${adminMCP.data?.access_url ?? '—'}`}>
             <Segmented
@@ -237,7 +232,7 @@ export default function Settings() {
 
           <Field
             label="允许写操作"
-            hint="关闭时只暴露只读工具；开启后会额外提供签发密钥、新建/修改渠道、重置冷却、重启插件等操作。"
+            hint="关闭时只读；开启后可签发密钥、修改渠道等"
           >
             <Segmented
               value={adminMCP.data?.writable ? 'on' : 'off'}
@@ -260,7 +255,7 @@ export default function Settings() {
           {mcpConfig ? (
             <div className="space-y-2">
               <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
-                令牌明文只显示这一次，刷新页面后无法再查看。请立即复制保存；遗失后只能重置（旧令牌会立即失效）。
+                令牌明文仅显示一次，请立即复制保存；遗失后只能重置。
               </p>
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
@@ -293,9 +288,6 @@ export default function Settings() {
             >
               重置令牌
             </Button>
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">
-              适用于令牌泄露或遗失；重置后会重新展示配置片段。
-            </span>
           </div>
         </div>
       </Card>
@@ -306,9 +298,6 @@ export default function Settings() {
             <ErrorText text={(settingsQuery.error as Error).message} />
           </div>
         ) : null}
-        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
-          这些设置保存在数据库里，保存后立即生效，无需重启。留空的文本项表示沿用启动参数 / 环境变量。
-        </p>
         {draft ? (
           <div className="max-w-2xl space-y-4">
             <Field label="日志级别" hint={`留空沿用启动参数（当前 ${settingsQuery.data?.env_log_level || 'info'}）`}>
@@ -380,7 +369,7 @@ export default function Settings() {
 
             <Field
               label="上游密钥失败冷却"
-              hint="开启后，某密钥请求上游失败即冷却该密钥，冷却期内不再使用；连续失败按倍数递增冷却时长，任意一次成功即重置。"
+              hint="失败后暂停使用该密钥，连续失败逐次延长，成功即重置"
             >
               <Segmented
                 value={draft.key_cooldown_enabled ? 'on' : 'off'}
@@ -472,9 +461,7 @@ export default function Settings() {
 
       <Card title="Python 插件运行时">
         <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
-          插件一律是 Python 源码（入口为 <code className="text-xs">.py</code> 脚本），
-          同一份源码可在 Windows / macOS / Linux 通用。Docker 镜像已内置 python3 / pip；
-          Windows 桌面版需自行安装 Python 3（建议从 python.org 安装并勾选 Add to PATH）。
+          插件为 Python 源码，需 Python 3（Windows 桌面版请先安装并加入 PATH）。
         </p>
         {python.isError ? (
           <div className="mb-3">
@@ -512,7 +499,7 @@ export default function Settings() {
           <div className="mt-5 max-w-2xl space-y-4">
             <Field
               label="pip 源（按顺序退避）"
-              hint="留空使用内置顺序：官方源优先，失败后依次尝试清华、阿里云、腾讯云、中科大镜像。多条用逗号分隔。"
+              hint="留空使用内置镜像顺序，多条用逗号分隔"
             >
               <Input
                 value={pyDraft.pip_index_urls}
@@ -543,9 +530,6 @@ export default function Settings() {
       </Card>
 
       <Card title="清理旧记录">
-        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
-          按「保留最近 N 天」同时清理用量明细与错误日志；填 0 表示连当天一起清理。此操作不可撤销。
-        </p>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm text-zinc-600 dark:text-zinc-300">保留最近</span>
           <input

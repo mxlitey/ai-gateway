@@ -1,9 +1,12 @@
 ﻿# AI Gateway 绿色版一键构建
-# 用法：pwsh -File build/build.ps1 -Version 1.3.2
+# 用法：pwsh -File build/build.ps1
+#       版本号统一写在仓库根目录的 VERSION 文件，构建时自动同步到各处的元数据；
+#       临时覆盖可用 -Version 1.3.4。
 #       加 -Docker 同时构建 Linux 镜像（默认 amd64 + arm64 双架构），
 #       导出 dist/ai-gateway-v<版本>-docker-amd64.tar 与 -arm64.tar
 param(
-    [string]$Version = "dev",
+    # 留空则读取仓库根目录的 VERSION 文件
+    [string]$Version = "",
     # 额外构建 Docker 镜像（debian:bookworm-slim，内置 trae / workbuddy 等 9 个插件）
     [switch]$Docker,
     # Docker 目标架构；只想构建单架构时传 -DockerPlatforms linux/amd64
@@ -15,6 +18,51 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+
+# 版本号唯一来源：根目录 VERSION 文件
+if (-not $Version) {
+    if (-not (Test-Path "VERSION")) {
+        Write-Host "[错误] 未找到 VERSION 文件，请写入版本号（如 1.3.3）" -ForegroundColor Red
+        exit 1
+    }
+    $Version = (Get-Content "VERSION" -Raw).Trim()
+}
+if (-not $Version) {
+    Write-Host "[错误] VERSION 文件内容为空" -ForegroundColor Red
+    exit 1
+}
+Write-Host "版本号: $Version（来源：VERSION）" -ForegroundColor Cyan
+
+# 把版本号同步到需要静态版本号的派生文件，避免每次改多处。
+# web/package.json 与 package-lock.json 由 npm 一并更新；
+# cmd/gateway-wails/info.json 决定 Windows 可执行文件的属性页版本。
+function Sync-Version([string]$v) {
+    if (Test-Path "web/package.json") {
+        Push-Location web
+        try {
+            & npm version $v --no-git-tag-version --allow-same-version 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "[警告] web/package.json 版本同步失败" -ForegroundColor Yellow
+            }
+        } finally { Pop-Location }
+    }
+
+    $infoPath = "cmd/gateway-wails/info.json"
+    if (Test-Path $infoPath) {
+        $info = Get-Content $infoPath -Raw -Encoding UTF8
+        $replacement = '${1}' + $v + '${2}'
+        $info = [regex]::Replace(
+            $info,
+            '("(?:file_version|product_version|FileVersion|ProductVersion)"\s*:\s*")[^"]*(")',
+            $replacement)
+        [IO.File]::WriteAllText(
+            (Join-Path (Get-Location) $infoPath),
+            $info,
+            (New-Object Text.UTF8Encoding($false)))
+    }
+}
+
+Sync-Version $Version
 
 function Require-Command([string]$name, [string]$hint) {
     if (-not (Get-Command $name -ErrorAction SilentlyContinue)) {
@@ -167,6 +215,46 @@ $mcpReadme = @(
 ) -join "`r`n"
 [IO.File]::WriteAllText((Join-Path (Get-Location) "dist/mcp/README.txt"), $mcpReadme, (New-Object Text.UTF8Encoding($false)))
 
+# ---- 打包交付物 ----
+# 全平台发版固定包含：Windows 绿色版 zip（exe + plugins + mcp + skills）与示例插件 zip。
+Write-Host "  打包 Windows 绿色版与示例插件 ..." -ForegroundColor Cyan
+
+$stage = "dist/.stage-windows"
+Reset-Dir $stage
+Copy-Item "dist/README.txt" $stage -Force
+Copy-Item $exe $stage -Force
+New-Item -ItemType Directory -Force -Path "$stage/plugins", "$stage/mcp", "$stage/skills" | Out-Null
+Copy-Item "dist/plugins/*" "$stage/plugins" -Recurse -Force
+Copy-Item "dist/mcp/*" "$stage/mcp" -Recurse -Force
+if (Test-Path "examples/skills/image-gen") {
+    Copy-Item "examples/skills/image-gen" "$stage/skills/image-gen" -Recurse -Force
+}
+# 离线环境需要装插件依赖时，把放在 dist/ 的 Python 安装包一并带上（没有则跳过）
+Get-ChildItem "dist" -Filter "python-*-amd64.exe" -File -ErrorAction SilentlyContinue |
+    ForEach-Object { Copy-Item $_.FullName $stage -Force }
+Get-ChildItem $stage -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+$winZip = "dist/ai-gateway-v$Version-windows-amd64.zip"
+Remove-Item $winZip -Force -ErrorAction SilentlyContinue
+Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $winZip -CompressionLevel Optimal
+Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
+
+# 示例插件单独打包，解压后直接得到 plugins/ 目录
+$pluginStage = "dist/.stage-plugins"
+Reset-Dir $pluginStage
+foreach ($dir in Get-ChildItem "examples/plugins" -Directory) {
+    $dst = Join-Path $pluginStage ("plugins/" + $dir.Name)
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Copy-Item (Join-Path $dir.FullName "*") $dst -Recurse -Force
+}
+Get-ChildItem $pluginStage -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+$pluginsZip = "dist/plugins-v$Version.zip"
+Remove-Item $pluginsZip -Force -ErrorAction SilentlyContinue
+Compress-Archive -Path (Join-Path $pluginStage "plugins") -DestinationPath $pluginsZip -CompressionLevel Optimal
+Remove-Item $pluginStage -Recurse -Force -ErrorAction SilentlyContinue
+
 # ---- 5. Docker 镜像（可选）----
 if ($Docker) {
     Write-Host "[5/$totalSteps] 构建 Docker 镜像（$($DockerPlatforms -join ' / ')）..." -ForegroundColor Cyan
@@ -221,6 +309,8 @@ if ($Docker) {
 
 Write-Host ""
 Write-Host "构建完成: $exe ($Version)" -ForegroundColor Green
+Write-Host "Windows 绿色版: $winZip" -ForegroundColor Green
+Write-Host "示例插件包: $pluginsZip" -ForegroundColor Green
 Write-Host "双击 $exe 即可启动并打开管理面板" -ForegroundColor Green
 if ($Docker) {
     Write-Host "Docker 镜像（$($DockerPlatforms -join ' / ')）已导出：" -ForegroundColor Green

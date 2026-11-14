@@ -219,7 +219,7 @@ export default function Usage() {
 
       {priceCount === 0 ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-          价格表还是空的：去「价格表」页刷新或手工添加价格。价格表为空时费用一律按 0 计。
+          价格表为空，费用按 0 计。请到「价格表」刷新或手工添加。
         </div>
       ) : null}
 

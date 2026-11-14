@@ -47,6 +47,14 @@ type FormState = {
   imageFailedStatus: string
   imageImagesField: string
   imageErrorField: string
+  imageSyncTimeoutSec: string
+  imageFormatMode: string
+  imageParamMap: HeaderRow[]
+  imageStaticParamsText: string
+  imageDropParamsText: string
+  imageEditPath: string
+  imageRefField: string
+  imageRefShape: string
   keyStrategy: string
   enabled: boolean
   // 插件渠道：密钥由插件账号同步而来，面板只允许启停与排序，不允许增删改
@@ -55,8 +63,8 @@ type FormState = {
 
 // 多密钥选用策略，与后端 model.KeyStrategy* 常量对应
 const KEY_STRATEGIES = [
-  { value: 'rotate', label: '轮询', desc: '按渠道依次轮换首选密钥（K1→K2→K3…），把流量均衡分摊到各密钥' },
-  { value: 'ordered', label: '故障转移', desc: '按配置顺序依次尝试，前一个失败才用下一个' },
+  { value: 'rotate', label: '负载均衡', desc: '多密钥轮流承担请求，把流量分摊到各密钥' },
+  { value: 'ordered', label: '故障转移', desc: '按顺序尝试，前一个失败才用下一个' },
 ] as const
 
 const emptyForm: FormState = {
@@ -82,6 +90,14 @@ const emptyForm: FormState = {
   imageFailedStatus: '',
   imageImagesField: '',
   imageErrorField: '',
+  imageSyncTimeoutSec: '',
+  imageFormatMode: 'drop',
+  imageParamMap: [],
+  imageStaticParamsText: '',
+  imageDropParamsText: '',
+  imageEditPath: '',
+  imageRefField: '',
+  imageRefShape: 'url_array',
   keyStrategy: 'rotate',
   enabled: true,
   isPlugin: false,
@@ -92,6 +108,22 @@ const IMAGE_MODES = [
   { value: '', label: '关闭' },
   { value: 'sync', label: '同步' },
   { value: 'async', label: '异步任务' },
+] as const
+
+// response_format 处理策略，与后端 model.ImageFormat* 对应
+const IMAGE_FORMAT_MODES = [
+  { value: 'drop', label: '不传上游' },
+  { value: 'pass', label: '原样透传' },
+  { value: 'url', label: '强制 url' },
+  { value: 'b64_json', label: '强制 b64' },
+] as const
+
+// 参考图形态，与后端 model.ImageRef* 对应
+const IMAGE_REF_SHAPES = [
+  { value: 'url_array', label: '字符串数组' },
+  { value: 'single_url', label: '单个字符串' },
+  { value: 'url_object_array', label: '[{url}]' },
+  { value: 'image_url_object_array', label: '[{image_url}]' },
 ] as const
 
 // isPluginChannel 判断渠道是否由插件注册（source 形如 plugin:<插件id>）。
@@ -148,6 +180,18 @@ export default function Channels() {
           failed_status: state.imageFailedStatus.trim(),
           images_field: state.imageImagesField.trim(),
           error_field: state.imageErrorField.trim(),
+          sync_timeout_ms: secondsToMS(state.imageSyncTimeoutSec),
+          response_format_mode: state.imageFormatMode,
+          param_map: Object.fromEntries(
+            state.imageParamMap
+              .map((r) => [r.name.trim(), r.value.trim()] as const)
+              .filter(([from, to]) => from !== '' && to !== ''),
+          ),
+          static_params: parseJSONObject(state.imageStaticParamsText),
+          drop_params: splitLines(state.imageDropParamsText),
+          edit_path: state.imageEditPath.trim(),
+          reference_field: state.imageRefField.trim(),
+          reference_shape: state.imageRefShape,
         },
         key_strategy: state.keyStrategy,
         enabled: state.enabled,
@@ -347,8 +391,7 @@ export default function Channels() {
                         </Button>
                         <Button
                           size="sm"
-                          variant="ghost"
-                          className="text-red-600 dark:text-red-400"
+                          variant="softDanger"
                           onClick={(e) => {
                             e.stopPropagation()
                             setFlippedId(null)
@@ -413,11 +456,7 @@ export default function Channels() {
 
             <Field
               label="API 密钥"
-              hint={
-                form.isPlugin
-                  ? '密钥由插件账号同步而来（key 即账号 id）：在这里启停账号、调整顺序即可'
-                  : '同一渠道可配多个密钥'
-              }
+              hint={form.isPlugin ? '密钥由插件同步，可启停与排序' : undefined}
             >
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
@@ -503,11 +542,7 @@ export default function Channels() {
                     )}
                   </div>
                 ))}
-                {form.isPlugin ? (
-                  <p className="text-xs text-zinc-400 dark:text-zinc-500">
-                    账号的增删请在插件「控制台」里操作，网关会自动同步（账号变更后立即同步，运行期间约每 30 秒复查一次）。
-                  </p>
-                ) : (
+                {form.isPlugin ? null : (
                   <Button
                     onClick={() => setForm({ ...form, keys: [...form.keys, { key: '', enabled: true }] })}
                   >
@@ -519,7 +554,7 @@ export default function Channels() {
 
             <Field
               label="模型列表"
-              hint="每行一个，同名透传；点「获取上游模型」拉取后勾选要加入的"
+              hint="每行一个，支持从上游拉取后勾选"
             >
               <div className="space-y-2">
                 <Textarea
@@ -600,7 +635,7 @@ export default function Channels() {
 
             <Field
               label="生图模型"
-              hint="每行一个；标记后只能走 /v1/images/generations，不会进入对话路由"
+              hint="每行一个，仅用于 /v1/images/generations"
             >
               <Textarea
                 rows={3}
@@ -620,9 +655,6 @@ export default function Channels() {
                   onChange={(v) => setForm({ ...form, imageMode: v as FormState['imageMode'] })}
                   options={IMAGE_MODES.map((m) => ({ value: m.value, label: m.label }))}
                 />
-                <span className="text-xs text-zinc-400 dark:text-zinc-500">
-                  同步=一次请求直接返回图片；异步=提交任务后轮询 task_id
-                </span>
               </div>
 
               {form.imageMode ? (
@@ -674,10 +706,103 @@ export default function Channels() {
                     </label>
                   </div>
 
+                  <details className="text-xs text-zinc-500 dark:text-zinc-400">
+                    <summary className="cursor-pointer select-none">
+                      高级：通用适配（字段映射、编辑接口、结果格式）
+                    </summary>
+                    <div className="mt-2 space-y-3">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="block space-y-1.5">
+                          <span>同步响应超时（秒）</span>
+                          <Input
+                            type="number"
+                            value={form.imageSyncTimeoutSec}
+                            onChange={(e) =>
+                              setForm({ ...form, imageSyncTimeoutSec: e.target.value })
+                            }
+                            placeholder="沿用任务超时"
+                          />
+                        </label>
+                        <label className="block space-y-1.5">
+                          <span>编辑路径（可选）</span>
+                          <Input
+                            value={form.imageEditPath}
+                            onChange={(e) => setForm({ ...form, imageEditPath: e.target.value })}
+                            placeholder="/images/edits"
+                          />
+                        </label>
+                        <label className="block space-y-1.5">
+                          <span>参考图字段名</span>
+                          <Input
+                            value={form.imageRefField}
+                            onChange={(e) => setForm({ ...form, imageRefField: e.target.value })}
+                            placeholder="image_url"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <span>结果格式（response_format）</span>
+                        <Segmented
+                          value={form.imageFormatMode}
+                          onChange={(v) => setForm({ ...form, imageFormatMode: v })}
+                          options={IMAGE_FORMAT_MODES.map((m) => ({
+                            value: m.value,
+                            label: m.label,
+                          }))}
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <span>参考图形态</span>
+                        <Segmented
+                          value={form.imageRefShape}
+                          onChange={(v) => setForm({ ...form, imageRefShape: v })}
+                          options={IMAGE_REF_SHAPES.map((m) => ({
+                            value: m.value,
+                            label: m.label,
+                          }))}
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <span>参数映射（客户端参数 → 上游参数）</span>
+                        <HeaderRows
+                          rows={form.imageParamMap}
+                          onChange={(rows) => setForm({ ...form, imageParamMap: rows })}
+                          namePlaceholder="size"
+                          valuePlaceholder="image_size"
+                          addLabel="添加映射"
+                        />
+                      </div>
+
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <label className="block space-y-1.5">
+                          <span>固定参数（JSON）</span>
+                          <Textarea
+                            value={form.imageStaticParamsText}
+                            onChange={(e) =>
+                              setForm({ ...form, imageStaticParamsText: e.target.value })
+                            }
+                            placeholder='{"watermark": false}'
+                          />
+                        </label>
+                        <label className="block space-y-1.5">
+                          <span>删除参数（一行一个）</span>
+                          <Textarea
+                            value={form.imageDropParamsText}
+                            onChange={(e) =>
+                              setForm({ ...form, imageDropParamsText: e.target.value })
+                            }
+                            placeholder="response_format"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  </details>
+
                   <div className="space-y-1.5">
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                      提交附加请求头（如异步模式需要 X-ModelScope-Async-Mode: true）
-                    </span>
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">提交附加请求头</span>
                     <HeaderRows
                       rows={form.imageSubmitHeaders}
                       onChange={(rows) => setForm({ ...form, imageSubmitHeaders: rows })}
@@ -688,7 +813,7 @@ export default function Channels() {
                     <>
                       <div className="space-y-1.5">
                         <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                          轮询附加请求头（如 X-ModelScope-Task-Type: image_generation）
+                          轮询附加请求头
                         </span>
                         <HeaderRows
                           rows={form.imagePollHeaders}
@@ -908,6 +1033,22 @@ function openEdit(ch: Channel, setForm: (f: FormState) => void) {
     imageFailedStatus: ch.image_generation?.failed_status ?? '',
     imageImagesField: ch.image_generation?.images_field ?? '',
     imageErrorField: ch.image_generation?.error_field ?? '',
+    imageSyncTimeoutSec: ch.image_generation?.sync_timeout_ms
+      ? String(ch.image_generation.sync_timeout_ms / 1000)
+      : '',
+    imageFormatMode: ch.image_generation?.response_format_mode || 'drop',
+    imageParamMap: Object.entries(ch.image_generation?.param_map ?? {}).map(([name, value]) => ({
+      name,
+      value,
+    })),
+    imageStaticParamsText:
+      ch.image_generation?.static_params && Object.keys(ch.image_generation.static_params).length > 0
+        ? JSON.stringify(ch.image_generation.static_params, null, 2)
+        : '',
+    imageDropParamsText: (ch.image_generation?.drop_params ?? []).join('\n'),
+    imageEditPath: ch.image_generation?.edit_path ?? '',
+    imageRefField: ch.image_generation?.reference_field ?? '',
+    imageRefShape: ch.image_generation?.reference_shape || 'url_array',
     keyStrategy: ch.key_strategy || 'rotate',
     enabled: ch.enabled,
     isPlugin: isPluginChannel(ch),
@@ -926,7 +1067,19 @@ function secondsToMS(text: string): number {
 }
 
 // HeaderRows 生图附加请求头的简易编辑器。
-function HeaderRows({ rows, onChange }: { rows: HeaderRow[]; onChange: (rows: HeaderRow[]) => void }) {
+function HeaderRows({
+  rows,
+  onChange,
+  namePlaceholder = 'X-ModelScope-Async-Mode',
+  valuePlaceholder = 'true',
+  addLabel = '添加请求头',
+}: {
+  rows: HeaderRow[]
+  onChange: (rows: HeaderRow[]) => void
+  namePlaceholder?: string
+  valuePlaceholder?: string
+  addLabel?: string
+}) {
   return (
     <div className="space-y-2">
       {rows.map((row, i) => (
@@ -939,7 +1092,7 @@ function HeaderRows({ rows, onChange }: { rows: HeaderRow[]; onChange: (rows: He
               next[i] = { ...next[i], name: e.target.value }
               onChange(next)
             }}
-            placeholder="X-ModelScope-Async-Mode"
+            placeholder={namePlaceholder}
           />
           <Input
             className="min-w-0 flex-1 basis-36"
@@ -949,14 +1102,14 @@ function HeaderRows({ rows, onChange }: { rows: HeaderRow[]; onChange: (rows: He
               next[i] = { ...next[i], value: e.target.value }
               onChange(next)
             }}
-            placeholder="true"
+            placeholder={valuePlaceholder}
           />
-          <IconButton title="移除请求头" onClick={() => onChange(rows.filter((_, idx) => idx !== i))}>
+          <IconButton title="移除" onClick={() => onChange(rows.filter((_, idx) => idx !== i))}>
             <CrossIcon />
           </IconButton>
         </div>
       ))}
-      <Button onClick={() => onChange([...rows, { name: '', value: '' }])}>添加请求头</Button>
+      <Button onClick={() => onChange([...rows, { name: '', value: '' }])}>{addLabel}</Button>
     </div>
   )
 }
@@ -985,4 +1138,20 @@ function splitLines(text: string): string[] {
     .split('\n')
     .map((s) => s.trim())
     .filter(Boolean)
+}
+
+// parseJSONObject 解析固定参数；留空返回空对象，非法内容直接报错避免静默丢配置。
+function parseJSONObject(text: string): Record<string, unknown> {
+  const raw = text.trim()
+  if (!raw) return {}
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    throw new Error('固定参数不是合法 JSON')
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('固定参数必须是 JSON 对象，例如 {"watermark": false}')
+  }
+  return value as Record<string, unknown>
 }

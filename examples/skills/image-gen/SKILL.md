@@ -103,8 +103,11 @@ curl -H "Authorization: Bearer sk-你的密钥" "<网关地址>/v1/models?type=i
   调到更大也突破不了），否则网关先断开，连 `job_id` 都拿不到。所以给 20–60 秒、靠轮询等结果。
 - 网关对每个生图渠道有 `timeout_ms`（默认 300 秒，**只作用于异步轮询**），多渠道路由是串行故障转移；
   渠道多时逐个等满会超过本地服务自身上限（`AIGW_IMAGE_TIMEOUT_SECONDS`，默认 600 秒）。
-- 渠道若配成 `sync` 模式，生图就是一次 POST 等到出图，受网关「等上游响应头 120 秒」限制，
-  `timeout_ms` 对它不生效。耗时超过 120 秒的服务商必须配成 `async`，否则必然 502。
+- 渠道若配成 `sync` 模式，生图就是一次 POST 等到出图，默认最多等 120 秒；上游更慢时把渠道的
+  `sync_timeout_ms` 调大（只作用于 sync，不影响对话链路）。耗时不可控的服务商仍建议配 `async`。
+- 渠道可配置通用适配（sync/async 都生效）：参数改名 `param_map`、固定参数 `static_params`、
+  删除参数 `drop_params`、结果格式 `response_format_mode`、带参考图时的 `edit_path` 与
+  `reference_field`/`reference_shape`；结果字段支持 `data[].url` 这类嵌套路径。
 - 一个任务失败前不要连续重试多次；先看错误文案。
 
 ## 失败处理

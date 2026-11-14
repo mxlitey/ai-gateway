@@ -1,13 +1,13 @@
 # AI Gateway 多阶段构建：产出无界面（headless）的 Linux 镜像，供 Docker 部署。
 #
-# 构建（单架构）：docker buildx build --platform linux/amd64 -t ai-gateway:v1.2.1-amd64 --load .
+# 构建（单架构）：docker buildx build --platform linux/amd64 -t ai-gateway:v<版本号>-amd64 --load .
 # 双架构（amd64 + arm64，需 buildx 与 QEMU）：
-#   docker buildx build --platform linux/amd64,linux/arm64 \
-#     --build-arg VERSION=1.2.1 -t ai-gateway:v1.2.1 .
+#   docker buildx build --platform linux/amd64,linux/arm64 -t ai-gateway:v<版本号> .
+# 版本号默认读取仓库根目录的 VERSION 文件，也可用 --build-arg VERSION=x.y.z 覆盖。
 # 运行：docker run -d --name ai-gateway -p 8787:8787 \
 #         -e AIGW_ADMIN_PASSWORD=your-password \
 #         -v ai-gateway-data:/data \
-#         ai-gateway:v1.2.1
+#         ai-gateway:v<版本号>
 #
 # 镜像内置 TRAE、WorkBuddy 两个插件（见阶段 3），以及 github-search / image-generation
 # 两个本地 MCP 服务器，开箱即用。
@@ -30,13 +30,14 @@ ENV CGO_ENABLED=0 GOOS=linux
 ARG TARGETARCH=amd64
 ARG GOPROXY=https://goproxy.cn,direct
 ENV GOPROXY=${GOPROXY}
-ARG VERSION=dev
+ARG VERSION=
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
 # 用阶段 1 的产物覆盖 web/dist，供 //go:embed 内嵌
 COPY --from=web-builder /src/web/dist ./web/dist
-RUN GOARCH=${TARGETARCH} go build -trimpath \
+RUN VERSION="${VERSION:-$(cat VERSION)}" && \
+    GOARCH=${TARGETARCH} go build -trimpath \
       -ldflags "-s -w -X github.com/czg95/ai-gateway-v2/internal/version.Version=${VERSION}" \
       -o /out/ai-gateway ./cmd/gateway
 

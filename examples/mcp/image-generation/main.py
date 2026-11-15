@@ -37,8 +37,9 @@
   list_image_models  列出可用生图模型（等价于网关 /v1/models?type=image）
 
 自描述：initialize 会返回 instructions，说明模型查询、作业轮询、交付方式，
-以及网关内置图床的 HTTP 直传能力（不经过 MCP，不受 8 MB 请求体限制），
-客户端不依赖外部技能文档也能完成第一次调用。
+客户端不依赖外部技能文档也能完成第一次调用。图床能力（HTTP 直传，不经过 MCP，
+不受 8 MB 请求体限制）只由网关在转发 initialize 时追加，这里不重复，避免出现
+两套互相矛盾的地址。
 """
 
 import base64
@@ -107,7 +108,9 @@ IMAGE_TOOLS = [
             "调用网关的 /v1/images/generations 生成图片，支持文生图与参考图编辑（image_url）。"
             "模型名不确定时先调用 list_image_models 查询，再显式传 model。"
             "单次生图通常需要 1-3 分钟：本工具最多阻塞 wait_seconds 秒（默认 20）；"
-            "若返回 status=running，请每 5 秒调用 get_image_job(job_id) 直到 succeeded 或 failed。"
+            "若返回 status=running，请每 5 秒调用 get_image_job(job_id)；"
+            "作业状态共 5 种：queued / running / succeeded / failed / canceled，"
+            "只有 succeeded 才是拿到图片，failed / canceled 会直接以错误返回。"
             "成功结果的 url 是网关自身地址（/v1/images/files/...），"
             + LINK_TTL_HINT + "，可直接下载或给用户；重要结果建议 download=true 落本地。"
             "参考图用公网 http(s) URL（image_url）或本机文件路径（image_path）；"
@@ -187,7 +190,11 @@ IMAGE_TOOLS = [
     },
     {
         "name": "cancel_image_job",
-        "description": "取消仍在排队或执行中的生图作业；已完成的作业不受影响。",
+        "description": (
+            "放弃仍在排队或执行中的作业：立即停止网关侧的等待与轮询，作业标记为 canceled。"
+            "注意它不保证终止上游任务——异步渠道可能继续执行且已产生费用（不退还）；"
+            "同步渠道若已提交，同样可能已经计费。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {"job_id": {"type": "string", "description": "generate_image 返回的作业 ID"}},
@@ -209,33 +216,17 @@ INSTRUCTIONS = (
     "本服务把生图请求转发到 AI Gateway，作业由网关持久化（SQLite，保留 24 小时）。推荐流程："
     "1) 不确定模型时先调用 list_image_models，拿到 models 列表与 default_model；"
     "2) 调用 generate_image，至少传 prompt；没有 default_model 时必须显式传 model；"
-    "3) 返回 status=running 时每 5 秒调用 get_image_job(job_id) 直到 succeeded/failed；"
+    "3) 返回 status=queued/running 时每 5 秒调用 get_image_job(job_id)；"
+    "作业状态共 queued/running/succeeded/failed/canceled 五种，只有 succeeded 才有图片，"
+    "failed/canceled 会以 isError 返回；"
     "   网关或本服务重启不会丢作业：异步任务会继续轮询，同步任务会标记为 gateway_restarted 让你重提；"
     "4) 成功结果的 images[].url 是网关自身地址，images[].expires_at 是 Unix 秒过期时间，可直接下载或交给用户；"
     "需要长期保存时用 download=true 落本地；"
     "5) 失败时 isError=true，structuredContent.error 含 code/message/retryable；"
     "6) 超时重试请带上同一个 request_id，网关会复用已有作业，不会重复生图；"
-    "7) 需要放弃时调用 cancel_image_job(job_id)。"
+    "7) 需要放弃时调用 cancel_image_job(job_id)：只停止网关侧等待与轮询，"
+    "不保证终止上游任务，异步渠道可能继续执行并已产生费用。"
 )
-
-
-def _instructions():
-    """在基础说明书后追加网关图床能力（HTTP 直连，不经过 MCP 工具）。"""
-    base = _base_url()
-    return (
-        INSTRUCTIONS
-        + "\n\n网关内置图床（默认开启；直接 HTTP 调用，不经过本服务，因此不受 8 MB 请求体限制）："
-        + "上传 POST " + base + "/v1/images/uploads，"
-        + "Authorization: Bearer <与调用本服务相同的 sk- 密钥>，"
-        + "Content-Type 为 image/png|jpeg|webp|gif，请求体是图片原始字节（不是 multipart/form-data），"
-        + "单张默认上限 100 MB；返回 {id,url,bytes,content_type,expires_at}，"
-        + LINK_TTL_HINT + "；"
-        + "能力查询 GET " + base + "/v1/images/host（enabled/public 等，public=false 表示上游取不到该地址）；"
-        + "删除 DELETE " + base + "/v1/uploads/<id>。"
-        + "上面的地址取自本服务配置，若你在远端且它指向回环/内网地址，请换用你连接 MCP 时使用的网关地址。"
-        + "适合把本机图片交给其它工具、或需要自己控制参考图链接的场景；"
-        + "只是给 generate_image 传参考图时，优先用 image_path / image_url，由本服务处理。"
-    )
 
 
 class ToolError(Exception):
@@ -306,7 +297,7 @@ _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 # ---------- 网关作业 ----------
 
-def _gateway_call(method, path, key="", body=None, timeout=30):
+def _gateway_call(method, path, key="", body=None, timeout=30, not_found="not_found"):
     """调用网关的 JSON 接口；密钥优先取调用方带来的，其次回落 env。"""
     key = (key or "").strip() or _api_key()
     if not key:
@@ -330,7 +321,7 @@ def _gateway_call(method, path, key="", body=None, timeout=30):
         with _LOCAL_OPENER.open(req, timeout=timeout) as resp:
             raw = resp.read(16 << 20)
     except urllib.error.HTTPError as exc:
-        message, code, retryable = _gateway_error(exc)
+        message, code, retryable = _gateway_error(exc, not_found)
         raise ToolError(message, code=code, retryable=retryable, upstream_status=exc.code)
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", exc)
@@ -384,7 +375,9 @@ def _submit_job(payload, request_id="", key=""):
 def _fetch_job(job_id, key=""):
     if not job_id:
         raise ToolError("缺少作业 ID", code="invalid_request")
-    data = _gateway_call("GET", "/v1/images/jobs/" + urllib.parse.quote(job_id, safe=""), key)
+    data = _gateway_call(
+        "GET", "/v1/images/jobs/" + urllib.parse.quote(job_id, safe=""), key, not_found="job_not_found"
+    )
     if not isinstance(data, dict) or not data.get("status"):
         raise ToolError("网关返回的作业格式不可识别", code="invalid_response", retryable=True)
     return data
@@ -393,7 +386,9 @@ def _fetch_job(job_id, key=""):
 def _cancel_job(job_id, key=""):
     if not job_id:
         raise ToolError("缺少作业 ID", code="invalid_request")
-    data = _gateway_call("DELETE", "/v1/images/jobs/" + urllib.parse.quote(job_id, safe=""), key)
+    data = _gateway_call(
+        "DELETE", "/v1/images/jobs/" + urllib.parse.quote(job_id, safe=""), key, not_found="job_not_found"
+    )
     if not isinstance(data, dict) or not data.get("status"):
         raise ToolError("网关返回的作业格式不可识别", code="invalid_response", retryable=True)
     return data
@@ -473,7 +468,7 @@ def _raise_job_failure(view):
     )
 
 
-def _gateway_error(exc):
+def _gateway_error(exc, not_found_code="not_found"):
     """把网关 HTTP 错误转换为 (可读文案, 错误码, 是否可重试)。"""
     raw = ""
     try:
@@ -488,6 +483,10 @@ def _gateway_error(exc):
     if exc.code == 403:
         return ("网关拒绝：该密钥无权调用生图或此 MCP 服务器" + suffix, "forbidden", False)
     if exc.code == 404:
+        # 作业不存在/已过期也走 404，此时网关会带说明；有说明就原样透传，
+        # 只有响应体为空才怀疑是网关地址或路径配置错了。
+        if detail:
+            return (detail, not_found_code, False)
         return ("网关地址不对或接口不存在（检查 AIGW_IMAGE_BASE_URL）" + suffix, "not_found", False)
     if exc.code == 400:
         return ("网关拒绝了生图请求" + suffix, "invalid_request", False)
@@ -1054,7 +1053,7 @@ def _generate(args, key=""):
         view = _fetch_job(job_id, key)
 
     return {
-        "status": "running",
+        "status": status or "queued",
         "job_id": job_id,
         "stage": view.get("stage") or "",
         "elapsed_ms": _job_elapsed_ms(view),
@@ -1091,7 +1090,7 @@ def _job_status(args, key=""):
             },
         }
     return {
-        "status": "running",
+        "status": status or "queued",
         "job_id": job_id,
         "stage": view.get("stage") or "",
         "poll_count": view.get("poll_count") or 0,
@@ -1108,7 +1107,10 @@ def _cancel(args, key=""):
     return {
         "status": view.get("status") or "canceled",
         "job_id": job_id,
-        "hint": "取消只停止后续轮询；同步渠道可能已经产生上游费用。",
+        "hint": (
+            "只停止网关侧的等待与轮询；不保证终止上游任务，"
+            "异步渠道可能继续执行并已产生费用，同步渠道若已提交同样可能已经计费。"
+        ),
     }
 
 
@@ -1249,7 +1251,7 @@ class Handler(BaseHTTPRequestHandler):
                 "protocolVersion": _negotiate(params.get("protocolVersion")),
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "image-generation", "version": "1.1.0"},
-                "instructions": _instructions(),
+                "instructions": INSTRUCTIONS,
             }
         elif method == "tools/list":
             result = {"tools": IMAGE_TOOLS}

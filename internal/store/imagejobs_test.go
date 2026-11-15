@@ -51,6 +51,10 @@ func TestImageJobLifecycle(t *testing.T) {
 	if err := s.MarkImageJobRunning(job.ID, "ch-1", "sk-1"); err != nil {
 		t.Fatalf("mark running: %v", err)
 	}
+	running, _ := s.GetImageJob(job.ID)
+	if running.Stage != "submitting" {
+		t.Fatalf("stage after running = %q, want submitting", running.Stage)
+	}
 	if err := s.SetImageJobTask(job.ID, "ch-1", "sk-1", "task-9"); err != nil {
 		t.Fatalf("set task: %v", err)
 	}
@@ -61,6 +65,9 @@ func TestImageJobLifecycle(t *testing.T) {
 	if current.UpstreamTaskID != "task-9" || len(current.Payload) != 0 {
 		t.Fatalf("task = %q payload = %q", current.UpstreamTaskID, current.Payload)
 	}
+	if current.Stage != "polling" {
+		t.Fatalf("stage after task = %q, want polling", current.Stage)
+	}
 
 	if err := s.FinishImageJob(job.ID, ImageJobSucceeded, []byte(`{"data":[]}`), "", ""); err != nil {
 		t.Fatalf("finish: %v", err)
@@ -68,6 +75,10 @@ func TestImageJobLifecycle(t *testing.T) {
 	current, _ = s.GetImageJob(job.ID)
 	if current.Status != ImageJobSucceeded || len(current.Result) == 0 {
 		t.Fatalf("status = %q result = %q", current.Status, current.Result)
+	}
+	// 终态不再保留进度阶段，避免出现 succeeded + submitting/polling 的组合
+	if current.Stage != "" {
+		t.Fatalf("stage after finish = %q, want empty", current.Stage)
 	}
 
 	// 已完成作业不再出现在待恢复列表里

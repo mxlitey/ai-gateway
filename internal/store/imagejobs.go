@@ -150,9 +150,10 @@ func (s *Store) SetImageJobStage(id, stage string, pollCount int) error {
 }
 
 // FinishImageJob 写入终态。已处于终态的作业不会被覆盖（取消与迟到的结果竞争时以先到的为准）。
+// 同时清空 stage，避免客户端看到 succeeded 却还挂着 submitting / polling。
 func (s *Store) FinishImageJob(id, status string, result []byte, errMsg, errCode string) error {
 	_, err := s.db.Exec(
-		`UPDATE image_jobs SET status = ?, result = ?, error = ?, error_code = ?,
+		`UPDATE image_jobs SET status = ?, stage = '', result = ?, error = ?, error_code = ?,
 			payload = '', updated_at = ?
 		 WHERE id = ? AND status IN (?, ?)`,
 		status, string(result), errMsg, errCode, time.Now().UnixMilli(), id,

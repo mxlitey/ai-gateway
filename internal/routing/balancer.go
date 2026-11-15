@@ -65,16 +65,23 @@ func (b *Balancer) nextCounter(channelID string) uint64 {
 // 被标记为生图模型的公开模型不参与对话路由。
 // allowedChannelIDs 为空表示不限制。返回空切片表示无可用目标。
 func (b *Balancer) SelectTarget(publicModel string, allowedChannelIDs []string) ([]Target, error) {
-	return b.selectTargets(publicModel, allowedChannelIDs, false)
+	return b.selectTargets(publicModel, allowedChannelIDs, false, false)
 }
 
 // SelectImageTarget 按公开模型名解析有序生图目标列表。
 // 只返回「模型被标记为生图」且「渠道已配置生图模式」的目标。
 func (b *Balancer) SelectImageTarget(publicModel string, allowedChannelIDs []string) ([]Target, error) {
-	return b.selectTargets(publicModel, allowedChannelIDs, true)
+	return b.selectTargets(publicModel, allowedChannelIDs, true, false)
 }
 
-func (b *Balancer) selectTargets(publicModel string, allowedChannelIDs []string, image bool) ([]Target, error) {
+// HasImageTarget 报告是否存在匹配的生图渠道（忽略密钥冷却）。
+// 用于区分「模型没配置生图能力」与「渠道密钥都在冷却中」。
+func (b *Balancer) HasImageTarget(publicModel string, allowedChannelIDs []string) bool {
+	targets, err := b.selectTargets(publicModel, allowedChannelIDs, true, true)
+	return err == nil && len(targets) > 0
+}
+
+func (b *Balancer) selectTargets(publicModel string, allowedChannelIDs []string, image, ignoreCooling bool) ([]Target, error) {
 	channels, err := b.store.ListChannels()
 	if err != nil {
 		return nil, err
@@ -133,7 +140,11 @@ func (b *Balancer) selectTargets(publicModel string, allowedChannelIDs []string,
 	targets := make([]Target, 0, len(rows))
 	seen := map[string]bool{}
 	for _, r := range rows {
-		for _, key := range b.orderedKeys(r.ch) {
+		keys := r.ch.EnabledKeys()
+		if !ignoreCooling {
+			keys = b.orderedKeys(r.ch)
+		}
+		for _, key := range keys {
 			dedupe := r.ch.ID + ":" + key + ":" + r.upstream
 			if seen[dedupe] {
 				continue

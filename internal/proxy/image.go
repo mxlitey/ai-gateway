@@ -44,6 +44,8 @@ type ImageGenResult struct {
 	Body []byte
 	// UpstreamStatus 上游最后一次响应的状态码（0 表示网络错误），用于错误日志与冷却。
 	UpstreamStatus int
+	// Canceled 表示作业被调用方取消（而不是失败）；此时 StatusCode 无意义。
+	Canceled bool
 	// Error 失败原因（成功时为空）。
 	Error string
 }
@@ -58,12 +60,32 @@ type ImageGenResult struct {
 // persist 决定结果是否落盘并替换为网关地址；零值表示保留上游原始结果。
 func GenerateImage(ctx context.Context, client *http.Client, ch *model.Channel, key string, input map[string]any, publicModel string, clientReq *http.Request, persist ImagePersist) ImageGenResult {
 	cfg := ch.ImageConfig()
+	task := SubmitImageTask(ctx, client, ch, key, input, publicModel, clientReq, persist)
+	if task.Result != nil {
+		return *task.Result
+	}
+	responseFormat, _ := input["response_format"].(string)
+	return PollImageTask(ctx, client, ch, key, cfg, task.TaskID, responseFormat, clientReq, persist, nil)
+}
+
+// ImageTask 提交阶段的结果：TaskID 非空表示需要继续轮询；
+// Result 非空表示已有最终结果（同步模式、提交失败或提交即出图）。
+type ImageTask struct {
+	TaskID string
+	Result *ImageGenResult
+}
+
+// SubmitImageTask 完成一次提交：调用上游生图/编辑接口，返回 task_id 或已完成的响应。
+//
+// 拆分出来是为了让异步作业在拿到 task_id 后立即落库，网关重启后可以继续轮询。
+func SubmitImageTask(ctx context.Context, client *http.Client, ch *model.Channel, key string, input map[string]any, publicModel string, clientReq *http.Request, persist ImagePersist) ImageTask {
+	cfg := ch.ImageConfig()
 	if cfg.Mode == "" {
-		return ImageGenResult{StatusCode: http.StatusBadRequest, Error: "渠道未配置生图能力"}
+		return ImageTask{Result: &ImageGenResult{StatusCode: http.StatusBadRequest, Error: "渠道未配置生图能力"}}
 	}
 	upstreamModel, ok := ch.ResolveUpstreamModel(publicModel)
 	if !ok {
-		return ImageGenResult{StatusCode: http.StatusBadRequest, Error: "模型 " + publicModel + " 未在该渠道配置"}
+		return ImageTask{Result: &ImageGenResult{StatusCode: http.StatusBadRequest, Error: "模型 " + publicModel + " 未在该渠道配置"}}
 	}
 
 	responseFormat, _ := input["response_format"].(string)
@@ -94,20 +116,23 @@ func GenerateImage(ctx context.Context, client *http.Client, ch *model.Channel, 
 
 	raw, status, err := doImageRequest(submitCtx, client, http.MethodPost, submitURL, payload, ch, key, cfg.SubmitHeaders, clientReq)
 	if err != nil {
+		if ctx.Err() == context.Canceled {
+			return ImageTask{Result: &ImageGenResult{Canceled: true, Error: "生图作业已取消"}}
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			return ImageGenResult{
+			return ImageTask{Result: &ImageGenResult{
 				StatusCode: http.StatusGatewayTimeout,
 				Error:      fmt.Sprintf("生图上游响应超时（%s）", time.Duration(syncTimeout)*time.Millisecond),
-			}
+			}}
 		}
-		return ImageGenResult{StatusCode: http.StatusBadGateway, UpstreamStatus: 0, Error: "请求上游失败: " + err.Error()}
+		return ImageTask{Result: &ImageGenResult{StatusCode: http.StatusBadGateway, UpstreamStatus: 0, Error: "请求上游失败: " + err.Error()}}
 	}
 	if status < 200 || status >= 300 {
-		return ImageGenResult{
+		return ImageTask{Result: &ImageGenResult{
 			StatusCode:     http.StatusBadGateway,
 			UpstreamStatus: status,
 			Error:          fmt.Sprintf("生图上游拒绝 (HTTP %d): %s", status, truncateImageText(raw, 800)),
-		}
+		}}
 	}
 
 	var submit map[string]any
@@ -116,43 +141,50 @@ func GenerateImage(ctx context.Context, client *http.Client, ch *model.Channel, 
 	if cfg.Mode == model.ImageGenSync {
 		body, err := normalizeImageResponse(ctx, client, submit, cfg, responseFormat, persist)
 		if err != nil {
-			return ImageGenResult{StatusCode: http.StatusBadGateway, UpstreamStatus: status, Error: err.Error()}
+			return ImageTask{Result: &ImageGenResult{StatusCode: http.StatusBadGateway, UpstreamStatus: status, Error: err.Error()}}
 		}
-		return ImageGenResult{StatusCode: http.StatusOK, Body: body}
+		return ImageTask{Result: &ImageGenResult{StatusCode: http.StatusOK, Body: body}}
 	}
 
 	// 兼容「提交即返回图片」的服务商：有图片就直接转换，不再轮询
 	if images := extractImages(submit, cfg.ImagesField); len(images) > 0 {
 		body, err := normalizeImageResponse(ctx, client, submit, cfg, responseFormat, persist)
 		if err != nil {
-			return ImageGenResult{StatusCode: http.StatusBadGateway, UpstreamStatus: status, Error: err.Error()}
+			return ImageTask{Result: &ImageGenResult{StatusCode: http.StatusBadGateway, UpstreamStatus: status, Error: err.Error()}}
 		}
-		return ImageGenResult{StatusCode: http.StatusOK, Body: body}
+		return ImageTask{Result: &ImageGenResult{StatusCode: http.StatusOK, Body: body}}
 	}
 
 	taskID := stringField(submit, cfg.TaskIDField)
 	if taskID == "" {
-		return ImageGenResult{
+		return ImageTask{Result: &ImageGenResult{
 			StatusCode:     http.StatusBadGateway,
 			UpstreamStatus: status,
 			Error:          "上游未返回任务 ID（字段 " + cfg.TaskIDField + "）: " + truncateImageText(raw, 400),
-		}
+		}}
 	}
-	return pollImageTask(ctx, client, ch, key, cfg, taskID, responseFormat, clientReq, persist)
+	return ImageTask{TaskID: taskID}
 }
 
-// pollImageTask 轮询异步生图任务，直到成功、失败或超时。
-func pollImageTask(ctx context.Context, client *http.Client, ch *model.Channel, key string, cfg model.ImageGenConfig, taskID, responseFormat string, clientReq *http.Request, persist ImagePersist) ImageGenResult {
+// ImagePollFunc 轮询进度回调，n 为已完成的轮询次数。
+type ImagePollFunc func(n int)
+
+// PollImageTask 轮询异步生图任务，直到成功、失败、超时或上下文取消。
+func PollImageTask(ctx context.Context, client *http.Client, ch *model.Channel, key string, cfg model.ImageGenConfig, taskID, responseFormat string, clientReq *http.Request, persist ImagePersist, onPoll ImagePollFunc) ImageGenResult {
 	pollCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.TimeoutMS)*time.Millisecond)
 	defer cancel()
 
 	interval := time.Duration(cfg.PollIntervalMS) * time.Millisecond
 	pollURL := channel.BaseURL(ch) + strings.ReplaceAll(cfg.PollPath, "{task_id}", taskID)
 	deadline := time.Duration(cfg.TimeoutMS) * time.Millisecond
+	polls := 0
 
 	for {
 		raw, status, err := doImageRequest(pollCtx, client, http.MethodGet, pollURL, nil, ch, key, cfg.PollHeaders, clientReq)
 		if err != nil {
+			if ctx.Err() == context.Canceled {
+				return ImageGenResult{Canceled: true, Error: "生图作业已取消"}
+			}
 			if pollCtx.Err() == context.DeadlineExceeded {
 				return ImageGenResult{
 					StatusCode:     http.StatusGatewayTimeout,
@@ -199,8 +231,15 @@ func pollImageTask(ctx context.Context, client *http.Client, ch *model.Channel, 
 			}
 		}
 
+		polls++
+		if onPoll != nil {
+			onPoll(polls)
+		}
 		select {
 		case <-pollCtx.Done():
+			if ctx.Err() == context.Canceled {
+				return ImageGenResult{Canceled: true, Error: "生图作业已取消"}
+			}
 			return ImageGenResult{
 				StatusCode:     http.StatusGatewayTimeout,
 				UpstreamStatus: status,
@@ -301,6 +340,8 @@ func normalizeImageResponse(ctx context.Context, client *http.Client, upstream m
 		switch {
 		case savedURL != "":
 			entry["url"] = savedURL
+			// 与图床上传接口保持同一字段口径：Unix 秒。
+			entry["expires_at"] = time.Now().Add(persist.Store.Retention()).Unix()
 		case url != "":
 			entry["url"] = url
 		}

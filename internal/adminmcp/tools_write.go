@@ -2,6 +2,7 @@ package adminmcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -51,22 +52,22 @@ func registerListPluginsTool(s *Server, d WriteDeps) {
 				"plugin_id": map[string]any{"type": "string", "description": "只看某个插件，留空返回全部"},
 			},
 		}, false, func(args map[string]any) (any, error) {
-		if d.Host == nil {
-			return nil, fmt.Errorf("插件宿主未启用")
-		}
-		only := argString(args, "plugin_id")
-		list := d.Host.List()
-		out := make([]model.Plugin, 0, len(list))
-		for _, p := range list {
-			if only != "" && p.ID != only {
-				continue
+			if d.Host == nil {
+				return nil, fmt.Errorf("插件宿主未启用")
 			}
-			// Dir 是本地路径，对排查无帮助且泄露主机目录结构，置空
-			p.Dir = ""
-			out = append(out, p)
-		}
-		return map[string]any{"count": len(out), "plugins": out}, nil
-	})
+			only := argString(args, "plugin_id")
+			list := d.Host.List()
+			out := make([]model.Plugin, 0, len(list))
+			for _, p := range list {
+				if only != "" && p.ID != only {
+					continue
+				}
+				// Dir 是本地路径，对排查无帮助且泄露主机目录结构，置空
+				p.Dir = ""
+				out = append(out, p)
+			}
+			return map[string]any{"count": len(out), "plugins": out}, nil
+		})
 }
 
 // ---------- 只读：MCP 上游 ----------
@@ -80,66 +81,66 @@ func registerListMCPServersTool(s *Server, d WriteDeps) {
 				"enabled_only": map[string]any{"type": "boolean", "description": "只看已启用的服务器"},
 			},
 		}, false, func(args map[string]any) (any, error) {
-		servers, err := d.Store.ListMCPServers()
-		if err != nil {
-			return nil, err
-		}
-		counts, err := d.Store.CountMCPToolsByServer()
-		if err != nil {
-			counts = map[string]int{}
-		}
-		enabledOnly := argBool(args, "enabled_only")
+			servers, err := d.Store.ListMCPServers()
+			if err != nil {
+				return nil, err
+			}
+			counts, err := d.Store.CountMCPToolsByServer()
+			if err != nil {
+				counts = map[string]int{}
+			}
+			enabledOnly := argBool(args, "enabled_only")
 
-		type keyView struct {
-			Hint       string `json:"hint"`
-			Label      string `json:"label,omitempty"`
-			DailyLimit int    `json:"daily_limit"`
-		}
-		type serverView struct {
-			ID             string         `json:"id"`
-			Name           string         `json:"name"`
-			Alias          string         `json:"alias"`
-			URL            string         `json:"url"`
-			Enabled        bool           `json:"enabled"`
-			Source         string         `json:"source"`
-			ToolCount      int            `json:"tool_count"`
-			DailyCalls     int64          `json:"daily_calls"`
-			DailyLimit     int            `json:"daily_limit"`
-			LastStatus     string         `json:"last_status"`
-			LastError      string         `json:"last_error"`
-			Keys           []keyView      `json:"keys"`
-			ToolDailyCalls map[string]int64 `json:"tool_daily_calls,omitempty"`
-		}
-		out := make([]serverView, 0, len(servers))
-		for i := range servers {
-			srv := &servers[i]
-			if enabledOnly && !srv.Enabled {
-				continue
+			type keyView struct {
+				Hint       string `json:"hint"`
+				Label      string `json:"label,omitempty"`
+				DailyLimit int    `json:"daily_limit"`
 			}
-			keys := make([]keyView, 0, len(srv.Keys))
-			for _, k := range srv.Keys {
-				keys = append(keys, keyView{Hint: model.KeyHint(k.Key), Label: k.Label, DailyLimit: k.DailyLimit})
+			type serverView struct {
+				ID             string           `json:"id"`
+				Name           string           `json:"name"`
+				Alias          string           `json:"alias"`
+				URL            string           `json:"url"`
+				Enabled        bool             `json:"enabled"`
+				Source         string           `json:"source"`
+				ToolCount      int              `json:"tool_count"`
+				DailyCalls     int64            `json:"daily_calls"`
+				DailyLimit     int              `json:"daily_limit"`
+				LastStatus     string           `json:"last_status"`
+				LastError      string           `json:"last_error"`
+				Keys           []keyView        `json:"keys"`
+				ToolDailyCalls map[string]int64 `json:"tool_daily_calls,omitempty"`
 			}
-			view := serverView{
-				ID:         srv.ID,
-				Name:       srv.Name,
-				Alias:      srv.Alias,
-				URL:        srv.URL,
-				Enabled:    srv.Enabled,
-				Source:     srv.Source,
-				ToolCount:  counts[srv.ID],
-				DailyLimit: srv.DailyLimit,
-				Keys:       keys,
+			out := make([]serverView, 0, len(servers))
+			for i := range servers {
+				srv := &servers[i]
+				if enabledOnly && !srv.Enabled {
+					continue
+				}
+				keys := make([]keyView, 0, len(srv.Keys))
+				for _, k := range srv.Keys {
+					keys = append(keys, keyView{Hint: model.KeyHint(k.Key), Label: k.Label, DailyLimit: k.DailyLimit})
+				}
+				view := serverView{
+					ID:         srv.ID,
+					Name:       srv.Name,
+					Alias:      srv.Alias,
+					URL:        srv.URL,
+					Enabled:    srv.Enabled,
+					Source:     srv.Source,
+					ToolCount:  counts[srv.ID],
+					DailyLimit: srv.DailyLimit,
+					Keys:       keys,
+				}
+				if d.MCP != nil {
+					view.LastStatus, view.LastError = d.MCP.State(srv.ID)
+					view.DailyCalls = d.MCP.DailyCalls(srv.ID)
+					view.ToolDailyCalls = d.MCP.DailyCallsByTool(srv.ID)
+				}
+				out = append(out, view)
 			}
-			if d.MCP != nil {
-				view.LastStatus, view.LastError = d.MCP.State(srv.ID)
-				view.DailyCalls = d.MCP.DailyCalls(srv.ID)
-				view.ToolDailyCalls = d.MCP.DailyCallsByTool(srv.ID)
-			}
-			out = append(out, view)
-		}
-		return map[string]any{"count": len(out), "servers": out}, nil
-	})
+			return map[string]any{"count": len(out), "servers": out}, nil
+		})
 }
 
 // ---------- 只读：插件控制台地址 ----------
@@ -154,19 +155,19 @@ func registerPluginConsoleTool(s *Server, d WriteDeps) {
 			},
 			"required": []string{"plugin_id"},
 		}, false, func(args map[string]any) (any, error) {
-		if d.Host == nil {
-			return nil, fmt.Errorf("插件宿主未启用")
-		}
-		pluginID := argString(args, "plugin_id")
-		if pluginID == "" {
-			return nil, fmt.Errorf("plugin_id 不能为空")
-		}
-		url, err := d.Host.ConsoleTarget(pluginID)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"plugin_id": pluginID, "console_url": url}, nil
-	})
+			if d.Host == nil {
+				return nil, fmt.Errorf("插件宿主未启用")
+			}
+			pluginID := argString(args, "plugin_id")
+			if pluginID == "" {
+				return nil, fmt.Errorf("plugin_id 不能为空")
+			}
+			url, err := d.Host.ConsoleTarget(pluginID)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"plugin_id": pluginID, "console_url": url}, nil
+		})
 }
 
 // ---------- 会触达上游：诊断 ----------
@@ -202,70 +203,70 @@ func registerDiagnoseUpstreamTool(s *Server, d WriteDeps) {
 				"key":        map[string]any{"type": "string", "description": "上游密钥明文，留空表示该渠道所有启用的密钥"},
 			},
 		}, false, func(args map[string]any) (any, error) {
-		channels, err := d.Store.ListChannels()
-		if err != nil {
-			return nil, err
-		}
-		targetChannel := argString(args, "channel_id")
-		publicModel := argString(args, "model")
-		targetKey := argString(args, "key")
+			channels, err := d.Store.ListChannels()
+			if err != nil {
+				return nil, err
+			}
+			targetChannel := argString(args, "channel_id")
+			publicModel := argString(args, "model")
+			targetKey := argString(args, "key")
 
-		results := make([]diagnoseResult, 0, 8)
-		for i := range channels {
-			ch := &channels[i]
-			if targetChannel != "" && ch.ID != targetChannel {
-				continue
-			}
-			if targetChannel == "" && (!ch.Enabled || len(ch.EnabledKeys()) == 0) {
-				continue
-			}
-			keys := ch.EnabledKeys()
-			if targetKey != "" {
-				filtered := make([]string, 0, 1)
-				for _, k := range keys {
-					if k == targetKey {
-						filtered = append(filtered, k)
-					}
+			results := make([]diagnoseResult, 0, 8)
+			for i := range channels {
+				ch := &channels[i]
+				if targetChannel != "" && ch.ID != targetChannel {
+					continue
 				}
-				keys = filtered
+				if targetChannel == "" && (!ch.Enabled || len(ch.EnabledKeys()) == 0) {
+					continue
+				}
+				keys := ch.EnabledKeys()
+				if targetKey != "" {
+					filtered := make([]string, 0, 1)
+					for _, k := range keys {
+						if k == targetKey {
+							filtered = append(filtered, k)
+						}
+					}
+					keys = filtered
+				}
+				if len(keys) == 0 {
+					continue
+				}
+				if publicModel == "" {
+					results = append(results, diagnoseResult{
+						Channel: ch.Name, ChannelID: ch.ID, Error: "未指定 model，无法诊断",
+					})
+					continue
+				}
+				upstreamModel, ok := ch.ResolveUpstreamModel(publicModel)
+				if !ok {
+					upstreamModel = publicModel
+				}
+				for _, key := range keys {
+					results = append(results, probeOne(d.HTTP, ch, key, upstreamModel, publicModel))
+				}
 			}
-			if len(keys) == 0 {
-				continue
-			}
-			if publicModel == "" {
-				results = append(results, diagnoseResult{
-					Channel: ch.Name, ChannelID: ch.ID, Error: "未指定 model，无法诊断",
-				})
-				continue
-			}
-			upstreamModel, ok := ch.ResolveUpstreamModel(publicModel)
-			if !ok {
-				upstreamModel = publicModel
-			}
-			for _, key := range keys {
-				results = append(results, probeOne(d.HTTP, ch, key, upstreamModel, publicModel))
-			}
-		}
 
-		if len(results) == 0 {
-			return nil, fmt.Errorf("没有可诊断的目标（渠道/密钥/模型不匹配）")
-		}
-		okCount, limited := 0, 0
-		for _, r := range results {
-			if r.Status == http.StatusOK && r.Error == "" {
-				okCount++
+			if len(results) == 0 {
+				return nil, fmt.Errorf("没有可诊断的目标（渠道/密钥/模型不匹配）")
 			}
-			if r.Status == http.StatusTooManyRequests {
-				limited++
+			okCount, limited := 0, 0
+			for _, r := range results {
+				if r.Status == http.StatusOK && r.Error == "" {
+					okCount++
+				}
+				if r.Status == http.StatusTooManyRequests {
+					limited++
+				}
 			}
-		}
-		return map[string]any{
-			"total":        len(results),
-			"ok":           okCount,
-			"rate_limited": limited,
-			"results":      results,
-		}, nil
-	})
+			return map[string]any{
+				"total":        len(results),
+				"ok":           okCount,
+				"rate_limited": limited,
+				"results":      results,
+			}, nil
+		})
 }
 
 // probeOne 对单个渠道 + 密钥 + 模型发起一次真实请求。
@@ -337,32 +338,32 @@ func registerTestMCPServerTool(s *Server, d WriteDeps) {
 			},
 			"required": []string{"server_id"},
 		}, false, func(args map[string]any) (any, error) {
-		if d.MCP == nil {
-			return nil, fmt.Errorf("MCP 服务未启用")
-		}
-		serverID := argString(args, "server_id")
-		if serverID == "" {
-			return nil, fmt.Errorf("server_id 不能为空")
-		}
-		srv, err := d.Store.GetMCPServer(serverID)
-		if err != nil {
-			return nil, err
-		}
-		if srv == nil {
-			return nil, fmt.Errorf("MCP 服务器不存在: %s", serverID)
-		}
-		start := time.Now()
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		if err := d.MCP.Probe(ctx, srv); err != nil {
-			return map[string]any{
-				"success":     false,
-				"error":       err.Error(),
-				"duration_ms": time.Since(start).Milliseconds(),
-			}, nil
-		}
-		return map[string]any{"success": true, "duration_ms": time.Since(start).Milliseconds()}, nil
-	})
+			if d.MCP == nil {
+				return nil, fmt.Errorf("MCP 服务未启用")
+			}
+			serverID := argString(args, "server_id")
+			if serverID == "" {
+				return nil, fmt.Errorf("server_id 不能为空")
+			}
+			srv, err := d.Store.GetMCPServer(serverID)
+			if err != nil {
+				return nil, err
+			}
+			if srv == nil {
+				return nil, fmt.Errorf("MCP 服务器不存在: %s", serverID)
+			}
+			start := time.Now()
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if err := d.MCP.Probe(ctx, srv); err != nil {
+				return map[string]any{
+					"success":     false,
+					"error":       err.Error(),
+					"duration_ms": time.Since(start).Milliseconds(),
+				}, nil
+			}
+			return map[string]any{"success": true, "duration_ms": time.Since(start).Milliseconds()}, nil
+		})
 }
 
 // ---------- 写：签发 API 密钥 ----------
@@ -380,38 +381,38 @@ func registerIssueAPIKeyTool(s *Server, d WriteDeps) {
 				"mcp_server_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "mcp_scope=selected 时生效"},
 			},
 		}, true, func(args map[string]any) (any, error) {
-		name := argString(args, "name")
-		if name == "" {
-			name = "Unnamed"
-		}
-		channelScope, channelIDs := normalizeScope(argString(args, "channel_scope"), argStrings(args, "channel_ids"))
-		mcpScope, mcpIDs := normalizeScope(argString(args, "mcp_scope"), argStrings(args, "mcp_server_ids"))
+			name := argString(args, "name")
+			if name == "" {
+				name = "Unnamed"
+			}
+			channelScope, channelIDs := normalizeScope(argString(args, "channel_scope"), argStrings(args, "channel_ids"))
+			mcpScope, mcpIDs := normalizeScope(argString(args, "mcp_scope"), argStrings(args, "mcp_server_ids"))
 
-		k := &model.APIKey{
-			ID:           id.UUID(),
-			Name:         name,
-			Key:          id.APIKey(),
-			ChannelScope: channelScope,
-			ChannelIDs:   channelIDs,
-			MCPScope:     mcpScope,
-			MCPServerIDs: mcpIDs,
-			Enabled:      true,
-			CreatedAt:    time.Now().UnixMilli(),
-		}
-		if err := d.Store.CreateAPIKey(k); err != nil {
-			return nil, err
-		}
-		return map[string]any{
-			"id":             k.ID,
-			"name":           k.Name,
-			"key":            k.Key,
-			"channel_scope":  k.ChannelScope,
-			"channel_ids":    k.ChannelIDs,
-			"mcp_scope":      k.MCPScope,
-			"mcp_server_ids": k.MCPServerIDs,
-			"notice":         "明文密钥只返回这一次，请立即保存",
-		}, nil
-	})
+			k := &model.APIKey{
+				ID:           id.UUID(),
+				Name:         name,
+				Key:          id.APIKey(),
+				ChannelScope: channelScope,
+				ChannelIDs:   channelIDs,
+				MCPScope:     mcpScope,
+				MCPServerIDs: mcpIDs,
+				Enabled:      true,
+				CreatedAt:    time.Now().UnixMilli(),
+			}
+			if err := d.Store.CreateAPIKey(k); err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"id":             k.ID,
+				"name":           k.Name,
+				"key":            k.Key,
+				"channel_scope":  k.ChannelScope,
+				"channel_ids":    k.ChannelIDs,
+				"mcp_scope":      k.MCPScope,
+				"mcp_server_ids": k.MCPServerIDs,
+				"notice":         "明文密钥只返回这一次，请立即保存",
+			}, nil
+		})
 }
 
 // ---------- 写：新建渠道 ----------
@@ -433,39 +434,39 @@ func registerCreateChannelTool(s *Server, d WriteDeps) {
 			},
 			"required": []string{"name", "base_url"},
 		}, true, func(args map[string]any) (any, error) {
-		name := argString(args, "name")
-		baseURL := argString(args, "base_url")
-		if name == "" || baseURL == "" {
-			return nil, fmt.Errorf("name 与 base_url 均不能为空")
-		}
-		order, err := d.Store.NextChannelSortOrder()
-		if err != nil {
-			return nil, err
-		}
-		enabled := true
-		if v, ok := args["enabled"].(bool); ok {
-			enabled = v
-		}
-		ch := &model.Channel{
-			ID:            id.UUID(),
-			Name:          name,
-			BaseURL:       baseURL,
-			Path:          argString(args, "path"),
-			Keys:          toChannelKeys(argStrings(args, "keys")),
-			Models:        argStrings(args, "models"),
-			ModelMap:      argStringMap(args, "model_map"),
-			ModelPriority: map[string]int{},
-			KeyStrategy:   model.NormalizeKeyStrategy(argString(args, "key_strategy")),
-			Enabled:       enabled,
-			Source:        "manual",
-			SortOrder:     order,
-			CreatedAt:     time.Now().UnixMilli(),
-		}
-		if err := d.Store.CreateChannel(ch); err != nil {
-			return nil, err
-		}
-		return map[string]any{"success": true, "channel_id": ch.ID, "name": ch.Name}, nil
-	})
+			name := argString(args, "name")
+			baseURL := argString(args, "base_url")
+			if name == "" || baseURL == "" {
+				return nil, fmt.Errorf("name 与 base_url 均不能为空")
+			}
+			order, err := d.Store.NextChannelSortOrder()
+			if err != nil {
+				return nil, err
+			}
+			enabled := true
+			if v, ok := args["enabled"].(bool); ok {
+				enabled = v
+			}
+			ch := &model.Channel{
+				ID:            id.UUID(),
+				Name:          name,
+				BaseURL:       baseURL,
+				Path:          argString(args, "path"),
+				Keys:          toChannelKeys(argStrings(args, "keys")),
+				Models:        argStrings(args, "models"),
+				ModelMap:      argStringMap(args, "model_map"),
+				ModelPriority: map[string]int{},
+				KeyStrategy:   model.NormalizeKeyStrategy(argString(args, "key_strategy")),
+				Enabled:       enabled,
+				Source:        "manual",
+				SortOrder:     order,
+				CreatedAt:     time.Now().UnixMilli(),
+			}
+			if err := d.Store.CreateChannel(ch); err != nil {
+				return nil, err
+			}
+			return map[string]any{"success": true, "channel_id": ch.ID, "name": ch.Name}, nil
+		})
 }
 
 // ---------- 写：修改渠道 ----------
@@ -485,50 +486,102 @@ func registerUpdateChannelTool(s *Server, d WriteDeps) {
 				"model_map":    map[string]any{"type": "object", "description": "完整的模型映射（会整体替换）"},
 				"key_strategy": map[string]any{"type": "string", "enum": []string{"rotate", "ordered"}, "description": "多密钥策略"},
 				"enabled":      map[string]any{"type": "boolean", "description": "是否启用"},
+				"image_models": map[string]any{
+					"type": "array", "items": map[string]any{"type": "string"},
+					"description": "生图模型列表（整体替换）；标记后这些模型只走 /v1/images/generations",
+				},
+				"image_generation": map[string]any{
+					"type":                 "object",
+					"description":          "生图配置，只覆盖传入的字段（未传的保持不变）。常用：timeout_ms、mode、poll_interval_ms、reference_field、reference_shape",
+					"additionalProperties": true,
+					"properties": map[string]any{
+						"mode":                 map[string]any{"type": "string", "enum": []string{"", "sync", "async"}, "description": "sync 同步出图 / async 提交后轮询 / 留空按渠道类型判断"},
+						"timeout_ms":           map[string]any{"type": "integer", "description": "生图整体超时（毫秒），异步模式用于轮询截止"},
+						"sync_timeout_ms":      map[string]any{"type": "integer", "description": "同步模式等待上游响应的超时（毫秒），0 表示沿用 timeout_ms"},
+						"poll_interval_ms":     map[string]any{"type": "integer", "description": "异步轮询间隔（毫秒）"},
+						"response_format_mode": map[string]any{"type": "string", "enum": []string{"drop", "pass", "url", "b64_json"}},
+						"reference_field":      map[string]any{"type": "string", "description": "参考图在上游请求体里的字段名"},
+						"reference_shape":      map[string]any{"type": "string", "description": "参考图形态：url_array / single_url / url_object_array / image_url_object_array"},
+					},
+				},
 			},
 			"required": []string{"channel_id"},
 		}, true, func(args map[string]any) (any, error) {
-		channelID := argString(args, "channel_id")
-		if channelID == "" {
-			return nil, fmt.Errorf("channel_id 不能为空")
-		}
-		existing, err := d.Store.GetChannel(channelID)
-		if err != nil {
-			return nil, err
-		}
-		if existing == nil {
-			return nil, fmt.Errorf("渠道不存在: %s", channelID)
-		}
-		next := *existing
-		if v := argString(args, "name"); v != "" {
-			next.Name = v
-		}
-		if v := argString(args, "base_url"); v != "" {
-			next.BaseURL = v
-		}
-		if _, ok := args["path"]; ok {
-			next.Path = argString(args, "path")
-		}
-		if _, ok := args["keys"]; ok {
-			next.Keys = toChannelKeys(argStrings(args, "keys"))
-		}
-		if _, ok := args["models"]; ok {
-			next.Models = argStrings(args, "models")
-		}
-		if _, ok := args["model_map"]; ok {
-			next.ModelMap = argStringMap(args, "model_map")
-		}
-		if v := argString(args, "key_strategy"); v != "" {
-			next.KeyStrategy = model.NormalizeKeyStrategy(v)
-		}
-		if v, ok := args["enabled"].(bool); ok {
-			next.Enabled = v
-		}
-		if err := d.Store.UpdateChannel(&next); err != nil {
-			return nil, err
-		}
-		return map[string]any{"success": true, "channel_id": next.ID, "name": next.Name, "enabled": next.Enabled}, nil
-	})
+			channelID := argString(args, "channel_id")
+			if channelID == "" {
+				return nil, fmt.Errorf("channel_id 不能为空")
+			}
+			existing, err := d.Store.GetChannel(channelID)
+			if err != nil {
+				return nil, err
+			}
+			if existing == nil {
+				return nil, fmt.Errorf("渠道不存在: %s", channelID)
+			}
+			next := *existing
+			if v := argString(args, "name"); v != "" {
+				next.Name = v
+			}
+			if v := argString(args, "base_url"); v != "" {
+				next.BaseURL = v
+			}
+			if _, ok := args["path"]; ok {
+				next.Path = argString(args, "path")
+			}
+			if _, ok := args["keys"]; ok {
+				next.Keys = toChannelKeys(argStrings(args, "keys"))
+			}
+			if _, ok := args["models"]; ok {
+				next.Models = argStrings(args, "models")
+			}
+			if _, ok := args["model_map"]; ok {
+				next.ModelMap = argStringMap(args, "model_map")
+			}
+			if v := argString(args, "key_strategy"); v != "" {
+				next.KeyStrategy = model.NormalizeKeyStrategy(v)
+			}
+			if v, ok := args["enabled"].(bool); ok {
+				next.Enabled = v
+			}
+			if _, ok := args["image_models"]; ok {
+				next.ImageModels = argStrings(args, "image_models")
+			}
+			if raw, ok := args["image_generation"].(map[string]any); ok && len(raw) > 0 {
+				merged, err := mergeImageGen(next.ImageGen, raw)
+				if err != nil {
+					return nil, err
+				}
+				next.ImageGen = merged
+			}
+			if err := d.Store.UpdateChannel(&next); err != nil {
+				return nil, err
+			}
+			return map[string]any{"success": true, "channel_id": next.ID, "name": next.Name, "enabled": next.Enabled}, nil
+		})
+}
+
+// mergeImageGen 以现有配置为底，用 patch 覆盖传入字段，再归一化默认值。
+func mergeImageGen(cur model.ImageGenConfig, patch map[string]any) (model.ImageGenConfig, error) {
+	base, err := json.Marshal(cur)
+	if err != nil {
+		return cur, err
+	}
+	fields := map[string]any{}
+	if err := json.Unmarshal(base, &fields); err != nil {
+		return cur, err
+	}
+	for k, v := range patch {
+		fields[k] = v
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return cur, err
+	}
+	var out model.ImageGenConfig
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return cur, fmt.Errorf("image_generation 不合法: %w", err)
+	}
+	return out.Normalized(), nil
 }
 
 // ---------- 写：重启插件 ----------
@@ -543,18 +596,18 @@ func registerRestartPluginTool(s *Server, d WriteDeps) {
 			},
 			"required": []string{"plugin_id"},
 		}, true, func(args map[string]any) (any, error) {
-		if d.Host == nil {
-			return nil, fmt.Errorf("插件宿主未启用")
-		}
-		pluginID := argString(args, "plugin_id")
-		if pluginID == "" {
-			return nil, fmt.Errorf("plugin_id 不能为空")
-		}
-		if err := d.Host.Restart(pluginID); err != nil {
-			return nil, err
-		}
-		return map[string]any{"success": true, "plugin_id": pluginID}, nil
-	})
+			if d.Host == nil {
+				return nil, fmt.Errorf("插件宿主未启用")
+			}
+			pluginID := argString(args, "plugin_id")
+			if pluginID == "" {
+				return nil, fmt.Errorf("plugin_id 不能为空")
+			}
+			if err := d.Host.Restart(pluginID); err != nil {
+				return nil, err
+			}
+			return map[string]any{"success": true, "plugin_id": pluginID}, nil
+		})
 }
 
 // ---------- 参数辅助 ----------

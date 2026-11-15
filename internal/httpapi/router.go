@@ -63,6 +63,8 @@ func NewRouter(d Deps) http.Handler {
 	}
 
 	// /v1/* 代理
+	mux.HandleFunc("GET /v1/images/jobs/{id}", d.Proxy.HandleImageJob)
+	mux.HandleFunc("DELETE /v1/images/jobs/{id}", d.Proxy.CancelImageJob)
 	mux.HandleFunc("/v1/", d.Proxy.Handle)
 	mux.HandleFunc("GET /v1", d.Proxy.Handle)
 

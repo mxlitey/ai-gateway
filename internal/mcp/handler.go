@@ -82,7 +82,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Method {
 	case "initialize":
-		h.handleInitialize(w, req, alias, key)
+		h.handleInitialize(w, r, req, alias, key)
 	case "ping":
 		writeRPCResult(w, req.ID, map[string]any{})
 	case "tools/list":
@@ -119,7 +119,10 @@ func (h *Handler) verify(r *http.Request) (*model.APIKey, string) {
 }
 
 // handleInitialize 与客户端协商版本，并声明网关能力。
-func (h *Handler) handleInitialize(w http.ResponseWriter, req request, alias string, key *model.APIKey) {
+//
+// instructions 不再统一替换成通用文案：直连单个服务器时原样透传上游说明书，
+// 聚合入口按服务器分段拼接，网关自身的图床说明追加在末尾。
+func (h *Handler) handleInitialize(w http.ResponseWriter, r *http.Request, req request, alias string, key *model.APIKey) {
 	var params struct {
 		ProtocolVersion string `json:"protocolVersion"`
 	}
@@ -127,23 +130,81 @@ func (h *Handler) handleInitialize(w http.ResponseWriter, req request, alias str
 
 	version := negotiateVersion(params.ProtocolVersion)
 
+	servers, err := h.targets(alias, key)
+
 	// 只在实际有可用服务器时声明 tools 能力，避免客户端对着空网关反复调用
 	caps := map[string]any{}
-	if servers, err := h.targets(alias, key); err == nil && len(servers) > 0 {
+	if err == nil && len(servers) > 0 {
 		caps["tools"] = map[string]any{"listChanged": false}
+	}
+
+	serverInfo := map[string]any{
+		"name":    "ai-gateway-mcp",
+		"version": "1.1.0",
+	}
+	instructions := instructionsFor(alias, h.imageHostEnabled())
+
+	if err == nil {
+		switch {
+		case alias != "" && len(servers) > 0:
+			// 直连：沿用上游的 serverInfo 与 instructions，客户端看到的身份与脚本一致
+			ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+			info, ok := h.svc.Initialization(ctx, &servers[0], r)
+			cancel()
+			if ok {
+				if info.ServerInfo.Name != "" {
+					serverInfo["name"] = info.ServerInfo.Name
+					if info.ServerInfo.Version != "" {
+						serverInfo["version"] = info.ServerInfo.Version
+					}
+				}
+				if text := strings.TrimSpace(info.Instructions); text != "" {
+					instructions = text + imageHostSection(h.imageHostEnabled())
+				}
+			}
+		case alias == "" && len(servers) > 0:
+			instructions = h.aggregateInstructions(r, servers)
+		}
 	}
 
 	writeRPCResult(w, req.ID, map[string]any{
 		"protocolVersion": version,
 		"capabilities":    caps,
-		"serverInfo": map[string]any{
-			"name":    "ai-gateway-mcp",
-			"version": "1.1.0",
-		},
-		// 上游服务器的 instructions 这里不透传（多次转发易失真），
-		// 统一给一份操作路径；具体工具用法由 tools/list 里的描述自述。
-		"instructions": instructionsFor(alias, h.imageHostEnabled()),
+		"serverInfo":      serverInfo,
+		"instructions":    instructions,
 	})
+}
+
+// aggregateInstructions 把各上游的 instructions 按服务器分段拼接。
+// 单台上游取不到时跳过，不影响其他服务器；总长度限制在 32 KB，避免说明书失控。
+func (h *Handler) aggregateInstructions(r *http.Request, servers []model.MCPServer) string {
+	const maxLen = 32 << 10
+	sections := make([]string, 0, len(servers))
+	for i := range servers {
+		srv := &servers[i]
+		ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
+		info, ok := h.svc.Initialization(ctx, srv, r)
+		cancel()
+		if !ok {
+			continue
+		}
+		text := strings.TrimSpace(info.Instructions)
+		if text == "" {
+			continue
+		}
+		sections = append(sections, "## "+srv.Name+"\n"+text)
+	}
+	if len(sections) == 0 {
+		return instructionsFor("", h.imageHostEnabled())
+	}
+	text := "以下是各上游 MCP 服务器自己的使用说明（按服务器分段）。" +
+		"聚合入口的工具名格式为「服务器别名__上游工具名」（如 image-generation__generate_image），" +
+		"先调用 tools/list 获取真实工具名与参数，再调用 tools/call。\n\n" +
+		strings.Join(sections, "\n\n") + imageHostSection(h.imageHostEnabled())
+	if len(text) > maxLen {
+		text = text[:maxLen] + "\n…（说明书过长已截断，以 tools/list 为准）"
+	}
+	return text
 }
 
 // imageHostEnabled 读取图床开关，用于决定说明书中是否介绍直传能力。
@@ -163,11 +224,19 @@ func instructionsFor(alias string, imageHost bool) string {
 	if !imageHost {
 		return text
 	}
+	return text + imageHostSection(true)
+}
+
+// imageHostSection 网关内置图床的说明片段，拼接在上游说明书之后。
+func imageHostSection(enabled bool) string {
+	if !enabled {
+		return ""
+	}
 	// 图床是网关自身能力，不经过 MCP，因此不受 8 MB 请求体限制。
-	return text + "\n\n网关内置图床（默认开启）：直接 HTTP 调用网关，不经过 MCP，不受 8 MB 请求体限制。" +
+	return "\n\n网关内置图床（默认开启）：直接 HTTP 调用网关，不经过 MCP，不受 8 MB 请求体限制。" +
 		"上传 POST <网关地址>/v1/images/uploads，Authorization: Bearer <调用 MCP 时同一把 sk- 密钥>，" +
 		"Content-Type 为 image/png|jpeg|webp|gif，请求体是图片原始字节（不是 multipart/form-data），" +
-		"单张默认上限 100 MB，返回 {id,url,...}，链接有时效。" +
+		"单张默认上限 100 MB，返回 {id,url,expires_at,...}，链接有时效。" +
 		"能力查询 GET <网关地址>/v1/images/host，删除 DELETE <网关地址>/v1/uploads/<id>。"
 }
 

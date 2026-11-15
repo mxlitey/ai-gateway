@@ -81,7 +81,7 @@ const emptyForm: FormState = {
   imagePath: '',
   imagePollPath: '',
   imageIntervalSec: '5',
-  imageTimeoutSec: '300',
+  imageTimeoutSec: '360',
   imageSubmitHeaders: [],
   imagePollHeaders: [],
   imageTaskIDField: '',
@@ -1017,7 +1017,7 @@ function openEdit(ch: Channel, setForm: (f: FormState) => void) {
       ch.image_generation?.poll_interval_ms ? ch.image_generation.poll_interval_ms / 1000 : 5,
     ),
     imageTimeoutSec: String(
-      ch.image_generation?.timeout_ms ? ch.image_generation.timeout_ms / 1000 : 300,
+      ch.image_generation?.timeout_ms ? ch.image_generation.timeout_ms / 1000 : 360,
     ),
     imageSubmitHeaders: (ch.image_generation?.submit_headers ?? []).map((h) => ({
       name: h.name,

@@ -44,7 +44,8 @@ MCP 服务器整个目录放进来即可（每个子目录一个服务），
 mcp\image-generation（别名 image-gen）调用网关的 /v1/images/generations 生图，
 参考图接受公网/内网 http(s) 地址（image_url）或本机文件路径（image_path）；
 内网图片由服务自己下载后转 base64，超过上游预算且网关图床公网可达时自动上传换链接。
-生图约 1-3 分钟，工具先返回 running + job_id，再用 get_image_job 轮询。密钥在面板
+生图约 1-3 分钟，工具先返回 running + job_id，再用 get_image_job 轮询（作业存在网关
+SQLite 里，保留 24 小时，网关重启也不会丢，还可以 cancel_image_job 取消）。密钥在面板
 「MCP 服务器 → 生图 → 编辑 → 密钥」里填面板签发的 sk- 密钥，无需改 mcp.json。
 
 管理 MCP（可选）

@@ -5,34 +5,35 @@
 
 它本身不直连 ModelScope：生图统一走网关的 OpenAI 兼容接口
   POST {AIGW_IMAGE_BASE_URL}/v1/images/generations
-异步渠道的「提交任务 + 轮询」由网关内部完成，本服务只需一次调用并等待结果。
+提交时带 async=true，网关立即返回作业号并在后台执行（异步渠道的「提交 + 轮询」
+由网关负责），本服务只需轮询作业状态。
 
 为什么用作业模型：
-  网关调用 MCP 工具受两层限制：单次调用超时（服务器未配置 timeout_ms 时默认 120 秒），
-  以及底层 HTTP 连接等待响应头的上限（同样 120 秒，调大 timeout_ms 也突破不了）。
-  而生图实测可达 120 秒以上。因此 generate_image 最多等待 wait_seconds（默认 20 秒）：
-  完成就直接返回图片，没完成就返回 job_id，由客户端每 5 秒调用 get_image_job 轮询。
-  这样每次 MCP 调用都远小于网关超时，无需改网关配置。
+  生图实测可达数分钟，而 MCP 工具调用与 HTTP 等待响应头都有超时限制。
+  因此 generate_image 最多等待 wait_seconds（默认 20 秒）：完成就直接返回图片，
+  没完成就返回 job_id，由客户端每 5 秒调用 get_image_job 轮询。
+  作业记录保存在网关 SQLite 中（保留 24 小时），网关或本服务重启都不会丢：
+  已提交到上游的异步任务会继续轮询，同步任务会标记为 gateway_restarted 提示重新提交。
 
 环境变量（在 mcp.json 的 env 里配置，均可留空）：
   AIGW_IMAGE_BASE_URL        网关地址，默认 http://127.0.0.1:8787
   AIGW_IMAGE_API_KEY         网关 sk- 密钥；留空时用调用方带来的 Authorization，
                              即面板「MCP 服务器 → 生图 → 密钥」里配的那把
   AIGW_IMAGE_MODEL           默认生图模型（generate_image 未传 model 时使用）
-  AIGW_IMAGE_TIMEOUT_SECONDS 单次生图整体超时，默认 600（应大于渠道轮询超时）
   AIGW_IMAGE_SAVE_DIR        图片保存目录，默认 $AIGW_MCP_DATA/images
-  AIGW_IMAGE_MAX_CONCURRENCY 同时进行的生图任务上限，默认 4
   AIGW_IMAGE_FETCH_CA        下载内网 https 图片时使用的 CA 文件（自签证书场景）
   AIGW_IMAGE_FETCH_INSECURE  =1 时跳过内网图片的 TLS 校验（默认关闭，不推荐）
 
 返回约定：
-  - 图片统一返回网关地址（网关已把上游结果落盘，链接有效期由网关配置决定，默认约 1 小时）；
+  - 图片统一返回网关地址，images[].expires_at 是图片链接的 Unix 秒过期时间（默认约 1 小时）；
+  - 作业对象带 expires_at（作业记录保留 24 小时，结果里叫 job_expires_at）与 poll_count / stage 进度；
   - 失败时 isError=true，structuredContent.error 含 code / message / retryable / upstream_status；
   - generate_image 支持 request_id 幂等键：相同 request_id 重复调用复用同一作业。
 
 提供的工具：
   generate_image     生成图片（支持参考图 image_url、尺寸、数量等）
   get_image_job      查询生图作业状态与结果
+  cancel_image_job   取消仍在排队或执行的作业
   list_image_models  列出可用生图模型（等价于网关 /v1/models?type=image）
 
 自描述：initialize 会返回 instructions，说明模型查询、作业轮询、交付方式，
@@ -60,8 +61,6 @@ MCP_PATH = "/mcp"
 
 DEFAULT_WAIT_SECONDS = 20
 MAX_WAIT_SECONDS = 600
-JOB_TTL_SECONDS = 3600
-MAX_JOBS = 100
 # 单次 MCP 调用允许的请求体上限，与网关 MCP 入口保持一致
 MAX_REQUEST_BYTES = 8 << 20
 MAX_DOWNLOAD_BYTES = 32 << 20
@@ -86,7 +85,7 @@ MAX_REFERENCE_MB = max(1, _env_int("AIGW_IMAGE_REF_MAX_MB", 3))
 MAX_REFERENCE_BYTES = MAX_REFERENCE_MB << 20
 MAX_REFERENCE_TOTAL_MB = max(MAX_REFERENCE_MB, _env_int("AIGW_IMAGE_REF_TOTAL_MB", 7))
 MAX_REFERENCE_TOTAL_CHARS = MAX_REFERENCE_TOTAL_MB << 20
-LINK_TTL_HINT = "链接有时效（默认约 1 小时，以网关配置为准）"
+LINK_TTL_HINT = "链接有时效（images[].expires_at 是 Unix 秒，默认约 1 小时，以网关配置为准）"
 # 参考图下载（内网 http/https）的边界：只转发，不落盘持久保存
 IMAGE_FETCH_MAX_BYTES = 32 << 20
 IMAGE_FETCH_TIMEOUT = 30
@@ -173,7 +172,22 @@ IMAGE_TOOLS = [
     },
     {
         "name": "get_image_job",
-        "description": "查询 generate_image 创建的作业；status 为 running / succeeded / failed。",
+        "description": (
+            "查询 generate_image 创建的作业；status 为 queued / running / succeeded / failed / canceled。"
+            "作业保存在网关 SQLite 中，网关或本服务重启都不会丢失（保留 24 小时）。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "generate_image 返回的作业 ID"},
+                "download": {"type": "boolean", "description": "为 true 时把已成功的图片下载到本地并返回路径"},
+            },
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "cancel_image_job",
+        "description": "取消仍在排队或执行中的生图作业；已完成的作业不受影响。",
         "inputSchema": {
             "type": "object",
             "properties": {"job_id": {"type": "string", "description": "generate_image 返回的作业 ID"}},
@@ -192,14 +206,16 @@ IMAGE_TOOLS = [
 
 # initialize 返回的说明书：客户端不依赖外部技能包也能完成第一次调用。
 INSTRUCTIONS = (
-    "本服务把生图请求转发到 AI Gateway。推荐流程："
+    "本服务把生图请求转发到 AI Gateway，作业由网关持久化（SQLite，保留 24 小时）。推荐流程："
     "1) 不确定模型时先调用 list_image_models，拿到 models 列表与 default_model；"
     "2) 调用 generate_image，至少传 prompt；没有 default_model 时必须显式传 model；"
     "3) 返回 status=running 时每 5 秒调用 get_image_job(job_id) 直到 succeeded/failed；"
-    "4) 成功结果的 images[].url 是网关自身地址，" + LINK_TTL_HINT + "，可直接下载或交给用户；"
+    "   网关或本服务重启不会丢作业：异步任务会继续轮询，同步任务会标记为 gateway_restarted 让你重提；"
+    "4) 成功结果的 images[].url 是网关自身地址，images[].expires_at 是 Unix 秒过期时间，可直接下载或交给用户；"
     "需要长期保存时用 download=true 落本地；"
-    "5) 失败时 isError=true，structuredContent.error 含 code/message/retryable/upstream_status；"
-    "6) 超时重试请带上同一个 request_id，服务端会复用已有作业，不会重复生图。"
+    "5) 失败时 isError=true，structuredContent.error 含 code/message/retryable；"
+    "6) 超时重试请带上同一个 request_id，网关会复用已有作业，不会重复生图；"
+    "7) 需要放弃时调用 cancel_image_job(job_id)。"
 )
 
 
@@ -267,14 +283,6 @@ def _default_model():
     return _env("AIGW_IMAGE_MODEL")
 
 
-def _timeout_seconds():
-    try:
-        value = int(_env("AIGW_IMAGE_TIMEOUT_SECONDS", "600"))
-    except ValueError:
-        value = 600
-    return max(30, min(3600, value))
-
-
 def _save_dir():
     configured = _env("AIGW_IMAGE_SAVE_DIR")
     if configured:
@@ -291,142 +299,15 @@ _LOCAL_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 # ---------- 作业存储 ----------
 
-_JOBS = {}
-_JOB_BY_REQUEST_ID = {}
-_JOBS_LOCK = threading.Lock()
-
-
-def _max_concurrency():
-    try:
-        value = int(_env("AIGW_IMAGE_MAX_CONCURRENCY", "4"))
-    except ValueError:
-        value = 4
-    return max(1, min(32, value))
-
-
-# 同时在跑的生图任务上限：避免一次并发提交把上游与本机线程打爆
-_JOB_SLOTS = threading.BoundedSemaphore(_max_concurrency())
-
-
-def _drop_job_locked(job):
-    _JOBS.pop(job["id"], None)
-    request_id = job.get("request_id")
-    if request_id and _JOB_BY_REQUEST_ID.get(request_id) is job:
-        _JOB_BY_REQUEST_ID.pop(request_id, None)
-
-
-def _prune_jobs_locked(now):
-    running, finished = [], []
-    for job in list(_JOBS.values()):
-        if job["status"] == "running" and now - job["created"] > job["deadline_seconds"]:
-            # 超时作业标记失败，避免永远占着并发槽、也避免客户端无限轮询
-            job["status"] = "failed"
-            job["error"] = {
-                "code": "timeout",
-                "message": "生图超时（%d 秒），请重试或换用更快的模型" % job["deadline_seconds"],
-                "retryable": True,
-            }
-            job["updated"] = now
-            finished.append(job)
-        elif job["status"] == "running":
-            running.append(job)
-        else:
-            finished.append(job)
-
-    for job in finished:
-        if now - job["updated"] > JOB_TTL_SECONDS:
-            _drop_job_locked(job)
-    if len(_JOBS) <= MAX_JOBS:
-        return
-    # 超出上限时按更新时间从旧到新清理已完成的作业
-    for job in sorted(finished, key=lambda j: j["updated"]):
-        _drop_job_locked(job)
-        if len(_JOBS) <= MAX_JOBS:
-            break
-
-
-def _new_job(payload, request_id=""):
-    now = time.time()
-    job = {
-        "id": uuid.uuid4().hex,
-        "status": "running",
-        "model": payload.get("model", ""),
-        "request_id": request_id,
-        "created": now,
-        "updated": now,
-        "deadline_seconds": _timeout_seconds(),
-        "result": None,
-        "error": None,
-    }
-    with _JOBS_LOCK:
-        _prune_jobs_locked(now)
-        if sum(1 for j in _JOBS.values() if j["status"] == "running") >= MAX_JOBS:
-            raise ToolError(
-                "当前生图任务过多（%d 个在跑），请稍后重试" % MAX_JOBS,
-                code="server_busy",
-                retryable=True,
-            )
-        _JOBS[job["id"]] = job
-        if request_id:
-            _JOB_BY_REQUEST_ID[request_id] = job
-    return job
-
-
-def _job_snapshot(job):
-    with _JOBS_LOCK:
-        return {
-            "status": job["status"],
-            "job_id": job["id"],
-            "elapsed_ms": int((time.time() - job["created"]) * 1000),
-            "result": job["result"],
-            "error": job["error"],
-        }
-
-
-def _finish_job(job, status, result=None, error=None):
-    with _JOBS_LOCK:
-        if job["status"] != "running":
-            # 已被判定超时，迟到的结果直接丢弃
-            return
-        job["status"] = status
-        job["result"] = result
-        job["error"] = error
-        job["updated"] = time.time()
-
-
-def _run_job(job, payload, download, key):
-    try:
-        # 排队等待并发槽：没有槽位时作业保持 running，客户端轮询即可
-        with _JOB_SLOTS:
-            result = _request_images(payload, key)
-            if download:
-                for image in result.get("images", []):
-                    if image.get("url") and not image.get("path"):
-                        try:
-                            path, size = _download_image(image["url"])
-                            image["path"] = path
-                            image["bytes"] = size
-                        except ToolError as exc:
-                            # 下载失败不影响已生成的图片地址
-                            image["download_error"] = exc.message
-    except ToolError as exc:
-        _finish_job(job, "failed", error=exc.payload())
-        return
-    except Exception as exc:  # 兜底，避免线程静默退出
-        _finish_job(job, "failed", error={
-            "code": "internal_error",
-            "message": "生图失败: %s" % exc,
-            "retryable": False,
-        })
-        return
-    _finish_job(job, "succeeded", result=result)
+# 作业记录由网关持久化（SQLite），本服务只做提交与轮询，进程重启不丢作业。
 
 
 # ---------- 网关调用 ----------
 
-def _request_images(payload, key):
-    # 密钥优先取调用方带来的 Authorization（面板「MCP 服务器 → 密钥」），
-    # 没有时回落到 env 里的 AIGW_IMAGE_API_KEY。
+# ---------- 网关作业 ----------
+
+def _gateway_call(method, path, key="", body=None, timeout=30):
+    """调用网关的 JSON 接口；密钥优先取调用方带来的，其次回落 env。"""
     key = (key or "").strip() or _api_key()
     if not key:
         raise ToolError(
@@ -435,17 +316,18 @@ def _request_images(payload, key):
             code="auth_missing",
         )
 
-    url = _base_url() + "/v1/images/generations"
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=body, method="POST")
-    req.add_header("Content-Type", "application/json")
+    data = None
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(_base_url() + path, data=data, method=method)
     req.add_header("Authorization", "Bearer " + key)
     req.add_header("Accept", "application/json")
     req.add_header("User-Agent", "ai-gateway-image-mcp/1.0")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
 
-    started = time.time()
     try:
-        with _LOCAL_OPENER.open(req, timeout=_timeout_seconds()) as resp:
+        with _LOCAL_OPENER.open(req, timeout=timeout) as resp:
             raw = resp.read(16 << 20)
     except urllib.error.HTTPError as exc:
         message, code, retryable = _gateway_error(exc)
@@ -453,27 +335,19 @@ def _request_images(payload, key):
     except urllib.error.URLError as exc:
         reason = getattr(exc, "reason", exc)
         if isinstance(reason, TimeoutError):
-            raise ToolError(
-                "生图请求超时（%d 秒）；可调大 AIGW_IMAGE_TIMEOUT_SECONDS 或渠道轮询超时" % _timeout_seconds(),
-                code="timeout",
-                retryable=True,
-            )
+            raise ToolError("请求网关超时（%d 秒）" % timeout, code="timeout", retryable=True)
         raise ToolError(
             "无法连接网关 %s：%s（确认网关已启动、端口正确）" % (_base_url(), reason),
             code="gateway_unreachable",
             retryable=True,
         )
     except TimeoutError:
-        raise ToolError(
-            "生图请求超时（%d 秒）；可调大 AIGW_IMAGE_TIMEOUT_SECONDS 或渠道轮询超时" % _timeout_seconds(),
-            code="timeout",
-            retryable=True,
-        )
+        raise ToolError("请求网关超时（%d 秒）" % timeout, code="timeout", retryable=True)
     except Exception as exc:
         raise ToolError("请求网关失败：%s" % exc, code="gateway_unreachable", retryable=True)
 
     try:
-        data = json.loads(raw.decode("utf-8", "replace"))
+        return json.loads(raw.decode("utf-8", "replace"))
     except ValueError:
         raise ToolError(
             "网关返回的不是 JSON：%s" % _clip(raw.decode("utf-8", "replace"), 300),
@@ -481,14 +355,62 @@ def _request_images(payload, key):
             retryable=True,
         )
 
-    items = data.get("data") if isinstance(data, dict) else None
-    if not isinstance(items, list) or not items:
-        raise ToolError(
-            "网关未返回图片：%s" % _clip(json.dumps(data, ensure_ascii=False), 300),
-            code="empty_result",
-            retryable=True,
-        )
 
+def _submit_job(payload, request_id="", key=""):
+    """提交异步生图作业，返回网关作业对象（id/status/...）。"""
+    body = dict(payload)
+    body["async"] = True
+    if request_id:
+        body["request_id"] = request_id
+    data = _gateway_call("POST", "/v1/images/generations", key, body)
+    if isinstance(data, dict) and data.get("status") and data.get("id"):
+        return data
+    # 兼容旧网关：没有作业概念时直接返回 data
+    if isinstance(data, dict) and isinstance(data.get("data"), list) and data["data"]:
+        return {
+            "id": "",
+            "status": "succeeded",
+            "model": payload.get("model", ""),
+            "data": data["data"],
+            "created": data.get("created"),
+        }
+    raise ToolError(
+        "网关返回格式不可识别：%s" % _clip(json.dumps(data, ensure_ascii=False), 300),
+        code="invalid_response",
+        retryable=True,
+    )
+
+
+def _fetch_job(job_id, key=""):
+    if not job_id:
+        raise ToolError("缺少作业 ID", code="invalid_request")
+    data = _gateway_call("GET", "/v1/images/jobs/" + urllib.parse.quote(job_id, safe=""), key)
+    if not isinstance(data, dict) or not data.get("status"):
+        raise ToolError("网关返回的作业格式不可识别", code="invalid_response", retryable=True)
+    return data
+
+
+def _cancel_job(job_id, key=""):
+    if not job_id:
+        raise ToolError("缺少作业 ID", code="invalid_request")
+    data = _gateway_call("DELETE", "/v1/images/jobs/" + urllib.parse.quote(job_id, safe=""), key)
+    if not isinstance(data, dict) or not data.get("status"):
+        raise ToolError("网关返回的作业格式不可识别", code="invalid_response", retryable=True)
+    return data
+
+
+def _job_elapsed_ms(view):
+    created = view.get("created_at")
+    if not isinstance(created, (int, float)):
+        return 0
+    updated = view.get("updated_at")
+    end = updated if isinstance(updated, (int, float)) else time.time()
+    return max(0, int((float(end) - float(created)) * 1000))
+
+
+def _job_images(view, download):
+    """把网关作业结果转成 images[]，可选下载到本地。"""
+    items = view.get("data") or []
     images = []
     for item in items:
         if not isinstance(item, dict):
@@ -505,18 +427,50 @@ def _request_images(payload, key):
             entry["bytes"] = size
         if not entry:
             continue
+        if isinstance(item.get("expires_at"), (int, float)):
+            entry["expires_at"] = int(item["expires_at"])
+        if download and image_url and not entry.get("path"):
+            try:
+                path, size = _download_image(image_url)
+                entry["path"] = path
+                entry["bytes"] = size
+            except ToolError as exc:
+                # 下载失败不影响已生成的图片地址
+                entry["download_error"] = exc.message
         images.append(entry)
+    return images
 
+
+def _job_result(view, download=False, reused=False):
+    images = _job_images(view, download)
     if not images:
         raise ToolError("网关返回的图片为空", code="empty_result", retryable=True)
-
-    return {
+    result = {
         "status": "succeeded",
-        "model": payload.get("model", ""),
-        "elapsed_ms": int((time.time() - started) * 1000),
+        "job_id": view.get("id", ""),
+        "model": view.get("model", ""),
         "count": len(images),
         "images": images,
     }
+    if isinstance(view.get("expires_at"), (int, float)):
+        # 作业记录的保留期（24 小时），与图片链接过期时间不是一回事
+        result["job_expires_at"] = int(view["expires_at"])
+    if reused:
+        result["reused"] = True
+    return result
+
+
+def _raise_job_failure(view):
+    err = view.get("error") or {}
+    if not isinstance(err, dict):
+        err = {"message": str(err)}
+    code = err.get("code") or ("canceled" if view.get("status") == "canceled" else "upstream_error")
+    raise ToolError(
+        err.get("message") or "生图失败（上游未提供原因）",
+        code=code,
+        retryable=bool(err.get("retryable")),
+        upstream_status=err.get("upstream_status") or 0,
+    )
 
 
 def _gateway_error(exc):
@@ -1080,108 +1034,81 @@ def _generate(args, key=""):
     wait_seconds = _int_arg(args, "wait_seconds", DEFAULT_WAIT_SECONDS, 0, MAX_WAIT_SECONDS)
     request_id = _request_id(args)
 
-    # 幂等：相同 request_id 复用已有作业，重试不会重复生图、重复计费
-    if request_id:
-        with _JOBS_LOCK:
-            existing = _JOB_BY_REQUEST_ID.get(request_id)
-        if existing is not None:
-            snap = _job_snapshot(existing)
-            if snap["status"] == "running":
-                return {
-                    "status": "running",
-                    "job_id": snap["job_id"],
-                    "elapsed_ms": snap["elapsed_ms"],
-                    "reused": True,
-                    "hint": "相同 request_id 的作业仍在进行，请每 5 秒调用 get_image_job(job_id=\"%s\")"
-                            % snap["job_id"],
-                }
-            result = _finish_result(snap)
-            result["reused"] = True
-            return result
-
-    job = _new_job(payload, request_id)
-    thread = threading.Thread(target=_run_job, args=(job, payload, download, key), daemon=True)
-    thread.start()
-
+    # 作业由网关持久化：相同 request_id 会复用同一个作业，重试不会重复生图
+    view = _submit_job(payload, request_id, key)
+    reused = bool(view.get("reused"))
+    job_id = str(view.get("id") or "")
     deadline = time.time() + wait_seconds
-    while time.time() < deadline:
-        with _JOBS_LOCK:
-            if job["status"] != "running":
-                break
-        time.sleep(0.2)
 
-    snap = _job_snapshot(job)
-    if snap["status"] == "running":
-        return {
-            "status": "running",
-            "job_id": snap["job_id"],
-            "elapsed_ms": snap["elapsed_ms"],
-            "reused": False,
-            "hint": "生图仍在进行，请每 5 秒调用 get_image_job(job_id=\"%s\")；整体超时 %d 秒"
-                    % (snap["job_id"], _timeout_seconds()),
-        }
+    while True:
+        status = str(view.get("status") or "")
+        if status == "succeeded":
+            return _job_result(view, download, reused)
+        if status in ("failed", "canceled"):
+            _raise_job_failure(view)
+        if not job_id:
+            raise ToolError("网关未返回作业 ID", code="invalid_response", retryable=True)
+        if time.time() >= deadline:
+            break
+        time.sleep(0.5)
+        view = _fetch_job(job_id, key)
 
-    result = _finish_result(snap)
-    result["reused"] = False
-    return result
-
-
-def _finish_result(snap):
-    if snap["status"] == "failed":
-        _raise_job_error(snap.get("error"))
-
-    result = dict(snap["result"] or {})
-    result["job_id"] = snap["job_id"]
-    return result
+    return {
+        "status": "running",
+        "job_id": job_id,
+        "stage": view.get("stage") or "",
+        "elapsed_ms": _job_elapsed_ms(view),
+        "reused": reused,
+        "hint": "生图仍在进行，请每 5 秒调用 get_image_job(job_id=\"%s\")；作业保存在网关，重启不会丢失"
+                % job_id,
+    }
 
 
-def _raise_job_error(err):
-    if isinstance(err, dict):
-        raise ToolError(
-            err.get("message") or "生图失败（上游未提供原因）",
-            code=err.get("code") or "internal_error",
-            retryable=bool(err.get("retryable")),
-            upstream_status=err.get("upstream_status") or 0,
-        )
-    raise ToolError(
-        str(err) if err else "生图失败（上游未提供原因）",
-        code="upstream_error",
-        retryable=True,
-    )
-
-
-def _job_status(args):
+def _job_status(args, key=""):
     job_id = str(args.get("job_id") or "").strip()
     if not job_id:
         raise ToolError("缺少参数 job_id")
-    with _JOBS_LOCK:
-        _prune_jobs_locked(time.time())
-        job = _JOBS.get(job_id)
-    if job is None:
-        raise ToolError(
-            "作业 %s 不存在或已过期（进程重启后作业会丢失）；请重新调用 generate_image" % job_id,
-            code="job_not_found",
-        )
+    download = _bool_arg(args, "download", False)
+    view = _fetch_job(job_id, key)
+    status = str(view.get("status") or "")
 
-    snap = _job_snapshot(job)
-    if snap["status"] == "succeeded":
-        return _finish_result(snap)
-    if snap["status"] == "failed":
+    if status == "succeeded":
+        return _job_result(view, download)
+    if status in ("failed", "canceled"):
+        err = view.get("error") or {}
+        if not isinstance(err, dict):
+            err = {"message": str(err)}
         return {
-            "status": "failed",
+            "status": status,
             "job_id": job_id,
-            "elapsed_ms": snap["elapsed_ms"],
-            "error": snap["error"] or {
-                "code": "upstream_error",
-                "message": "生图失败（上游未提供原因）",
-                "retryable": True,
+            "elapsed_ms": _job_elapsed_ms(view),
+            "error": {
+                "code": err.get("code") or ("canceled" if status == "canceled" else "upstream_error"),
+                "message": err.get("message") or (
+                    "作业已取消" if status == "canceled" else "生图失败（上游未提供原因）"
+                ),
+                "retryable": bool(err.get("retryable")),
             },
         }
     return {
         "status": "running",
         "job_id": job_id,
-        "elapsed_ms": snap["elapsed_ms"],
-        "hint": "继续每 5 秒调用 get_image_job；整体超时 %d 秒" % _timeout_seconds(),
+        "stage": view.get("stage") or "",
+        "poll_count": view.get("poll_count") or 0,
+        "elapsed_ms": _job_elapsed_ms(view),
+        "hint": "继续每 5 秒调用 get_image_job；作业保存在网关，重启不会丢失",
+    }
+
+
+def _cancel(args, key=""):
+    job_id = str(args.get("job_id") or "").strip()
+    if not job_id:
+        raise ToolError("缺少参数 job_id")
+    view = _cancel_job(job_id, key)
+    return {
+        "status": view.get("status") or "canceled",
+        "job_id": job_id,
+        "hint": "取消只停止后续轮询；同步渠道可能已经产生上游费用。",
     }
 
 
@@ -1192,7 +1119,9 @@ def call_tool(name, arguments, key=""):
         if name == "generate_image":
             payload = _generate(arguments, key)
         elif name == "get_image_job":
-            payload = _job_status(arguments)
+            payload = _job_status(arguments, key)
+        elif name == "cancel_image_job":
+            payload = _cancel(arguments, key)
         elif name == "list_image_models":
             payload = _list_models(key)
         else:

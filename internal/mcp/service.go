@@ -377,6 +377,26 @@ func (svc *Service) Warmup() {
 	}
 }
 
+// Initialization 返回上游 initialize 的握手结果（serverInfo / instructions）。
+//
+// 会先确保完成握手；任一启用密钥成功即可。全部失败时 ok=false，
+// 网关回退到自己的通用说明书。
+func (svc *Service) Initialization(ctx context.Context, srv *model.MCPServer, r *http.Request) (initializeResult, bool) {
+	keys := srv.EnabledKeys()
+	if len(keys) == 0 {
+		keys = []string{""}
+	}
+	for _, key := range keys {
+		if err := svc.client.ensureInitialized(ctx, srv, key, r); err != nil {
+			continue
+		}
+		if info, ok := svc.client.initInfo(srv.ID, key); ok {
+			return info, true
+		}
+	}
+	return initializeResult{}, false
+}
+
 // stateOf 返回（必要时创建）某服务器的运行时状态。
 func (svc *Service) stateOf(serverID string) *serverState {
 	svc.mu.Lock()

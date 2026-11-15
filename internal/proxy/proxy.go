@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/czg95/ai-gateway-v2/internal/channel"
@@ -42,6 +43,9 @@ type Handler struct {
 	imageHostPublic bool
 	// publicBase 对外访问地址；为空时按请求推导。
 	publicBase string
+	// jobMu / jobCancels 管理异步生图作业的取消函数。
+	jobMu      sync.Mutex
+	jobCancels map[string]context.CancelFunc
 }
 
 // newTransport 构造出站 Transport。headerTimeout 为 0 时不限制等待响应头的时间。
@@ -214,7 +218,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if strings.HasSuffix(path, "/images/generations") {
-		h.handleImages(w, r, body, allowed, rec)
+		h.handleImages(w, r, body, allowed, apiKey, rec)
 		return
 	}
 	h.handleOpenAI(w, r, body, allowed, rec)
@@ -396,7 +400,7 @@ func (h *Handler) validateUpstreamResult(raw []byte, t routing.Target, publicMod
 // ---------- OpenAI 透传 ----------
 
 // handleImages 处理 /v1/images/generations：按渠道配置走同步或异步生图上游。
-func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[string]any, allowed []string, rec *Recorder) {
+func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[string]any, allowed []string, apiKey *model.APIKey, rec *Recorder) {
 	modelName, _ := body["model"].(string)
 	if strings.TrimSpace(modelName) == "" {
 		msg := "缺少 model 参数"
@@ -425,8 +429,11 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 	}
 	if len(targets) == 0 {
 		msg := "模型 " + modelName + " 没有被标记为生图模型，或没有支持生图的可用渠道"
-		// 模型只在聊天渠道里注册时，明确告诉调用方走错了端点，避免把上游 400 当成根因
-		if chatTargets, _ := h.balancer.SelectTarget(modelName, allowed); len(chatTargets) > 0 {
+		if h.balancer.HasImageTarget(modelName, allowed) {
+			// 渠道与生图配置都在，只是密钥都在冷却中——不要把冷却误报成模型未配置
+			msg = "模型 " + modelName + " 的生图渠道密钥均在冷却中，请稍后重试"
+		} else if chatTargets, _ := h.balancer.SelectTarget(modelName, allowed); len(chatTargets) > 0 {
+			// 模型只在聊天渠道里注册时，明确告诉调用方走错了端点，避免把上游 400 当成根因
 			msg = "模型 " + modelName + " 是对话模型，当前渠道未将其标记为生图模型；请在渠道配置中添加生图模型并设置生图模式"
 		}
 		h.logGatewayError(modelName, http.StatusBadRequest, "生图请求被拒绝: "+msg)
@@ -436,6 +443,12 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 	}
 
 	cdCfg := h.coolerConfig()
+	if h.isImageJobRequest(r, body) {
+		// 异步作业模式：立即拿到作业号，长耗时任务在后台跑，客户端轮询作业状态
+		h.submitImageJob(w, r, body, modelName, allowed, apiKey, rec)
+		return
+	}
+
 	var lastErr string
 	for _, t := range targets {
 		rec.Attempt()
@@ -453,13 +466,28 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 		if failStatus == 0 {
 			failStatus = http.StatusBadGateway
 		}
-		h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, failStatus)
+		// 参数类错误换任何密钥都不会成功，冷却只会让一次坏请求拖垮整个渠道
+		if shouldCoolImageFailure(res.UpstreamStatus) {
+			h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, failStatus)
+		}
 		h.logError(t, modelName, failStatus, "生图请求失败: "+res.Error)
 	}
 
 	rec.Finish(http.StatusBadGateway, lastErr)
 	jsonError(w, http.StatusBadGateway,
 		"所有生图渠道均失败。最后错误: "+lastErr, "server_error")
+}
+
+// shouldCoolImageFailure 判断生图失败是否应冷却上游密钥。
+// 400/413/415/422 属于请求本身的问题（参考图超限、格式不支持等），
+// 换密钥重试不可能成功，因此不冷却；网络错误与 5xx、429、401/403 等仍冷却。
+func shouldCoolImageFailure(status int) bool {
+	switch status {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge,
+		http.StatusUnsupportedMediaType, http.StatusUnprocessableEntity:
+		return false
+	}
+	return true
 }
 
 func (h *Handler) handleOpenAI(w http.ResponseWriter, r *http.Request, body map[string]any, allowed []string, rec *Recorder) {

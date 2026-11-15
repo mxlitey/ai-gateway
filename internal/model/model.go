@@ -81,7 +81,7 @@ type ImageGenConfig struct {
 	PollHeaders   []Header `json:"poll_headers"`
 	// PollIntervalMS 轮询间隔（毫秒），默认 5000。
 	PollIntervalMS int `json:"poll_interval_ms"`
-	// TimeoutMS 异步任务整体超时（毫秒），默认 300000。
+	// TimeoutMS 异步任务整体超时（毫秒），默认 360000。
 	TimeoutMS int `json:"timeout_ms"`
 	// 异步任务响应字段名，默认分别对应 ModelScope 的 task_id / task_status / SUCCEED / FAILED。
 	TaskIDField   string `json:"task_id_field"`
@@ -133,7 +133,8 @@ func (g ImageGenConfig) Normalized() ImageGenConfig {
 		g.PollIntervalMS = 100
 	}
 	if g.TimeoutMS <= 0 {
-		g.TimeoutMS = 300000
+		// 异步生图常需 3-5 分钟（ModelScope Qwen 实测可达 244 秒），默认给 6 分钟
+		g.TimeoutMS = 360000
 	}
 	if g.TimeoutMS < 1000 {
 		g.TimeoutMS = 1000

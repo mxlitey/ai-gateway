@@ -75,6 +75,8 @@ type initializeResult struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
 	} `json:"serverInfo"`
+	// Instructions 上游自带的说明书，网关在直连/聚合入口原样透传或拼接。
+	Instructions string `json:"instructions"`
 }
 
 // toolDef 上游 tools/list 返回的单个工具；保留 Raw 以便原样透传其余字段。
@@ -85,8 +87,8 @@ type toolDef struct {
 
 // upstreamError 上游调用失败：区分「换个密钥可能就好了」与「换谁来都一样」。
 type upstreamError struct {
-	Status    int    // HTTP 状态码，0 表示连接失败
-	Code      int    // JSON-RPC 错误码，0 表示没有
+	Status    int // HTTP 状态码，0 表示连接失败
+	Code      int // JSON-RPC 错误码，0 表示没有
 	Message   string
 	Retryable bool
 }

@@ -48,25 +48,25 @@ func registerUsageTool(s *Server, d ReadDeps) {
 				"key_hint":     map[string]any{"type": "string", "description": "按上游密钥脱敏值筛选合计数字"},
 			},
 		}, false, func(args map[string]any) (any, error) {
-		days := clampInt(argInt(args, "days", 7), 1, 365)
-		to := argInt64(args, "to", time.Now().UnixMilli())
-		from := argInt64(args, "from", to-int64(days)*86400000)
-		if from <= 0 || to <= 0 || from >= to {
-			return nil, fmt.Errorf("时间区间不合法")
-		}
-		sum, err := d.Store.UsageSummary(from, to,
-			argString(args, "channel_name"), argString(args, "model"), argString(args, "key_hint"))
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{
-			"from":         from,
-			"to":           to,
-			"days":         days,
-			"summary":      sum,
-			"price_source": pricing.Endpoint(),
-		}, nil
-	})
+			days := clampInt(argInt(args, "days", 7), 1, 365)
+			to := argInt64(args, "to", time.Now().UnixMilli())
+			from := argInt64(args, "from", to-int64(days)*86400000)
+			if from <= 0 || to <= 0 || from >= to {
+				return nil, fmt.Errorf("时间区间不合法")
+			}
+			sum, err := d.Store.UsageSummary(from, to,
+				argString(args, "channel_name"), argString(args, "model"), argString(args, "key_hint"))
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"from":         from,
+				"to":           to,
+				"days":         days,
+				"summary":      sum,
+				"price_source": pricing.Endpoint(),
+			}, nil
+		})
 }
 
 // ---------- 2. 用量明细 ----------
@@ -90,41 +90,41 @@ func registerUsageLogsTool(s *Server, d ReadDeps) {
 				"offset":       map[string]any{"type": "integer", "description": "分页偏移，默认 0"},
 			},
 		}, false, func(args map[string]any) (any, error) {
-		days := clampInt(argInt(args, "days", 7), 1, 365)
-		to := argInt64(args, "to", time.Now().UnixMilli())
-		from := argInt64(args, "from", to-int64(days)*86400000)
-		if from <= 0 || to <= 0 || from >= to {
-			return nil, fmt.Errorf("时间区间不合法")
-		}
-		f := store.RequestLogFilter{
-			FromMs:      from,
-			ToMs:        to,
-			Model:       argString(args, "model"),
-			ChannelID:   argString(args, "channel_id"),
-			ChannelName: argString(args, "channel_name"),
-			APIKeyID:    argString(args, "api_key_id"),
-			KeyHint:     argString(args, "key_hint"),
-			OnlyFail:    argBool(args, "only_fail"),
-			Limit:       clampInt(argInt(args, "limit", 50), 1, 500),
-			Offset:      maxInt(argInt(args, "offset", 0), 0),
-		}
-		items, err := d.Store.ListRequestLogs(f)
-		if err != nil {
-			return nil, err
-		}
-		total, err := d.Store.CountRequestLogs(f)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{
-			"from":   from,
-			"to":     to,
-			"items":  items,
-			"total":  total,
-			"limit":  f.Limit,
-			"offset": f.Offset,
-		}, nil
-	})
+			days := clampInt(argInt(args, "days", 7), 1, 365)
+			to := argInt64(args, "to", time.Now().UnixMilli())
+			from := argInt64(args, "from", to-int64(days)*86400000)
+			if from <= 0 || to <= 0 || from >= to {
+				return nil, fmt.Errorf("时间区间不合法")
+			}
+			f := store.RequestLogFilter{
+				FromMs:      from,
+				ToMs:        to,
+				Model:       argString(args, "model"),
+				ChannelID:   argString(args, "channel_id"),
+				ChannelName: argString(args, "channel_name"),
+				APIKeyID:    argString(args, "api_key_id"),
+				KeyHint:     argString(args, "key_hint"),
+				OnlyFail:    argBool(args, "only_fail"),
+				Limit:       clampInt(argInt(args, "limit", 50), 1, 500),
+				Offset:      maxInt(argInt(args, "offset", 0), 0),
+			}
+			items, err := d.Store.ListRequestLogs(f)
+			if err != nil {
+				return nil, err
+			}
+			total, err := d.Store.CountRequestLogs(f)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"from":   from,
+				"to":     to,
+				"items":  items,
+				"total":  total,
+				"limit":  f.Limit,
+				"offset": f.Offset,
+			}, nil
+		})
 }
 
 // ---------- 3. 用量趋势 ----------
@@ -142,27 +142,27 @@ func registerUsageSeriesTool(s *Server, d ReadDeps) {
 				"key_hint":     map[string]any{"type": "string", "description": "按上游密钥脱敏值筛选"},
 			},
 		}, false, func(args map[string]any) (any, error) {
-		days := clampInt(argInt(args, "days", 7), 1, 365)
-		bucket := strings.ToLower(argString(args, "bucket"))
-		if bucket != "hour" {
-			bucket = "day"
-		}
-		to := time.Now().UnixMilli()
-		from := to - int64(days)*86400000
-		buckets, requests, tokens, err := d.Store.UsageSeriesRange(
-			from, to, bucket, argString(args, "channel_name"), argString(args, "model"), argString(args, "key_hint"))
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{
-			"from":         from,
-			"to":           to,
-			"bucket":       bucket,
-			"buckets":      buckets,
-			"total_requests": requests,
-			"total_tokens": tokens,
-		}, nil
-	})
+			days := clampInt(argInt(args, "days", 7), 1, 365)
+			bucket := strings.ToLower(argString(args, "bucket"))
+			if bucket != "hour" {
+				bucket = "day"
+			}
+			to := time.Now().UnixMilli()
+			from := to - int64(days)*86400000
+			buckets, requests, tokens, err := d.Store.UsageSeriesRange(
+				from, to, bucket, argString(args, "channel_name"), argString(args, "model"), argString(args, "key_hint"))
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"from":           from,
+				"to":             to,
+				"bucket":         bucket,
+				"buckets":        buckets,
+				"total_requests": requests,
+				"total_tokens":   tokens,
+			}, nil
+		})
 }
 
 // ---------- 4. 可用模型 ----------
@@ -176,61 +176,61 @@ func registerPublicModelsTool(s *Server, d ReadDeps) {
 				"model": map[string]any{"type": "string", "description": "只看某个公开模型的详细路由，留空返回全部"},
 			},
 		}, false, func(args map[string]any) (any, error) {
-		channels, err := d.Store.ListChannels()
-		if err != nil {
-			return nil, err
-		}
-		only := argString(args, "model")
+			channels, err := d.Store.ListChannels()
+			if err != nil {
+				return nil, err
+			}
+			only := argString(args, "model")
 
-		type route struct {
-			ChannelID     string `json:"channel_id"`
-			ChannelName   string `json:"channel_name"`
-			Enabled       bool   `json:"enabled"`
-			Priority      int    `json:"priority"`
-			UpstreamModel string `json:"upstream_model"`
-			ModelDisabled bool   `json:"model_disabled"`
-			Direct        bool   `json:"direct"`
-		}
-		grouped := map[string][]route{}
-		for i := range channels {
-			ch := &channels[i]
-			names := map[string]bool{}
-			for pub := range ch.ModelMap {
-				names[strings.TrimSpace(pub)] = true
+			type route struct {
+				ChannelID     string `json:"channel_id"`
+				ChannelName   string `json:"channel_name"`
+				Enabled       bool   `json:"enabled"`
+				Priority      int    `json:"priority"`
+				UpstreamModel string `json:"upstream_model"`
+				ModelDisabled bool   `json:"model_disabled"`
+				Direct        bool   `json:"direct"`
 			}
-			for _, m := range ch.Models {
-				names[strings.TrimSpace(m)] = true
+			grouped := map[string][]route{}
+			for i := range channels {
+				ch := &channels[i]
+				names := map[string]bool{}
+				for pub := range ch.ModelMap {
+					names[strings.TrimSpace(pub)] = true
+				}
+				for _, m := range ch.Models {
+					names[strings.TrimSpace(m)] = true
+				}
+				for pub := range names {
+					if pub == "" {
+						continue
+					}
+					up, ok := ch.ResolveUpstreamModel(pub)
+					if !ok {
+						continue
+					}
+					_, mapped := ch.ModelMap[pub]
+					grouped[pub] = append(grouped[pub], route{
+						ChannelID:     ch.ID,
+						ChannelName:   ch.Name,
+						Enabled:       ch.Enabled && len(ch.EnabledKeys()) > 0 && !ch.IsModelDisabled(pub),
+						Priority:      ch.Priority(pub),
+						UpstreamModel: up,
+						ModelDisabled: ch.IsModelDisabled(pub),
+						Direct:        !mapped,
+					})
+				}
 			}
-			for pub := range names {
-				if pub == "" {
+
+			out := map[string][]route{}
+			for name, routes := range grouped {
+				if only != "" && name != only {
 					continue
 				}
-				up, ok := ch.ResolveUpstreamModel(pub)
-				if !ok {
-					continue
-				}
-				_, mapped := ch.ModelMap[pub]
-				grouped[pub] = append(grouped[pub], route{
-					ChannelID:     ch.ID,
-					ChannelName:   ch.Name,
-					Enabled:       ch.Enabled && len(ch.EnabledKeys()) > 0 && !ch.IsModelDisabled(pub),
-					Priority:      ch.Priority(pub),
-					UpstreamModel: up,
-					ModelDisabled: ch.IsModelDisabled(pub),
-					Direct:        !mapped,
-				})
+				out[name] = routes
 			}
-		}
-
-		out := map[string][]route{}
-		for name, routes := range grouped {
-			if only != "" && name != only {
-				continue
-			}
-			out[name] = routes
-		}
-		return map[string]any{"count": len(out), "models": out}, nil
-	})
+			return map[string]any{"count": len(out), "models": out}, nil
+		})
 }
 
 // ---------- 5. 渠道 ----------
@@ -244,58 +244,65 @@ func registerChannelsTool(s *Server, d ReadDeps) {
 				"enabled_only": map[string]any{"type": "boolean", "description": "只看已启用的渠道"},
 			},
 		}, false, func(args map[string]any) (any, error) {
-		channels, err := d.Store.ListChannels()
-		if err != nil {
-			return nil, err
-		}
-		enabledOnly := argBool(args, "enabled_only")
+			channels, err := d.Store.ListChannels()
+			if err != nil {
+				return nil, err
+			}
+			enabledOnly := argBool(args, "enabled_only")
 
-		type keyView struct {
-			Hint    string `json:"hint"`
-			Label   string `json:"label,omitempty"`
-			Enabled bool   `json:"enabled"`
-		}
-		type channelView struct {
-			ID            string            `json:"id"`
-			Name          string            `json:"name"`
-			BaseURL       string            `json:"base_url"`
-			Path          string            `json:"path"`
-			Enabled       bool              `json:"enabled"`
-			Source        string            `json:"source"`
-			KeyStrategy   string            `json:"key_strategy"`
-			KeyCount      int               `json:"key_count"`
-			Keys          []keyView         `json:"keys"`
-			Models        []string          `json:"models"`
-			ModelMap      map[string]string `json:"model_map"`
-			DisabledModels []string         `json:"disabled_models"`
-		}
-		out := make([]channelView, 0, len(channels))
-		for i := range channels {
-			ch := &channels[i]
-			if enabledOnly && !ch.Enabled {
-				continue
+			type keyView struct {
+				Hint    string `json:"hint"`
+				Label   string `json:"label,omitempty"`
+				Enabled bool   `json:"enabled"`
 			}
-			keys := make([]keyView, 0, len(ch.Keys))
-			for _, k := range ch.Keys {
-				keys = append(keys, keyView{Hint: model.KeyHint(k.Key), Label: k.Label, Enabled: k.Enabled})
+			type channelView struct {
+				ID             string                `json:"id"`
+				Name           string                `json:"name"`
+				BaseURL        string                `json:"base_url"`
+				Path           string                `json:"path"`
+				Enabled        bool                  `json:"enabled"`
+				Source         string                `json:"source"`
+				KeyStrategy    string                `json:"key_strategy"`
+				KeyCount       int                   `json:"key_count"`
+				Keys           []keyView             `json:"keys"`
+				Models         []string              `json:"models"`
+				ModelMap       map[string]string     `json:"model_map"`
+				DisabledModels []string              `json:"disabled_models"`
+				ImageModels    []string              `json:"image_models"`
+				ImageGen       *model.ImageGenConfig `json:"image_generation,omitempty"`
 			}
-			out = append(out, channelView{
-				ID:             ch.ID,
-				Name:           ch.Name,
-				BaseURL:        ch.BaseURL,
-				Path:           ch.Path,
-				Enabled:        ch.Enabled,
-				Source:         ch.Source,
-				KeyStrategy:    ch.KeyStrategy,
-				KeyCount:       len(ch.Keys),
-				Keys:           keys,
-				Models:         ch.Models,
-				ModelMap:       ch.ModelMap,
-				DisabledModels: ch.DisabledModels,
-			})
-		}
-		return map[string]any{"count": len(out), "channels": out}, nil
-	})
+			out := make([]channelView, 0, len(channels))
+			for i := range channels {
+				ch := &channels[i]
+				if enabledOnly && !ch.Enabled {
+					continue
+				}
+				keys := make([]keyView, 0, len(ch.Keys))
+				for _, k := range ch.Keys {
+					keys = append(keys, keyView{Hint: model.KeyHint(k.Key), Label: k.Label, Enabled: k.Enabled})
+				}
+				out = append(out, channelView{
+					ID:             ch.ID,
+					Name:           ch.Name,
+					BaseURL:        ch.BaseURL,
+					Path:           ch.Path,
+					Enabled:        ch.Enabled,
+					Source:         ch.Source,
+					KeyStrategy:    ch.KeyStrategy,
+					KeyCount:       len(ch.Keys),
+					Keys:           keys,
+					Models:         ch.Models,
+					ModelMap:       ch.ModelMap,
+					DisabledModels: ch.DisabledModels,
+					ImageModels:    ch.ImageModels,
+				})
+				if len(ch.ImageModels) > 0 || ch.ImageGen.Mode != "" || ch.ImageGen.ResponseFormatMode != model.ImageFormatDrop {
+					gen := ch.ImageGen
+					out[len(out)-1].ImageGen = &gen
+				}
+			}
+			return map[string]any{"count": len(out), "channels": out}, nil
+		})
 }
 
 // ---------- 6. 密钥冷却 ----------
@@ -326,16 +333,16 @@ func registerResetCooldownTool(s *Server, d ReadDeps) {
 			},
 			"required": []string{"channel_id", "key_hint"},
 		}, true, func(args map[string]any) (any, error) {
-		channelID := argString(args, "channel_id")
-		keyHint := argString(args, "key_hint")
-		if channelID == "" || keyHint == "" {
-			return nil, fmt.Errorf("channel_id 与 key_hint 均不能为空")
-		}
-		if err := d.Store.ClearKeyCooldown(channelID, keyHint); err != nil {
-			return nil, err
-		}
-		return map[string]any{"success": true, "channel_id": channelID, "key_hint": keyHint}, nil
-	})
+			channelID := argString(args, "channel_id")
+			keyHint := argString(args, "key_hint")
+			if channelID == "" || keyHint == "" {
+				return nil, fmt.Errorf("channel_id 与 key_hint 均不能为空")
+			}
+			if err := d.Store.ClearKeyCooldown(channelID, keyHint); err != nil {
+				return nil, err
+			}
+			return map[string]any{"success": true, "channel_id": channelID, "key_hint": keyHint}, nil
+		})
 }
 
 // ---------- 8. 错误日志 ----------
@@ -350,31 +357,31 @@ func registerErrorLogsTool(s *Server, d ReadDeps) {
 				"days":       map[string]any{"type": "integer", "description": "查询最近多少天，默认 7"},
 			},
 		}, false, func(args map[string]any) (any, error) {
-		days := clampInt(argInt(args, "days", 7), 1, 365)
-		to := time.Now().UnixMilli()
-		from := to - int64(days)*86400000
-		channelID := argString(args, "channel_id")
-		if channelID == "" {
-			channels, err := d.Store.ListChannels()
-			if err != nil {
-				return nil, err
-			}
-			all := []model.ErrorLog{}
-			for i := range channels {
-				logs, err := d.Store.ListErrorLogsByChannel(channels[i].ID, from, to)
+			days := clampInt(argInt(args, "days", 7), 1, 365)
+			to := time.Now().UnixMilli()
+			from := to - int64(days)*86400000
+			channelID := argString(args, "channel_id")
+			if channelID == "" {
+				channels, err := d.Store.ListChannels()
 				if err != nil {
 					return nil, err
 				}
-				all = append(all, logs...)
+				all := []model.ErrorLog{}
+				for i := range channels {
+					logs, err := d.Store.ListErrorLogsByChannel(channels[i].ID, from, to)
+					if err != nil {
+						return nil, err
+					}
+					all = append(all, logs...)
+				}
+				return map[string]any{"from": from, "to": to, "count": len(all), "items": all}, nil
 			}
-			return map[string]any{"from": from, "to": to, "count": len(all), "items": all}, nil
-		}
-		logs, err := d.Store.ListErrorLogsByChannel(channelID, from, to)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"from": from, "to": to, "count": len(logs), "items": logs}, nil
-	})
+			logs, err := d.Store.ListErrorLogsByChannel(channelID, from, to)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"from": from, "to": to, "count": len(logs), "items": logs}, nil
+		})
 }
 
 // ---------- 9. 模型价格 ----------
@@ -389,37 +396,37 @@ func registerPriceTool(s *Server, d ReadDeps) {
 				"limit": map[string]any{"type": "integer", "description": "未指定 model 时返回多少个低价/高价样本，默认 20"},
 			},
 		}, false, func(args map[string]any) (any, error) {
-		name := argString(args, "model")
-		if name != "" && d.Pricer != nil {
-			if p, ok := d.Pricer.Resolve(name); ok {
-				return map[string]any{"found": true, "price": p}, nil
+			name := argString(args, "model")
+			if name != "" && d.Pricer != nil {
+				if p, ok := d.Pricer.Resolve(name); ok {
+					return map[string]any{"found": true, "price": p}, nil
+				}
+				return map[string]any{
+					"found":  false,
+					"model":  name,
+					"reason": "价格表中没有该模型，可调用不分组的 list 查看已收录的模型",
+				}, nil
+			}
+
+			all, err := d.Store.ListModelPrices()
+			if err != nil {
+				return nil, err
+			}
+			limit := clampInt(argInt(args, "limit", 20), 1, 200)
+			if len(all) > limit {
+				all = all[:limit]
+			}
+			source := ""
+			if v, ok, _ := d.Store.GetSetting(store.SettingPriceRefreshAt); ok {
+				source = v
 			}
 			return map[string]any{
-				"found":  false,
-				"model":  name,
-				"reason": "价格表中没有该模型，可调用不分组的 list 查看已收录的模型",
+				"price_source": pricing.Endpoint(),
+				"refreshed_at": source,
+				"count":        len(all),
+				"prices":       all,
 			}, nil
-		}
-
-		all, err := d.Store.ListModelPrices()
-		if err != nil {
-			return nil, err
-		}
-		limit := clampInt(argInt(args, "limit", 20), 1, 200)
-		if len(all) > limit {
-			all = all[:limit]
-		}
-		source := ""
-		if v, ok, _ := d.Store.GetSetting(store.SettingPriceRefreshAt); ok {
-			source = v
-		}
-		return map[string]any{
-			"price_source": pricing.Endpoint(),
-			"refreshed_at": source,
-			"count":        len(all),
-			"prices":       all,
-		}, nil
-	})
+		})
 }
 
 // ---------- 参数取值辅助 ----------

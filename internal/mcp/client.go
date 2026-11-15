@@ -37,6 +37,9 @@ type client struct {
 	initMu      sync.Mutex
 	initialized map[string]bool
 	initing     map[string]*initCall
+	// initResults 缓存上游 initialize 的原始结果（serverInfo / instructions），
+	// 供网关在 initialize 阶段原样透传，而不是用通用文案覆盖。
+	initResults map[string]initializeResult
 }
 
 func newClient() *client {
@@ -53,6 +56,7 @@ func newClient() *client {
 		sessions:    map[string]string{},
 		initialized: map[string]bool{},
 		initing:     map[string]*initCall{},
+		initResults: map[string]initializeResult{},
 	}
 }
 
@@ -71,6 +75,7 @@ func (c *client) dropSession(serverID, key string) {
 
 	c.initMu.Lock()
 	delete(c.initialized, k)
+	delete(c.initResults, k)
 	c.initMu.Unlock()
 }
 
@@ -160,11 +165,22 @@ func (c *client) ensureInitialized(ctx context.Context, srv *model.MCPServer, ke
 	}
 	var initRes initializeResult
 	_ = json.Unmarshal(raw, &initRes)
+	c.initMu.Lock()
+	c.initResults[k] = initRes
+	c.initMu.Unlock()
 
 	// 2) notifications/initialized：规范要求的握手收尾通知，上游不应返回响应
 	_ = c.notify(ctx, srv, key, r, "notifications/initialized", map[string]any{})
 
 	return finish(nil)
+}
+
+// initInfo 返回缓存的握手结果。
+func (c *client) initInfo(serverID, key string) (initializeResult, bool) {
+	c.initMu.Lock()
+	defer c.initMu.Unlock()
+	info, ok := c.initResults[sessionKey(serverID, key)]
+	return info, ok
 }
 
 // post 发送一条需要响应的 JSON-RPC 请求。

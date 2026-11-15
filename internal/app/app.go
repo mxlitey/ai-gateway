@@ -244,6 +244,10 @@ func (a *App) Start() error {
 		go uploads.CleanupLoop(ctx)
 	}
 
+	// 恢复上次未完成的生图作业：异步任务继续轮询，排队任务重新执行。
+	go proxyHandler.ResumeImageJobs()
+	go proxyHandler.CleanupImageJobs(ctx)
+
 	a.mu.Lock()
 	a.store, a.host, a.mcpSvc, a.srv, a.cancel, a.running = st, host, mcpSvc, srv, cancel, true
 	a.mu.Unlock()

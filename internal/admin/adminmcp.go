@@ -95,7 +95,7 @@ func firstHeaderValue(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
 }
 
-// saveAdminMCP 保存开关；首次启用时自动补齐两档令牌并返回明文。
+// saveAdminMCP 只保存开关；令牌由用户在两枚令牌各自的按钮上手动生成。
 //
 // 立即生效：更新的是 adminmcp.Config 的内存状态，路由始终挂载，
 // 由 Config.Enabled() 决定是否响应。
@@ -111,82 +111,82 @@ func (a *API) saveAdminMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 开关先落库，令牌随后生成；两步都成功才算保存成功
 	if err := a.store.SetSetting(store.SettingAdminMCPEnabled, boolText(body.Enabled)); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	a.adminMCP.Config().Update(body.Enabled)
-
-	resp := map[string]any{"success": true, "enabled": body.Enabled}
-
-	if body.Enabled {
-		readToken, writeToken, err := a.issueAdminMCPTokens(false)
-		if err != nil {
-			jsonErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if readToken != "" || writeToken != "" {
-			resp["readonly_token"] = readToken
-			resp["writable_token"] = writeToken
-			resp["notice"] = "令牌明文只显示这一次，请立即复制保存"
-		}
-	}
-	jsonOK(w, resp)
-}
-
-// issueAdminMCPTokens 补齐两档令牌：regenerate 为 false 时只生成缺失的那一档。
-// 返回本次新生成的明文（未生成的为空串）；对应档位的旧令牌在覆盖后立即失效。
-func (a *API) issueAdminMCPTokens(regenerate bool) (readToken, writeToken string, err error) {
-	if a.adminMCP == nil {
-		return "", "", fmt.Errorf("管理 MCP 未初始化")
-	}
-	cfg := a.adminMCP.Config()
-
-	if regenerate || !cfg.HasReadonlyToken() {
-		plain := adminmcp.TokenPrefix + id.Hex(32)
-		hash := adminmcp.HashToken(plain)
-		if err := a.store.SetSetting(store.SettingAdminMCPReadOnlyTokenHash, hash); err != nil {
-			return "", "", err
-		}
-		cfg.SetReadonlyTokenHash(hash)
-		readToken = plain
-	}
-	if regenerate || !cfg.HasWritableToken() {
-		plain := adminmcp.TokenPrefix + id.Hex(32)
-		hash := adminmcp.HashToken(plain)
-		if err := a.store.SetSetting(store.SettingAdminMCPTokenHash, hash); err != nil {
-			return "", "", err
-		}
-		cfg.SetWritableTokenHash(hash)
-		writeToken = plain
-	}
 	// 旧版「允许写操作」开关已由令牌档位取代
 	_ = a.store.DeleteSetting(store.SettingAdminMCPWritable)
-	return readToken, writeToken, nil
+
+	jsonOK(w, map[string]any{"success": true, "enabled": body.Enabled})
 }
 
-// resetAdminMCPToken 重新生成两档令牌，返回明文；旧令牌立即失效。
-func (a *API) resetAdminMCPToken() (readToken, writeToken string, err error) {
-	return a.issueAdminMCPTokens(true)
+// 令牌档位。
+const (
+	adminMCPKindReadonly = "readonly"
+	adminMCPKindWritable = "writable"
+)
+
+// issueAdminMCPToken 生成（或重新生成）指定档位的令牌，返回明文。
+//
+// 两枚令牌互不影响：重置只读令牌不会让读写令牌失效，反之亦然。
+// 明文只在本响应中出现一次，库里只存 SHA-256 摘要。
+func (a *API) issueAdminMCPToken(kind string) (string, error) {
+	if a.adminMCP == nil {
+		return "", fmt.Errorf("管理 MCP 未初始化")
+	}
+	plain := adminmcp.TokenPrefix + id.Hex(32)
+	hash := adminmcp.HashToken(plain)
+	cfg := a.adminMCP.Config()
+
+	switch kind {
+	case adminMCPKindReadonly:
+		if err := a.store.SetSetting(store.SettingAdminMCPReadOnlyTokenHash, hash); err != nil {
+			return "", err
+		}
+		cfg.SetReadonlyTokenHash(hash)
+	case adminMCPKindWritable:
+		if err := a.store.SetSetting(store.SettingAdminMCPTokenHash, hash); err != nil {
+			return "", err
+		}
+		cfg.SetWritableTokenHash(hash)
+	default:
+		return "", fmt.Errorf("令牌类型只能是 readonly 或 writable")
+	}
+
+	_ = a.store.DeleteSetting(store.SettingAdminMCPWritable)
+	return plain, nil
 }
 
-// resetAdminMCPTokenAPI 面板「重置令牌」按钮的入口。
-func (a *API) resetAdminMCPTokenAPI(w http.ResponseWriter, r *http.Request) {
+// adminMCPTokenAPI 面板「生成 / 重置」单枚令牌的入口。
+func (a *API) adminMCPTokenAPI(w http.ResponseWriter, r *http.Request) {
 	if a.adminMCP == nil {
 		jsonErr(w, http.StatusServiceUnavailable, "管理 MCP 未初始化")
 		return
 	}
-	readToken, writeToken, err := a.resetAdminMCPToken()
-	if err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
+	var body struct {
+		Kind string `json:"kind"`
+	}
+	if !decodeBody(w, r, &body) {
 		return
 	}
+	kind := strings.TrimSpace(body.Kind)
+	plain, err := a.issueAdminMCPToken(kind)
+	if err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	label := "只读令牌"
+	if kind == adminMCPKindWritable {
+		label = "读写令牌"
+	}
 	jsonOK(w, map[string]any{
-		"success":        true,
-		"readonly_token": readToken,
-		"writable_token": writeToken,
-		"notice":         "旧令牌已失效；新令牌明文只显示这一次",
+		"success": true,
+		"kind":    kind,
+		"token":   plain,
+		"notice":  label + "已生成；明文只显示这一次，旧令牌（若有）已失效",
 	})
 }
 

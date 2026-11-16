@@ -13,19 +13,18 @@ func boolStr(b bool) string {
 // 运行期设置的持久化键。与部署级参数（监听地址、端口、数据目录）区分：
 // 后者由 CLI / 环境变量决定且面板只读，这里都是可在面板中调整的运行期偏好。
 const (
-	SettingRuntimeLogLevel                  = "runtime.log_level"
-	SettingRuntimePriceEndpoint             = "runtime.price_endpoint"
-	SettingRuntimePriceRefreshMinutes       = "runtime.price_refresh_minutes"
-	SettingRuntimePluginProbeIntervalSecs   = "runtime.plugin_probe_interval_seconds"
-	SettingRuntimePluginProbeTimeoutSecs    = "runtime.plugin_probe_timeout_seconds"
-	SettingRuntimePluginUnhealthyThreshold  = "runtime.plugin_unhealthy_threshold"
-	SettingRuntimePluginMaxFailures         = "runtime.plugin_max_failures"
-	SettingRuntimePluginAutoCheckinMinutes  = "runtime.plugin_auto_checkin_minutes"
+	SettingRuntimeLogLevel                 = "runtime.log_level"
+	SettingRuntimeCurrencySymbol           = "runtime.currency_symbol"
+	SettingRuntimePluginProbeIntervalSecs  = "runtime.plugin_probe_interval_seconds"
+	SettingRuntimePluginProbeTimeoutSecs   = "runtime.plugin_probe_timeout_seconds"
+	SettingRuntimePluginUnhealthyThreshold = "runtime.plugin_unhealthy_threshold"
+	SettingRuntimePluginMaxFailures        = "runtime.plugin_max_failures"
+	SettingRuntimePluginAutoCheckinMinutes = "runtime.plugin_auto_checkin_minutes"
 
 	// 上游密钥失败冷却
-	SettingRuntimeKeyCooldownEnabled  = "runtime.key_cooldown_enabled"
-	SettingRuntimeKeyCooldownBaseSec  = "runtime.key_cooldown_base_seconds"
-	SettingRuntimeKeyCooldownMaxSec   = "runtime.key_cooldown_max_seconds"
+	SettingRuntimeKeyCooldownEnabled = "runtime.key_cooldown_enabled"
+	SettingRuntimeKeyCooldownBaseSec = "runtime.key_cooldown_base_seconds"
+	SettingRuntimeKeyCooldownMaxSec  = "runtime.key_cooldown_max_seconds"
 
 	// 管理 MCP（/admin/mcp）：把网关自身的管理能力暴露为 MCP 工具。
 	// 与 RuntimeSettings 分开存：这几项含凭据摘要，不参与整体覆盖式保存。
@@ -45,10 +44,9 @@ const (
 type RuntimeSettings struct {
 	// LogLevel 日志级别 debug|info|warn|error；留空表示沿用启动参数 / 环境变量。
 	LogLevel string `json:"log_level"`
-	// PriceEndpoint 模型价格清单地址；留空表示沿用环境变量 AIGW_PRICE_ENDPOINT 或默认地址。
-	PriceEndpoint string `json:"price_endpoint"`
-	// PriceRefreshMinutes 价格快照复查间隔（分钟）。
-	PriceRefreshMinutes int `json:"price_refresh_minutes"`
+	// CurrencySymbol 价格与费用展示用的货币符号（如 ¥ / $ / €）；留空只显示数字。
+	// 费用本身是纯数字，填什么symbol就代表什么货币，不做任何换算。
+	CurrencySymbol string `json:"currency_symbol"`
 
 	// PluginProbeIntervalSeconds 插件探活间隔（秒）。
 	PluginProbeIntervalSeconds int `json:"plugin_probe_interval_seconds"`
@@ -73,8 +71,7 @@ type RuntimeSettings struct {
 func DefaultRuntimeSettings() RuntimeSettings {
 	return RuntimeSettings{
 		LogLevel:                   "",
-		PriceEndpoint:              "",
-		PriceRefreshMinutes:        60,
+		CurrencySymbol:             "¥",
 		PluginProbeIntervalSeconds: 2,
 		PluginProbeTimeoutSeconds:  2,
 		PluginUnhealthyThreshold:   3,
@@ -95,10 +92,11 @@ func (s *Store) LoadRuntimeSettings() (RuntimeSettings, error) {
 	} else if ok {
 		out.LogLevel = v
 	}
-	if v, ok, err := s.GetSetting(SettingRuntimePriceEndpoint); err != nil {
+	if v, ok, err := s.GetSetting(SettingRuntimeCurrencySymbol); err != nil {
 		return out, err
 	} else if ok {
-		out.PriceEndpoint = v
+		// 允许显式留空（不显示符号），因此与默认值区分：落库过就以落库值为准
+		out.CurrencySymbol = v
 	}
 	// 布尔项：落库值为 "1"/"0"
 	if v, ok, err := s.GetSetting(SettingRuntimeKeyCooldownEnabled); err != nil {
@@ -111,7 +109,6 @@ func (s *Store) LoadRuntimeSettings() (RuntimeSettings, error) {
 		key   string
 		apply func(int)
 	}{
-		{SettingRuntimePriceRefreshMinutes, func(n int) { out.PriceRefreshMinutes = n }},
 		{SettingRuntimePluginProbeIntervalSecs, func(n int) { out.PluginProbeIntervalSeconds = n }},
 		{SettingRuntimePluginProbeTimeoutSecs, func(n int) { out.PluginProbeTimeoutSeconds = n }},
 		{SettingRuntimePluginUnhealthyThreshold, func(n int) { out.PluginUnhealthyThreshold = n }},
@@ -142,8 +139,7 @@ func (s *Store) SaveRuntimeSettings(rs RuntimeSettings) error {
 		value string
 	}{
 		{SettingRuntimeLogLevel, rs.LogLevel},
-		{SettingRuntimePriceEndpoint, rs.PriceEndpoint},
-		{SettingRuntimePriceRefreshMinutes, strconv.Itoa(rs.PriceRefreshMinutes)},
+		{SettingRuntimeCurrencySymbol, rs.CurrencySymbol},
 		{SettingRuntimePluginProbeIntervalSecs, strconv.Itoa(rs.PluginProbeIntervalSeconds)},
 		{SettingRuntimePluginProbeTimeoutSecs, strconv.Itoa(rs.PluginProbeTimeoutSeconds)},
 		{SettingRuntimePluginUnhealthyThreshold, strconv.Itoa(rs.PluginUnhealthyThreshold)},

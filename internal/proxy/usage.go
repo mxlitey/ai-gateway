@@ -107,6 +107,16 @@ func (r *Recorder) ObserveEvent(chunk map[string]any) {
 	applyUsage(&r.row, usage)
 }
 
+// Discard 放弃本次记录（异步作业在提交阶段只返回作业号，真正完成时再补写用量）。
+func (r *Recorder) Discard() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.done = true
+	r.mu.Unlock()
+}
+
 // Commit 计算费用并落库；重复调用直接返回。
 func (r *Recorder) Commit() {
 	if r == nil || r.store == nil {
@@ -130,6 +140,8 @@ func (r *Recorder) Commit() {
 //
 // 除 /v1 转发外，诊断（test-upstream）等直接调用上游、消耗真实额度的流程也复用它，
 // 以保证任何一次真实模型请求都会体现在用量里。
+//
+// 计费只按公开模型名匹配价格表（不看上游模型与渠道），与厂商官方价对比才有意义。
 func RecordUsage(s *store.Store, pricer *pricing.Resolver, row model.RequestLog) {
 	if s == nil {
 		return
@@ -143,16 +155,17 @@ func RecordUsage(s *store.Store, pricer *pricing.Resolver, row model.RequestLog)
 		return
 	}
 
-	if pricer != nil && (row.PromptTokens > 0 || row.CompletionTokens > 0) {
-		price, ok := pricer.Resolve(row.Model)
-		if !ok && row.UpstreamModel != "" {
-			price, ok = pricer.Resolve(row.UpstreamModel)
-		}
-		if ok {
+	if pricer != nil {
+		if price, ok := pricer.Resolve(row.Model); ok {
 			row.PriceModel = price.Model
-			row.PriceSource = price.Source
-			row.CostUSD, row.CostPromptUSD, row.CostCompletionUSD =
-				pricing.Estimate(price, row.PromptTokens, row.CompletionTokens, row.CachedTokens)
+			row.PriceSource = pricing.SourceManual
+			q := pricing.Estimate(price, pricing.Usage{
+				PromptTokens:     row.PromptTokens,
+				CompletionTokens: row.CompletionTokens,
+				CachedTokens:     row.CachedTokens,
+				At:               time.UnixMilli(row.CreatedAt),
+			})
+			row.Cost, row.CostPrompt, row.CostCompletion = q.Total, q.Input, q.Output
 		}
 	}
 

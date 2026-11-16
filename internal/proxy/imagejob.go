@@ -11,6 +11,7 @@ import (
 	"github.com/czg95/ai-gateway-v2/internal/id"
 	"github.com/czg95/ai-gateway-v2/internal/model"
 	"github.com/czg95/ai-gateway-v2/internal/penalty"
+	"github.com/czg95/ai-gateway-v2/internal/pricing"
 	"github.com/czg95/ai-gateway-v2/internal/store"
 )
 
@@ -34,7 +35,11 @@ func (h *Handler) isImageJobRequest(r *http.Request, body map[string]any) bool {
 }
 
 // submitImageJob 创建作业并立即返回 202，实际生图在后台执行。
+//
+// 提交阶段只返回作业号，不代表已经产生图片，因此这条记录不记用量；
+// 作业成功结束时由 finishJob 补写一条按次计费的用量。
 func (h *Handler) submitImageJob(w http.ResponseWriter, r *http.Request, body map[string]any, modelName string, allowed []string, apiKey *model.APIKey, rec *Recorder) {
+	defer rec.Discard()
 	if h.store == nil {
 		rec.Finish(http.StatusInternalServerError, "store unavailable")
 		jsonError(w, http.StatusInternalServerError, "网关未就绪", "server_error")
@@ -379,10 +384,40 @@ func (h *Handler) finishFromResult(jobID, channelID, key string, res ImageGenRes
 }
 
 // finishJob 写终态；写入失败只记录日志，作业仍会按原状态过期清理。
+//
+// 成功时补写一条用量：生图按请求次数计费，一次作业算一次调用，
+// 与这次请求实际返回几张图无关。
 func (h *Handler) finishJob(jobID, status string, result []byte, errMsg, errCode string) {
+	// 终态会清空多数字段，先取出作业元数据供计费使用
+	job, jobErr := h.store.GetImageJob(jobID)
 	if err := h.store.FinishImageJob(jobID, status, result, errMsg, errCode); err != nil {
 		slog.Error("[image] 写入作业终态失败", "job", jobID, "status", status, "err", err)
+		return
 	}
+	if status == store.ImageJobSucceeded && jobErr == nil && job != nil {
+		h.recordJobUsage(job)
+	}
+}
+
+// recordJobUsage 作业成功时补写一条用量，按一次请求计费。
+func (h *Handler) recordJobUsage(job *store.ImageJob) {
+	row := model.RequestLog{
+		CreatedAt:   job.CreatedAt,
+		APIKeyID:    job.APIKeyID,
+		ChannelID:   job.ChannelID,
+		Endpoint:    "images",
+		Model:       job.Model,
+		Status:      http.StatusOK,
+		PriceSource: pricing.SourceNone,
+	}
+	if key, err := h.store.GetAPIKey(job.APIKeyID); err == nil && key != nil {
+		row.APIKeyName = key.Name
+	}
+	if ch, err := h.store.GetChannel(job.ChannelID); err == nil && ch != nil {
+		row.ChannelName = ch.Name
+		row.UpstreamKeyHint = model.KeyHint(job.ChannelKey)
+	}
+	RecordUsage(h.store, h.pricer, row)
 }
 
 // failStatusOf 归一化失败状态码，供冷却器使用。

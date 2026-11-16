@@ -282,27 +282,6 @@ func (a *App) Start() error {
 	// 自动签到：宿主定期对运行中、声明 checkin 能力的插件补签（插件不再自行定时签到）
 	host.StartAutoCheckin(ctx)
 
-	// 价格快照：启动后立刻尝试一次，之后按设置的间隔复查（同一周期内只拉一次，失败沿用现有价格表）。
-	// 面板改了间隔或价格源地址后，下一轮复查即按新值执行，无需重启。
-	go func() {
-		client := &http.Client{Timeout: 45 * time.Second}
-		interval := priceInterval(runtime)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			pricer.RefreshIfDue(ctx, client, a.priceEndpoint(), interval)
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
-			if next := priceInterval(a.loadRuntimeSettings()); next != interval {
-				interval = next
-				ticker.Reset(interval)
-			}
-		}
-	}()
-
 	return nil
 }
 
@@ -400,22 +379,6 @@ func loadAdminMCPConfig(st *store.Store) (*adminmcp.Config, error) {
 		}
 	}
 	return adminmcp.NewConfig(enabled, readHash, writeHash), nil
-}
-
-// priceEndpoint 返回生效的价格源地址：面板设置优先，其次环境变量 / 内置默认。
-func (a *App) priceEndpoint() string {
-	if rs := a.loadRuntimeSettings(); rs.PriceEndpoint != "" {
-		return rs.PriceEndpoint
-	}
-	return pricing.Endpoint()
-}
-
-// priceInterval 把「价格刷新间隔（分钟）」换算为时长，非法值回退为 1 小时。
-func priceInterval(rs store.RuntimeSettings) time.Duration {
-	if rs.PriceRefreshMinutes <= 0 {
-		return time.Hour
-	}
-	return time.Duration(rs.PriceRefreshMinutes) * time.Minute
 }
 
 // Stop 停止网关：关闭 HTTP 服务、回收插件进程、释放数据库。

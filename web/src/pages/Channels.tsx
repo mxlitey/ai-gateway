@@ -63,8 +63,8 @@ type FormState = {
 
 // 多密钥选用策略，与后端 model.KeyStrategy* 常量对应
 const KEY_STRATEGIES = [
-  { value: 'rotate', label: '负载均衡', desc: '多密钥轮流承担请求，把流量分摊到各密钥' },
-  { value: 'ordered', label: '故障转移', desc: '按顺序尝试，前一个失败才用下一个' },
+  { value: 'rotate', label: '负载均衡' },
+  { value: 'ordered', label: '故障转移' },
 ] as const
 
 const emptyForm: FormState = {
@@ -430,7 +430,7 @@ export default function Channels() {
           }
         >
           <div className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2">
               <Field label="名称">
                 <Input
                   value={form.name}
@@ -438,18 +438,14 @@ export default function Channels() {
                   placeholder="如 NVIDIA NIM"
                 />
               </Field>
-              <Field label="API 主机">
+              <Field
+                label="API 主机"
+                hint="默认拼接 /chat/completions；如上游端点不同，把完整地址写在这里（如 https://api.xxx.com/v1/messages）"
+              >
                 <Input
                   value={form.base_url}
                   onChange={(e) => setForm({ ...form, base_url: e.target.value })}
                   placeholder="https://integrate.api.nvidia.com/v1"
-                />
-              </Field>
-              <Field label="API 路径" hint="留空默认 /chat/completions">
-                <Input
-                  value={form.path}
-                  onChange={(e) => setForm({ ...form, path: e.target.value })}
-                  placeholder="/chat/completions"
                 />
               </Field>
             </div>
@@ -466,9 +462,6 @@ export default function Channels() {
                     onChange={(v) => setForm({ ...form, keyStrategy: v })}
                     options={KEY_STRATEGIES.map((s) => ({ value: s.value, label: s.label }))}
                   />
-                  <span className="text-xs text-zinc-400 dark:text-zinc-500">
-                    {KEY_STRATEGIES.find((s) => s.value === form.keyStrategy)?.desc}
-                  </span>
                 </div>
                 {form.keys.map((row, i) => (
                   <div key={i} className="flex flex-wrap items-center gap-2">
@@ -589,7 +582,7 @@ export default function Channels() {
                   <div className="rounded-lg border border-zinc-200 dark:border-zinc-800">
                     <div className="flex items-center justify-between gap-2 border-b border-zinc-200 px-3 py-2 dark:border-zinc-800">
                       <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        上游返回 {fetched.models.length} 个模型，勾选要加入列表的
+                        上游返回 {fetched.models.length} 个模型
                       </span>
                       <div className="flex shrink-0 gap-2 text-xs">
                         <button
@@ -660,10 +653,8 @@ export default function Channels() {
               {form.imageMode ? (
                 <>
                   <div className="grid gap-3 sm:grid-cols-2">
-                    <label className="block space-y-1.5">
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        提交路径（留空默认 /images/generations）
-                      </span>
+                    <label className="block space-y-1.5" title="留空默认 /images/generations">
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">提交路径</span>
                       <Input
                         value={form.imagePath}
                         onChange={(e) => setForm({ ...form, imagePath: e.target.value })}
@@ -672,20 +663,19 @@ export default function Channels() {
                     </label>
                     {form.imageMode === 'async' ? (
                       <>
-                        <label className="block space-y-1.5">
-                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                            轮询路径（留空默认 /tasks/&#123;task_id&#125;）
-                          </span>
+                        <label
+                          className="block space-y-1.5"
+                          title="留空默认 /tasks/{task_id}"
+                        >
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400">轮询路径</span>
                           <Input
                             value={form.imagePollPath}
                             onChange={(e) => setForm({ ...form, imagePollPath: e.target.value })}
                             placeholder="/tasks/{task_id}"
                           />
                         </label>
-                        <label className="block space-y-1.5">
-                          <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                            轮询间隔（秒，默认 5）
-                          </span>
+                        <label className="block space-y-1.5" title="默认 5 秒">
+                          <span className="text-xs text-zinc-500 dark:text-zinc-400">轮询间隔（秒）</span>
                           <Input
                             type="number"
                             value={form.imageIntervalSec}
@@ -694,10 +684,8 @@ export default function Channels() {
                         </label>
                       </>
                     ) : null}
-                    <label className="block space-y-1.5">
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                        任务超时（秒，默认 300）
-                      </span>
+                    <label className="block space-y-1.5" title="默认 360 秒">
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">任务超时（秒）</span>
                       <Input
                         type="number"
                         value={form.imageTimeoutSec}

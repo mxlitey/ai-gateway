@@ -148,10 +148,9 @@ func (s *Store) DeleteSetting(key string) error {
 
 // 常用设置键。
 const (
-	SettingAdminPasswordHash = "admin.password_hash"   // PBKDF2 摘要
-	SettingAdminSessionKey   = "admin.session_secret"  // 会话签名密钥（hex）
-	SettingInitialized       = "gateway.initialized"   // "1" 表示已完成首次向导
-	SettingPriceRefreshAt    = "meta.price_refresh_at" // 上次价格快照刷新时间戳
+	SettingAdminPasswordHash = "admin.password_hash"  // PBKDF2 摘要
+	SettingAdminSessionKey   = "admin.session_secret" // 会话签名密钥（hex）
+	SettingInitialized       = "gateway.initialized"  // "1" 表示已完成首次向导
 )
 
 // Python 插件运行时相关设置。

@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type UsageBucket } from '../lib/api'
 import { Badge, Button, Card, Empty, ErrorText, IconButton, Loading, RefreshIcon, Segmented } from '../components/ui'
 import RangePicker, { type RangeValue } from '../components/RangePicker'
+import { fmtCost } from '../lib/money'
 
 const PAGE_SIZE = 50
 const HOUR = 60 * 60 * 1000
@@ -219,14 +220,14 @@ export default function Usage() {
 
       {priceCount === 0 ? (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-          价格表为空，费用按 0 计。请到「价格表」刷新或手工添加。
+          价格表为空，费用按 0 计
         </div>
       ) : null}
 
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
         <Stat label="请求数" value={fmtInt(s.requests)} />
         <Stat label="总 token" value={fmtCompact(s.total_tokens)} />
-        <Stat label="市场价" value={fmtUSD(s.cost_usd)} />
+        <Stat label="市场价" value={fmtCost(s.cost)} />
       </div>
 
       <Card title="用量趋势">
@@ -314,7 +315,7 @@ export default function Usage() {
                           <span className="text-zinc-400">无价格</span>
                         ) : (
                           <span className="text-emerald-600 dark:text-emerald-400">
-                            {fmtUSD(r.cost_usd)}
+                            {fmtCost(r.cost)}
                           </span>
                         )}
                       </td>
@@ -483,7 +484,7 @@ function TrendChart({ points }: { points: UsageBucket[] }) {
                       <TipRow dot="bg-violet-500" label="输出" value={fmtInt(output)} />
                       <TipRow
                         label="费用"
-                        value={fmtUSD(p.cost_usd)}
+                        value={fmtCost(p.cost)}
                         valueClass="text-emerald-600 dark:text-emerald-400"
                       />
                     </div>
@@ -583,14 +584,6 @@ function fmtCompact(n: number): string {
   if (v < 1000) return String(v)
   if (v < 1_000_000) return `${(v / 1000).toFixed(1)}K`
   return `${(v / 1_000_000).toFixed(2)}M`
-}
-
-function fmtUSD(n: number): string {
-  const v = n ?? 0
-  if (v === 0) return '$0'
-  if (v < 0.01) return `$${v.toFixed(4)}`
-  if (v < 1) return `$${v.toFixed(3)}`
-  return `$${v.toFixed(2)}`
 }
 
 function startOfDay(ms: number): number {

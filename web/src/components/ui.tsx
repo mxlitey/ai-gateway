@@ -94,12 +94,12 @@ export function Textarea({ className = '', ...rest }: TextareaHTMLAttributes<HTM
   return <textarea {...rest} className={`${fieldClass} font-mono text-[13px] ${className}`} />
 }
 
+// hint 不再占用版面：改为悬停提示（title），保持表单整洁。
 export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
-    <label className="block space-y-1.5">
+    <label className="block space-y-1.5" title={hint}>
       <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">{label}</span>
       {children}
-      {hint ? <span className="block text-xs text-zinc-500 dark:text-zinc-400">{hint}</span> : null}
     </label>
   )
 }

@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type PythonSettings, type RuntimeSettings } from '../lib/api'
 import { toast } from '../lib/toast'
-import { Button, Card, ErrorText, Field, Input, Segmented } from '../components/ui'
+import { Badge, Button, Card, ErrorText, Field, Input, Segmented } from '../components/ui'
 
 export default function Settings() {
   const queryClient = useQueryClient()
@@ -15,7 +15,7 @@ export default function Settings() {
   const runtime = useQuery({ queryKey: ['runtime'], queryFn: api.runtimeInfo })
   const info = runtime.data
 
-  // 运行期设置（日志级别 / 价格源 / 插件监管策略）
+  // 运行期设置（日志级别 / 插件监管策略）
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   const [draft, setDraft] = useState<RuntimeSettings | null>(null)
   if (settingsQuery.data && draft === null) {
@@ -33,7 +33,7 @@ export default function Settings() {
 
   // 管理 MCP：把网关自身能力暴露为 /admin/mcp
   const adminMCP = useQuery({ queryKey: ['admin-mcp'], queryFn: api.adminMCPState })
-  // 本次会话内拿到的明文令牌（刷新即消失，不落任何存储）
+  // 本次会话内拿到的明文令牌（刷新即消失，不落任何存储）；两枚各自独立
   const [mcpTokens, setMcpTokens] = useState<{ readonly: string; writable: string }>({
     readonly: '',
     writable: '',
@@ -44,23 +44,18 @@ export default function Settings() {
       const cur = adminMCP.data
       return api.saveAdminMCP(patch.enabled ?? cur?.enabled ?? false)
     },
-    onSuccess: (res) => {
-      if (res.readonly_token || res.writable_token) {
-        setMcpTokens({ readonly: res.readonly_token ?? '', writable: res.writable_token ?? '' })
-        toast('ok', res.notice || '管理 MCP 已开启')
-      } else {
-        toast('ok', '管理 MCP 设置已保存')
-      }
+    onSuccess: () => {
+      toast('ok', '管理 MCP 设置已保存')
       void queryClient.invalidateQueries({ queryKey: ['admin-mcp'] })
     },
     onError: (err: Error) => toast('err', err.message),
   })
 
-  const resetAdminMCP = useMutation({
-    mutationFn: () => api.resetAdminMCPToken(),
+  const issueMCPToken = useMutation({
+    mutationFn: (kind: 'readonly' | 'writable') => api.issueAdminMCPToken(kind),
     onSuccess: (res) => {
-      setMcpTokens({ readonly: res.readonly_token ?? '', writable: res.writable_token ?? '' })
-      toast('ok', res.notice || '管理令牌已重置')
+      setMcpTokens((prev) => ({ ...prev, [res.kind]: res.token }))
+      toast('ok', res.notice || '令牌已生成')
       void queryClient.invalidateQueries({ queryKey: ['admin-mcp'] })
     },
     onError: (err: Error) => toast('err', err.message),
@@ -207,8 +202,11 @@ export default function Settings() {
             {info?.data_dir ?? '读取中…'}
           </dd>
         </dl>
-        <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
-          默认仅监听本机；对外监听请自行确认访问控制。
+        <p
+          className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300"
+          title="对外监听前请确认访问控制"
+        >
+          仅本机监听
         </p>
       </Card>
 
@@ -230,88 +228,97 @@ export default function Settings() {
             />
           </Field>
 
-          {adminMCP.data ? (
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              只读令牌可用 {adminMCP.data.readonly_tool_count} 个查询类工具；读写令牌可用全部{' '}
-              {adminMCP.data.tool_count} 个工具（含签发密钥、修改渠道等写操作）。
-              {adminMCP.data.enabled ? '' : '服务未启用，客户端暂时无法连接。'}
-            </p>
-          ) : null}
-
-          {mcpTokens.readonly || mcpTokens.writable ? (
-            <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950">
-              <p className="text-xs text-amber-700 dark:text-amber-300">
-                令牌明文只显示这一次，请立即复制保存；遗失后只能重置。
-              </p>
-              {(
-                [
-                  ['readonly', '只读令牌', mcpTokens.readonly],
-                  ['writable', '读写令牌', mcpTokens.writable],
-                ] as const
-              ).map(([key, label, value]) =>
-                value ? (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="w-16 shrink-0 text-xs text-amber-700 dark:text-amber-300">{label}</span>
-                    <code className="min-w-0 flex-1 truncate rounded bg-white/70 px-2 py-1 font-mono text-xs text-zinc-700 dark:bg-black/30 dark:text-zinc-200">
-                      {value}
-                    </code>
-                    <Button variant="ghost" onClick={() => void copyText(value, label)}>
-                      复制
-                    </Button>
-                  </div>
-                ) : null,
-              )}
-            </div>
-          ) : null}
-
           <div className="space-y-2">
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">客户端示例</span>
+            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">令牌</span>
             {(
               [
-                ['readonly', '只读令牌（仅查询）', 'amcp_你的只读令牌', adminMCP.data?.has_readonly_token],
-                ['writable', '读写令牌（全部工具）', 'amcp_你的读写令牌', adminMCP.data?.has_writable_token],
+                ['readonly', '只读令牌'],
+                ['writable', '读写令牌'],
               ] as const
-            ).map(([key, label, placeholder, has]) => {
-              const example = adminMCPExample(
-                adminMCP.data?.access_url ?? 'http://127.0.0.1:8787/admin/mcp',
-                placeholder,
-              )
+            ).map(([kind, label]) => {
+              const has =
+                kind === 'readonly'
+                  ? adminMCP.data?.has_readonly_token
+                  : adminMCP.data?.has_writable_token
+              const plain = mcpTokens[kind]
               return (
-                <details key={key} className="rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-800">
-                  <summary className="cursor-pointer text-sm text-zinc-700 dark:text-zinc-200">
-                    {label}
-                    <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
-                      {has ? '已生成' : '未生成，开启或重置后自动补齐'}
-                    </span>
-                  </summary>
-                  <div className="mt-2 space-y-2">
-                    <pre className="max-h-64 overflow-auto rounded-lg bg-zinc-900 p-3 text-xs leading-relaxed text-zinc-100">
-                      {example}
-                    </pre>
-                    <div className="flex justify-end">
-                      <Button variant="ghost" onClick={() => void copyText(example, `${label}示例`)}>
-                        复制示例
+                <div
+                  key={kind}
+                  className="space-y-2 rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-800"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm text-zinc-700 dark:text-zinc-200">{label}</span>
+                    <Badge tone={has ? 'ok' : 'off'}>{has ? '已生成' : '未生成'}</Badge>
+                    <span className="flex-1" />
+                    <Button
+                      variant={has ? 'ghost' : 'primary'}
+                      size="sm"
+                      disabled={!adminMCP.data?.enabled || issueMCPToken.isPending}
+                      onClick={() => {
+                        if (
+                          has &&
+                          !window.confirm(
+                            `重新生成${label}？旧令牌会立即失效，使用它的客户端需要更新。`,
+                          )
+                        ) {
+                          return
+                        }
+                        issueMCPToken.mutate(kind)
+                      }}
+                    >
+                      {has ? '重新生成' : '生成'}
+                    </Button>
+                  </div>
+                  {plain ? (
+                    <div className="flex items-center gap-2">
+                      <code className="min-w-0 flex-1 truncate rounded bg-amber-50 px-2 py-1 font-mono text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
+                        {plain}
+                      </code>
+                      <Button variant="ghost" size="sm" onClick={() => void copyText(plain, label)}>
+                        复制
                       </Button>
                     </div>
-                  </div>
-                </details>
+                  ) : null}
+                  {!plain && has ? (
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400" title="明文只在生成时显示一次">
+                      已生成
+                    </p>
+                  ) : null}
+                </div>
               )
             })}
           </div>
 
-          <div className="flex items-center gap-3">
-            <Button
-              variant="ghost"
-              disabled={!adminMCP.data?.enabled || resetAdminMCP.isPending}
-              onClick={() => {
-                if (window.confirm('重置后两枚旧令牌立即失效，所有已配置的客户端需要更新令牌。确定继续？')) {
-                  resetAdminMCP.mutate()
-                }
-              }}
-            >
-              重置两枚令牌
-            </Button>
-          </div>
+          <details className="rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+            <summary className="cursor-pointer text-sm text-zinc-700 dark:text-zinc-200">
+              客户端示例
+            </summary>
+            <div className="mt-2 space-y-2">
+              <pre className="max-h-64 overflow-auto rounded-lg bg-zinc-900 p-3 text-xs leading-relaxed text-zinc-100">
+                {adminMCPExample(
+                  adminMCP.data?.access_url ?? 'http://127.0.0.1:8787/admin/mcp',
+                  'amcp_你的令牌',
+                )}
+              </pre>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    void copyText(
+                      adminMCPExample(
+                        adminMCP.data?.access_url ?? 'http://127.0.0.1:8787/admin/mcp',
+                        'amcp_你的令牌',
+                      ),
+                      '客户端示例',
+                    )
+                  }
+                >
+                  复制示例
+                </Button>
+              </div>
+            </div>
+          </details>
         </div>
       </Card>
 
@@ -338,36 +345,27 @@ export default function Settings() {
             </Field>
 
             <Field
-              label="价格源地址"
-              hint={`留空沿用环境变量 / 内置默认（当前生效：${settingsQuery.data?.effective_price_source ?? '—'}）`}
+              label="货币符号"
+              hint="价格与费用只显示数字，符号按这里填写的显示（如 ¥ / $ / €）；留空则不显示符号"
             >
               <Input
-                value={draft.price_endpoint}
-                onChange={(e) => setDraft({ ...draft, price_endpoint: e.target.value })}
-                placeholder="https://openrouter.ai/api/v1/models"
+                value={draft.currency_symbol}
+                onChange={(e) => setDraft({ ...draft, currency_symbol: e.target.value })}
+                placeholder="¥"
+                maxLength={4}
+                className="sm:w-32"
               />
             </Field>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="价格刷新间隔（分钟）" hint={`默认 ${defaults?.price_refresh_minutes ?? 60}`}>
-                <Input
-                  type="number"
-                  min={1}
-                  max={1440}
-                  value={draft.price_refresh_minutes}
-                  onChange={(e) => setNum('price_refresh_minutes', e.target.value)}
-                />
-              </Field>
-              <Field label="自动签到间隔（分钟）" hint={`默认 ${defaults?.plugin_auto_checkin_minutes ?? 60}`}>
-                <Input
-                  type="number"
-                  min={1}
-                  max={1440}
-                  value={draft.plugin_auto_checkin_minutes}
-                  onChange={(e) => setNum('plugin_auto_checkin_minutes', e.target.value)}
-                />
-              </Field>
-            </div>
+            <Field label="自动签到间隔（分钟）" hint={`默认 ${defaults?.plugin_auto_checkin_minutes ?? 60}`}>
+              <Input
+                type="number"
+                min={1}
+                max={1440}
+                value={draft.plugin_auto_checkin_minutes}
+                onChange={(e) => setNum('plugin_auto_checkin_minutes', e.target.value)}
+              />
+            </Field>
 
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="插件探活间隔（秒）" hint={`默认 ${defaults?.plugin_probe_interval_seconds ?? 2}`}>
@@ -483,9 +481,6 @@ export default function Settings() {
       </Card>
 
       <Card title="Python 插件运行时">
-        <p className="mb-3 text-xs text-zinc-500 dark:text-zinc-400">
-          插件为 Python 源码，需 Python 3（Windows 桌面版请先安装并加入 PATH）。
-        </p>
         {python.isError ? (
           <div className="mb-3">
             <ErrorText text={(python.error as Error).message} />

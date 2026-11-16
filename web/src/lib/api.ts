@@ -1,4 +1,4 @@
-/** 与网关后端交互的 API 封装与类型定义。 */
+﻿/** 与网关后端交互的 API 封装与类型定义。 */
 
 export type ChannelKey = { key: string; enabled: boolean; label?: string }
 export type HeaderItem = { name: string; value: string }
@@ -210,9 +210,9 @@ export type RequestLogItem = {
   total_tokens: number
   cached_tokens: number
   reasoning_tokens: number
-  cost_prompt_usd: number
-  cost_completion_usd: number
-  cost_usd: number
+  cost_prompt: number
+  cost_completion: number
+  cost: number
   price_model: string
   price_source: string
   error: string
@@ -225,7 +225,7 @@ export type UsageBucket = {
   completion_tokens: number
   total_tokens: number
   cached_tokens: number
-  cost_usd: number
+  cost: number
 }
 
 export type UsageSummary = {
@@ -239,7 +239,7 @@ export type UsageSummary = {
   completion_tokens: number
   total_tokens: number
   cached_tokens: number
-  cost_usd: number
+  cost: number
   by_model: UsageBucket[]
   by_channel: UsageBucket[]
   by_api_key: UsageBucket[]
@@ -252,8 +252,6 @@ export type UsageSummaryResponse = {
   days: number
   summary: UsageSummary
   price_count: number
-  price_source: string
-  refreshed_at: string
 }
 
 export type UsageSeriesResponse = {
@@ -285,8 +283,8 @@ export type RuntimeInfo = {
 /** 可在面板调整的运行期设置；字符串项为空表示沿用启动参数 / 环境变量。 */
 export type RuntimeSettings = {
   log_level: string
-  price_endpoint: string
-  price_refresh_minutes: number
+  /** 价格与费用展示用的货币符号（如 ¥ / $ / €）；留空只显示数字 */
+  currency_symbol: string
   plugin_probe_interval_seconds: number
   plugin_probe_timeout_seconds: number
   plugin_unhealthy_threshold: number
@@ -317,10 +315,6 @@ export type SettingsResponse = {
   defaults: RuntimeSettings
   /** 启动参数 / 环境变量里的日志级别，作为留空时的回退说明 */
   env_log_level: string
-  /** 未在面板配置时的价格源地址（环境变量或内置默认） */
-  env_price_endpoint: string
-  /** 当前生效的价格源地址 */
-  effective_price_source: string
 }
 
 /** Python 插件运行时探测结果。 */
@@ -357,32 +351,78 @@ export type AdminMCPState = {
   tools: string[]
 }
 
-/** 保存管理 MCP 开关的响应；首次启用或重置令牌时会带回新生成的明文令牌。 */
+/** 保存管理 MCP 开关的响应。 */
 export type AdminMCPSaveResult = {
   success: boolean
   enabled: boolean
-  readonly_token?: string
-  writable_token?: string
+}
+
+/** 生成 / 重置单枚管理令牌的响应；明文只在这里出现一次。 */
+export type AdminMCPTokenResult = {
+  success: boolean
+  /** readonly | writable */
+  kind: string
+  token: string
   notice?: string
 }
 
-export type ModelPrice = {
-  model: string
-  display_name: string
+/** 价格档位：输入 token 不超过 up_to 时适用这一档单价；up_to 为 0 表示不限（最后一档）。 */
+export type PriceTier = {
+  up_to: number
   prompt_price: number
   completion_price: number
+}
+
+/** 峰谷时段：北京时间落在 [start, end) 内时乘以 factor（小于 1 为错峰折扣）。 */
+export type PriceWindow = {
+  start: string
+  end: string
+  factor: number
+  /** 适用的星期，0=周日 … 6=周六；省略表示每天适用 */
+  days?: number[]
+}
+
+/** 一条手工维护的模型价格。 */
+export type ModelPrice = {
+  model: string
+  /** per_token | per_request */
+  unit: string
+  tiers: PriceTier[]
   cache_read_price: number
-  context_length: number
-  source: string
+  /** 每次请求的单价，unit=per_request 时生效 */
+  request_price: number
+  time_windows: PriceWindow[]
+  note: string
   updated_at: number
+}
+
+/** 一个公开模型及其定价状态。 */
+export type PriceModelOption = {
+  model: string
+  /** 归一化后的匹配键：已保存的价格按它存储 */
+  normalized: string
+  image: boolean
+  priced: boolean
 }
 
 export type PricesResponse = {
   items: ModelPrice[]
   count: number
-  endpoint: string
-  refreshed_at: string
+  models: PriceModelOption[]
+  model_count: number
+  /** 尚未定价的模型数 */
+  unpriced: number
   unit: string
+}
+
+export type PriceInput = {
+  model: string
+  unit: string
+  tiers: PriceTier[]
+  cache_read_price: number
+  request_price: number
+  time_windows: PriceWindow[]
+  note: string
 }
 
 export type ChannelInput = {
@@ -621,7 +661,7 @@ export const api = {
   // 运行信息（监听地址、端口、数据目录，按访问范围给出访问/API 地址）
   runtimeInfo: () => request<RuntimeInfo>('/admin/api/runtime'),
 
-  // 运行期设置：日志级别、价格源与刷新间隔、插件探活与签到节奏
+  // 运行期设置：日志级别、插件探活与签到节奏
   settings: () => request<SettingsResponse>('/admin/api/settings'),
   updateSettings: (body: RuntimeSettings) =>
     request<{ success: boolean; settings: RuntimeSettings }>('/admin/api/settings', {
@@ -645,8 +685,12 @@ export const api = {
       method: 'PUT',
       ...json({ enabled }),
     }),
-  resetAdminMCPToken: () =>
-    request<AdminMCPSaveResult>('/admin/api/admin-mcp/token', { method: 'POST', ...json({}) }),
+  /** 生成或重新生成单枚管理令牌：kind 为 readonly / writable，两枚互不影响。 */
+  issueAdminMCPToken: (kind: 'readonly' | 'writable') =>
+    request<AdminMCPTokenResult>('/admin/api/admin-mcp/token', {
+      method: 'POST',
+      ...json({ kind }),
+    }),
 
   // 上游密钥冷却
   keyCooldowns: () => request<{ items: KeyCooldown[] }>('/admin/api/key-cooldowns'),
@@ -919,17 +963,10 @@ export const api = {
     )
   },
 
-  // 价格表
+  // 价格表（完全手工维护，只按公开模型计费）
   prices: () => request<PricesResponse>('/admin/api/prices'),
-  refreshPrices: () =>
-    request<{ success: boolean; models: number }>('/admin/api/prices/refresh', { method: 'POST' }),
-  upsertPrice: (body: {
-    model: string
-    display_name?: string
-    prompt_price: number
-    completion_price: number
-    cache_read_price?: number
-  }) => request<ModelPrice>('/admin/api/prices', { method: 'PUT', ...json(body) }),
+  upsertPrice: (body: PriceInput) =>
+    request<ModelPrice>('/admin/api/prices', { method: 'PUT', ...json(body) }),
   deletePrice: (model: string) =>
     request<{ success: boolean }>(`/admin/api/prices?model=${encodeURIComponent(model)}`, {
       method: 'DELETE',

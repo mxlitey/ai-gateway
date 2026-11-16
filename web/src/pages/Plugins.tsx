@@ -108,12 +108,6 @@ export default function Plugins() {
       {list.length === 0 ? (
         <Card>
           <Empty text="尚未发现插件" />
-          <div className="mx-auto max-w-xl space-y-2 rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-950/40 dark:text-zinc-400">
-            <p>
-              把插件目录放到 <code className="text-xs">plugins/&lt;插件id&gt;/</code>（含{' '}
-              <code className="text-xs">plugin.json</code> 与入口文件），再点右上角重新扫描即可。
-            </p>
-          </div>
         </Card>
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">
@@ -540,9 +534,6 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
             </div>
             {login.status === 'pending' ? (
               <div className="space-y-1.5 border-t border-emerald-200 pt-2 dark:border-emerald-900">
-                <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                  Docker 部署时回调页打不开属正常：把地址栏完整链接粘贴到下面提交。
-                </p>
                 <div className="flex items-center gap-2">
                   <Input
                     value={callbackURL}

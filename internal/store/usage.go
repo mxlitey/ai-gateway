@@ -1,7 +1,8 @@
-package store
+﻿package store
 
 import (
-	"strconv"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -13,13 +14,13 @@ import (
 const requestLogCols = `id, created_at, api_key_id, api_key_name, channel_id, channel_name,
 	endpoint, stream, model, upstream_model, upstream_key_hint, status, success, attempts, duration_ms,
 	prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens,
-	cost_prompt_usd, cost_completion_usd, cost_usd, price_model, price_source, error`
+	cost_prompt, cost_completion, cost, price_model, price_source, error`
 
 // 插入时不带 id：INTEGER PRIMARY KEY 显式写入 0 会被当成合法 rowid
 const requestLogInsertCols = `created_at, api_key_id, api_key_name, channel_id, channel_name,
 	endpoint, stream, model, upstream_model, upstream_key_hint, status, success, attempts, duration_ms,
 	prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens,
-	cost_prompt_usd, cost_completion_usd, cost_usd, price_model, price_source, error`
+	cost_prompt, cost_completion, cost, price_model, price_source, error`
 
 func scanRequestLog(sc scanner) (*model.RequestLog, error) {
 	r := &model.RequestLog{}
@@ -29,7 +30,7 @@ func scanRequestLog(sc scanner) (*model.RequestLog, error) {
 		&r.Endpoint, &stream, &r.Model, &r.UpstreamModel, &r.UpstreamKeyHint,
 		&r.Status, &success, &r.Attempts, &r.DurationMS,
 		&r.PromptTokens, &r.CompletionTokens, &r.TotalTokens, &r.CachedTokens, &r.ReasoningTokens,
-		&r.CostPromptUSD, &r.CostCompletionUSD, &r.CostUSD,
+		&r.CostPrompt, &r.CostCompletion, &r.Cost,
 		&r.PriceModel, &r.PriceSource, &r.Error,
 	); err != nil {
 		return nil, err
@@ -51,7 +52,7 @@ func (s *Store) InsertRequestLog(r *model.RequestLog) error {
 		r.Endpoint, boolToInt(r.Stream), r.Model, r.UpstreamModel, r.UpstreamKeyHint,
 		r.Status, boolToInt(r.Success), r.Attempts, r.DurationMS,
 		r.PromptTokens, r.CompletionTokens, r.TotalTokens, r.CachedTokens, r.ReasoningTokens,
-		r.CostPromptUSD, r.CostCompletionUSD, r.CostUSD,
+		r.CostPrompt, r.CostCompletion, r.Cost,
 		r.PriceModel, r.PriceSource, truncateForDB(r.Error, 2000),
 	)
 	if err != nil {
@@ -176,12 +177,12 @@ func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName, keyHint
 		        COALESCE(SUM(completion_tokens), 0),
 		        COALESCE(SUM(total_tokens), 0),
 		        COALESCE(SUM(cached_tokens), 0),
-		        COALESCE(SUM(cost_usd), 0)
+		        COALESCE(SUM(cost), 0)
 		 FROM request_logs WHERE `+where,
 		args...,
 	).Scan(
 		&sum.Requests, &sum.SuccessRequests, &sum.UnpricedRequests,
-		&sum.PromptTokens, &sum.CompletionTokens, &sum.TotalTokens, &sum.CachedTokens, &sum.CostUSD,
+		&sum.PromptTokens, &sum.CompletionTokens, &sum.TotalTokens, &sum.CachedTokens, &sum.Cost,
 	)
 	if err != nil {
 		return nil, err
@@ -200,7 +201,7 @@ func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName, keyHint
 			`SELECT `+expr+` AS k, COUNT(1),
 			        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
 			        COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cached_tokens), 0),
-			        COALESCE(SUM(cost_usd), 0)
+			        COALESCE(SUM(cost), 0)
 			 FROM request_logs WHERE `+where+`
 			 GROUP BY k ORDER BY 7 DESC`,
 			args...,
@@ -213,7 +214,7 @@ func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName, keyHint
 		out := []model.UsageBucket{}
 		for rows.Next() {
 			b := model.UsageBucket{}
-			if err := rows.Scan(&b.Key, &b.Requests, &b.PromptTokens, &b.CompletionTokens, &b.TotalTokens, &b.CachedTokens, &b.CostUSD); err != nil {
+			if err := rows.Scan(&b.Key, &b.Requests, &b.PromptTokens, &b.CompletionTokens, &b.TotalTokens, &b.CachedTokens, &b.Cost); err != nil {
 				return nil, err
 			}
 			if b.Key == "" {
@@ -327,7 +328,7 @@ func (s *Store) usageSeriesBuckets(starts []time.Time, fromMs, endMs int64, buck
 		`SELECT `+expr+` AS k, COUNT(1),
 		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
 		        COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cached_tokens), 0),
-		        COALESCE(SUM(cost_usd), 0)
+		        COALESCE(SUM(cost), 0)
 		 FROM request_logs WHERE `+where+`
 		 GROUP BY k ORDER BY k ASC`,
 		args...,
@@ -340,7 +341,7 @@ func (s *Store) usageSeriesBuckets(starts []time.Time, fromMs, endMs int64, buck
 	byKey := map[string]model.UsageBucket{}
 	for rows.Next() {
 		b := model.UsageBucket{}
-		if err := rows.Scan(&b.Key, &b.Requests, &b.PromptTokens, &b.CompletionTokens, &b.TotalTokens, &b.CachedTokens, &b.CostUSD); err != nil {
+		if err := rows.Scan(&b.Key, &b.Requests, &b.PromptTokens, &b.CompletionTokens, &b.TotalTokens, &b.CachedTokens, &b.Cost); err != nil {
 			return nil, err
 		}
 		byKey[b.Key] = b
@@ -393,15 +394,25 @@ func (s *Store) CleanupRequestLogsBefore(beforeMs int64) (int64, error) {
 
 // ---------- 模型价格 ----------
 
-const modelPriceCols = `model, display_name, prompt_price, completion_price, cache_read_price, context_length, source, updated_at`
+const modelPriceCols = `model, unit, tiers, cache_read_price, request_price, peak_windows, note, updated_at`
 
 func scanModelPrice(sc scanner) (*model.ModelPrice, error) {
 	p := &model.ModelPrice{}
+	var tiers, windows string
 	if err := sc.Scan(
-		&p.Model, &p.DisplayName, &p.PromptPrice, &p.CompletionPrice,
-		&p.CacheReadPrice, &p.ContextLength, &p.Source, &p.UpdatedAt,
+		&p.Model, &p.Unit, &tiers, &p.CacheReadPrice, &p.RequestPrice, &windows, &p.Note, &p.UpdatedAt,
 	); err != nil {
 		return nil, err
+	}
+	if tiers != "" {
+		if err := json.Unmarshal([]byte(tiers), &p.Tiers); err != nil {
+			return nil, fmt.Errorf("解析 %s 的价格档位失败: %w", p.Model, err)
+		}
+	}
+	if windows != "" {
+		if err := json.Unmarshal([]byte(windows), &p.TimeWindows); err != nil {
+			return nil, fmt.Errorf("解析 %s 的峰谷规则失败: %w", p.Model, err)
+		}
 	}
 	return p, nil
 }
@@ -430,18 +441,28 @@ func (s *Store) UpsertModelPrice(p *model.ModelPrice) error {
 	if p.UpdatedAt == 0 {
 		p.UpdatedAt = time.Now().UnixMilli()
 	}
-	_, err := s.db.Exec(
+	if p.Unit == "" {
+		p.Unit = model.PriceUnitToken
+	}
+	tiers, err := marshalJSON(p.Tiers)
+	if err != nil {
+		return err
+	}
+	windows, err := marshalJSON(p.TimeWindows)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
 		`INSERT INTO model_prices (`+modelPriceCols+`) VALUES (?,?,?,?,?,?,?,?)
 		 ON CONFLICT(model) DO UPDATE SET
-		   display_name = excluded.display_name,
-		   prompt_price = excluded.prompt_price,
-		   completion_price = excluded.completion_price,
+		   unit = excluded.unit,
+		   tiers = excluded.tiers,
 		   cache_read_price = excluded.cache_read_price,
-		   context_length = excluded.context_length,
-		   source = excluded.source,
+		   request_price = excluded.request_price,
+		   peak_windows = excluded.peak_windows,
+		   note = excluded.note,
 		   updated_at = excluded.updated_at`,
-		p.Model, p.DisplayName, p.PromptPrice, p.CompletionPrice,
-		p.CacheReadPrice, p.ContextLength, p.Source, p.UpdatedAt,
+		p.Model, p.Unit, tiers, p.CacheReadPrice, p.RequestPrice, windows, p.Note, p.UpdatedAt,
 	)
 	return err
 }
@@ -452,79 +473,11 @@ func (s *Store) DeleteModelPrice(modelName string) error {
 	return err
 }
 
-// ReplacePricesOfSource 以 source 为界整体替换价格（用于 OpenRouter 快照导入）。
-// source = 'manual' 的手工条目不受影响。
-func (s *Store) ReplacePricesOfSource(source string, prices []model.ModelPrice) (int, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.Exec(`DELETE FROM model_prices WHERE source = ?`, source); err != nil {
-		return 0, err
-	}
-	stmt, err := tx.Prepare(
-		`INSERT INTO model_prices (` + modelPriceCols + `) VALUES (?,?,?,?,?,?,?,?)
-		 ON CONFLICT(model) DO UPDATE SET
-		   display_name = excluded.display_name,
-		   prompt_price = excluded.prompt_price,
-		   completion_price = excluded.completion_price,
-		   cache_read_price = excluded.cache_read_price,
-		   context_length = excluded.context_length,
-		   source = excluded.source,
-		   updated_at = excluded.updated_at
-		 WHERE model_prices.source <> 'manual'`, // 手工维护的价格不被快照覆盖
-	)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = stmt.Close() }()
-
-	now := time.Now().UnixMilli()
-	n := 0
-	for i := range prices {
-		p := &prices[i]
-		if p.UpdatedAt == 0 {
-			p.UpdatedAt = now
-		}
-		if _, err := stmt.Exec(
-			p.Model, p.DisplayName, p.PromptPrice, p.CompletionPrice,
-			p.CacheReadPrice, p.ContextLength, p.Source, p.UpdatedAt,
-		); err != nil {
-			return 0, err
-		}
-		n++
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return n, nil
-}
-
 // CountModelPrices 返回价格条目数（用于面板展示覆盖情况）。
 func (s *Store) CountModelPrices() (int64, error) {
 	var n int64
 	err := s.db.QueryRow(`SELECT COUNT(1) FROM model_prices`).Scan(&n)
 	return n, err
-}
-
-// CleanupIfDueSetting 计算「距上次执行是否已超过 interval」。
-func (s *Store) DueSince(key string, interval time.Duration) bool {
-	v, ok, err := s.GetSetting(key)
-	if err != nil || !ok {
-		return true
-	}
-	last, err := strconv.ParseInt(v, 10, 64)
-	if err != nil {
-		return true
-	}
-	return time.Now().UnixMilli()-last >= interval.Milliseconds()
-}
-
-// MarkDone 记录某后台任务最近一次执行时间。
-func (s *Store) MarkDone(key string) error {
-	return s.SetSetting(key, strconv.FormatInt(time.Now().UnixMilli(), 10))
 }
 
 func truncateForDB(s string, n int) string {

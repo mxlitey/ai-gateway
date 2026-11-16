@@ -50,20 +50,18 @@ type FormState = {
 }
 
 const KEY_STRATEGIES = [
-  { value: 'rotate', label: '负载均衡', desc: '多密钥轮流承担调用，把流量分摊到各密钥' },
-  { value: 'ordered', label: '故障转移', desc: '按顺序尝试，前一个失败才用下一个' },
+  { value: 'rotate', label: '负载均衡' },
+  { value: 'ordered', label: '故障转移' },
 ] as const
 
 const BILLABLE_MODES = [
   {
     value: 'success',
     label: '成功即计费',
-    desc: '每次成功的工具调用都计入次数，适用于大多数 MCP 服务',
   },
   {
     value: 'marker',
     label: '按响应标记计费',
-    desc: '仅当上游响应包含标记时才计入次数，用于「未触发上游计费就不该占配额」的服务',
   },
 ] as const
 
@@ -422,9 +420,6 @@ export default function Mcp() {
                 options={KEY_STRATEGIES.map((s) => ({ value: s.value, label: s.label }))}
                 onChange={(v) => setForm({ ...form, keyStrategy: v })}
               />
-              <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
-                {KEY_STRATEGIES.find((s) => s.value === form.keyStrategy)?.desc}
-              </span>
             </Field>
 
             <div className="space-y-2">
@@ -503,9 +498,6 @@ export default function Mcp() {
                 options={BILLABLE_MODES.map((m) => ({ value: m.value, label: m.label }))}
                 onChange={(v) => setForm({ ...form, billableMode: v })}
               />
-              <span className="mt-1 block text-xs text-zinc-500 dark:text-zinc-400">
-                {BILLABLE_MODES.find((m) => m.value === form.billableMode)?.desc}
-              </span>
             </Field>
 
             {form.billableMode === 'marker' ? (

@@ -353,11 +353,6 @@ export default function ModelRoutes() {
                     </label>
                   ))}
                 </div>
-                <p className="text-xs text-zinc-500 dark:text-zinc-500">
-                  {diagGroup.routes.some((r) => r.image)
-                    ? '生图模型将对选中渠道的每个已启用密钥各发起一次真实生图请求（会消耗上游额度）。'
-                    : '将对选中渠道的每个已启用密钥各发起一次真实对话请求。'}
-                </p>
               </div>
             ) : (
               <p className="text-sm text-zinc-500">没有可诊断的目标</p>

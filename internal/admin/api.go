@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/czg95/ai-gateway-v2/internal/adminmcp"
 	"github.com/czg95/ai-gateway-v2/internal/channel"
@@ -208,7 +209,7 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 	case path == "/admin-mcp" && method == http.MethodPut:
 		a.saveAdminMCP(w, r)
 	case path == "/admin-mcp/token" && method == http.MethodPost:
-		a.resetAdminMCPTokenAPI(w, r)
+		a.adminMCPTokenAPI(w, r)
 
 	// ---- 用量与费用 ----
 	case path == "/usage/summary" && method == http.MethodGet:
@@ -240,8 +241,6 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 		a.listPrices(w)
 	case path == "/prices" && method == http.MethodPut:
 		a.upsertPrice(w, r)
-	case path == "/prices/refresh" && method == http.MethodPost:
-		a.refreshPrices(w)
 	case path == "/prices" && method == http.MethodDelete:
 		a.deletePrice(w, r)
 
@@ -773,15 +772,13 @@ func (a *API) getSettings(w http.ResponseWriter) {
 		envLogLevel = a.cfg.LogLevel
 	}
 	jsonOK(w, map[string]any{
-		"settings":               rs,
-		"defaults":               store.DefaultRuntimeSettings(),
-		"env_log_level":          envLogLevel,
-		"env_price_endpoint":     a.priceEndpointDefault(),
-		"effective_price_source": a.priceEndpoint(),
+		"settings":      rs,
+		"defaults":      store.DefaultRuntimeSettings(),
+		"env_log_level": envLogLevel,
 	})
 }
 
-// updateSettings 保存运行期设置并立即应用（日志级别、价格地址、插件监管策略）。
+// updateSettings 保存运行期设置并立即应用（日志级别、插件监管策略）。
 func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 	var body store.RuntimeSettings
 	if !decodeBody(w, r, &body) {
@@ -812,11 +809,10 @@ func (a *API) normalizeRuntimeSettings(in store.RuntimeSettings) (store.RuntimeS
 		}
 	}
 
-	out.PriceEndpoint = strings.TrimSpace(in.PriceEndpoint)
-	if out.PriceEndpoint != "" &&
-		!strings.HasPrefix(out.PriceEndpoint, "http://") &&
-		!strings.HasPrefix(out.PriceEndpoint, "https://") {
-		return out, fmt.Errorf("价格源地址需以 http:// 或 https:// 开头")
+	// 货币符号只用于展示，允许为空（不显示符号）；限制长度避免把版面撑坏
+	out.CurrencySymbol = strings.TrimSpace(in.CurrencySymbol)
+	if utf8.RuneCountInString(out.CurrencySymbol) > 4 {
+		return out, fmt.Errorf("货币符号最多 4 个字符")
 	}
 
 	type bound struct {
@@ -826,7 +822,6 @@ func (a *API) normalizeRuntimeSettings(in store.RuntimeSettings) (store.RuntimeS
 		max  int
 	}
 	bounds := []bound{
-		{"价格刷新间隔", out.PriceRefreshMinutes, 1, 24 * 60},
 		{"探活间隔", out.PluginProbeIntervalSeconds, 1, 3600},
 		{"探活超时", out.PluginProbeTimeoutSeconds, 1, 3600},
 		{"不健康阈值", out.PluginUnhealthyThreshold, 1, 1000},
@@ -846,7 +841,7 @@ func (a *API) normalizeRuntimeSettings(in store.RuntimeSettings) (store.RuntimeS
 	return out, nil
 }
 
-// applyRuntimeSettings 让设置立即生效：日志级别、插件监管策略、价格地址（后续刷新即生效）。
+// applyRuntimeSettings 让设置立即生效：日志级别与插件监管策略。
 func (a *API) applyRuntimeSettings(rs store.RuntimeSettings) {
 	// 日志级别：留空表示沿用启动参数 / 环境变量，由 app 层在启动时已应用过，这里不覆盖
 	if rs.LogLevel != "" {
@@ -861,19 +856,6 @@ func (a *API) applyRuntimeSettings(rs store.RuntimeSettings) {
 			AutoCheckinInterval: time.Duration(rs.PluginAutoCheckinMinutes) * time.Minute,
 		})
 	}
-}
-
-// priceEndpoint 返回生效的价格源地址：面板设置优先，其次环境变量 / 内置默认。
-func (a *API) priceEndpoint() string {
-	if rs, err := a.store.LoadRuntimeSettings(); err == nil && rs.PriceEndpoint != "" {
-		return rs.PriceEndpoint
-	}
-	return a.priceEndpointDefault()
-}
-
-// priceEndpointDefault 返回未在面板配置时的价格源地址（环境变量或内置默认）。
-func (a *API) priceEndpointDefault() string {
-	return pricing.Endpoint()
 }
 
 // ---------- Python 插件运行时 ----------
@@ -1001,7 +983,7 @@ func (a *API) fetchModels(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) fetchUpstreamModels(ch *model.Channel) ([]string, error) {
-	modelsURL := channel.BaseURL(ch) + channel.ModelsPath(ch)
+	modelsURL := channel.ModelsURL(ch)
 	var lastErr error
 	for _, key := range ch.EnabledKeys() {
 		req, err := http.NewRequest(http.MethodGet, modelsURL, nil)
@@ -1705,16 +1687,10 @@ func (a *API) usageSummary(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	refreshedAt := ""
-	if v, ok, _ := a.store.GetSetting(store.SettingPriceRefreshAt); ok {
-		refreshedAt = v
-	}
 	jsonOK(w, map[string]any{
-		"days":         days,
-		"summary":      sum,
-		"price_count":  priceCount,
-		"price_source": a.priceEndpoint(),
-		"refreshed_at": refreshedAt,
+		"days":        days,
+		"summary":     sum,
+		"price_count": priceCount,
 	})
 }
 
@@ -1851,48 +1827,119 @@ func parseDaysParam(raw string, def int) (int, error) {
 
 // ---------- 价格表 ----------
 
+// listPrices 返回价格表与「现有公开模型」清单，供面板生成待填写的表单行。
+//
+// 价格完全由用户维护，因此这里同时给出哪些模型还没有定价，面板据此高亮。
 func (a *API) listPrices(w http.ResponseWriter) {
 	items, err := a.store.ListModelPrices()
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	refreshedAt := ""
-	if v, ok, _ := a.store.GetSetting(store.SettingPriceRefreshAt); ok {
-		refreshedAt = v
+	priced := make(map[string]bool, len(items))
+	for _, p := range items {
+		priced[p.Model] = true
 	}
+
+	models, err := a.publicModelOptions()
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for i := range models {
+		key := pricing.Normalize(models[i].Model)
+		models[i].Normalized = key
+		models[i].Priced = priced[key]
+	}
+
 	jsonOK(w, map[string]any{
-		"items":        items,
-		"count":        len(items),
-		"endpoint":     a.priceEndpoint(),
-		"refreshed_at": refreshedAt,
-		"unit":         "USD / 百万 token",
+		"items":       items,
+		"count":       len(items),
+		"models":      models,
+		"model_count": len(models),
+		"unpriced":    countUnpriced(models),
+		"unit":        "按 token 或按次",
 	})
 }
 
-func (a *API) refreshPrices(w http.ResponseWriter) {
-	if a.pricer == nil {
-		jsonErr(w, http.StatusNotImplemented, "价格模块未启用")
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-
-	n, err := a.pricer.Refresh(ctx, a.client, a.priceEndpoint())
-	if err != nil {
-		jsonErr(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	jsonOK(w, map[string]any{"success": true, "models": n})
+// modelOption 一个公开模型及其是否已定价、是否为生图模型。
+type modelOption struct {
+	Model string `json:"model"`
+	// Normalized 归一化后的匹配键：价格表按这个键存储，前端据此回填已保存的价格。
+	Normalized string `json:"normalized"`
+	Image      bool   `json:"image"`
+	Priced     bool   `json:"priced"`
 }
 
+// publicModelOptions 汇总所有渠道里出现过的公开模型（去重、按名升序），
+// 并标记是否为生图模型，供价格表单使用。
+func (a *API) publicModelOptions() ([]modelOption, error) {
+	channels, err := a.store.ListChannels()
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]*modelOption{}
+	add := func(name string, image bool) {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return
+		}
+		if opt, ok := seen[name]; ok {
+			opt.Image = opt.Image || image
+			return
+		}
+		seen[name] = &modelOption{Model: name, Image: image}
+	}
+	for i := range channels {
+		ch := &channels[i]
+		for pub := range ch.ModelMap {
+			if _, ok := ch.ResolveUpstreamModel(pub); ok {
+				add(pub, ch.IsImageModel(pub))
+			}
+		}
+		for _, m := range ch.Models {
+			if _, ok := ch.ResolveUpstreamModel(m); ok {
+				add(m, ch.IsImageModel(m))
+			}
+		}
+		for _, m := range ch.ImageModels {
+			add(m, true)
+		}
+	}
+
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	out := make([]modelOption, 0, len(names))
+	for _, name := range names {
+		out = append(out, *seen[name])
+	}
+	return out, nil
+}
+
+func countUnpriced(models []modelOption) int {
+	n := 0
+	for _, m := range models {
+		if !m.Priced {
+			n++
+		}
+	}
+	return n
+}
+
+// upsertPrice 新增或覆盖一条价格。
 func (a *API) upsertPrice(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Model           string  `json:"model"`
-		DisplayName     string  `json:"display_name"`
-		PromptPrice     float64 `json:"prompt_price"`
-		CompletionPrice float64 `json:"completion_price"`
-		CacheReadPrice  float64 `json:"cache_read_price"`
+		Model          string             `json:"model"`
+		Unit           string             `json:"unit"`
+		Tiers          []model.PriceTier  `json:"tiers"`
+		CacheReadPrice float64            `json:"cache_read_price"`
+		RequestPrice   float64            `json:"request_price"`
+		TimeWindows    []model.TimeWindow `json:"time_windows"`
+		Note           string             `json:"note"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
@@ -1902,18 +1949,19 @@ func (a *API) upsertPrice(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, "model 不能为空")
 		return
 	}
-	if body.PromptPrice < 0 || body.CompletionPrice < 0 || body.CacheReadPrice < 0 {
-		jsonErr(w, http.StatusBadRequest, "价格不能为负数")
+	if err := validatePriceInput(body.Unit, body.Tiers, body.CacheReadPrice, body.RequestPrice, body.TimeWindows); err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	p := &model.ModelPrice{
-		Model:           key,
-		DisplayName:     strings.TrimSpace(body.DisplayName),
-		PromptPrice:     body.PromptPrice,
-		CompletionPrice: body.CompletionPrice,
-		CacheReadPrice:  body.CacheReadPrice,
-		Source:          pricing.SourceManual,
+		Model:          key,
+		Unit:           body.Unit,
+		Tiers:          body.Tiers,
+		CacheReadPrice: body.CacheReadPrice,
+		RequestPrice:   body.RequestPrice,
+		TimeWindows:    body.TimeWindows,
+		Note:           strings.TrimSpace(body.Note),
 	}
 	if err := a.store.UpsertModelPrice(p); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
@@ -1921,6 +1969,73 @@ func (a *API) upsertPrice(w http.ResponseWriter, r *http.Request) {
 	}
 	a.reloadPrices()
 	jsonOK(w, p)
+}
+
+// validatePriceInput 校验价格表单：单价非负、按 token 计费必须有一档兜底、
+// 时段必须能解析且系数为正。
+func validatePriceInput(unit string, tiers []model.PriceTier, cachePrice, requestPrice float64, windows []model.TimeWindow) error {
+	if unit != "" && unit != model.PriceUnitToken && unit != model.PriceUnitRequest {
+		return fmt.Errorf("unit 只能是 per_token 或 per_request")
+	}
+	if cachePrice < 0 || requestPrice < 0 {
+		return fmt.Errorf("价格不能为负数")
+	}
+	if unit == model.PriceUnitRequest {
+		return nil
+	}
+	if len(tiers) == 0 {
+		return fmt.Errorf("按 token 计费至少要有一档价格")
+	}
+	for i, t := range tiers {
+		if t.PromptPrice < 0 || t.CompletionPrice < 0 {
+			return fmt.Errorf("第 %d 档价格不能为负数", i+1)
+		}
+		if t.UpTo < 0 {
+			return fmt.Errorf("第 %d 档的输入上限不能为负数", i+1)
+		}
+		if t.UpTo == 0 && i != len(tiers)-1 {
+			return fmt.Errorf("只有最后一档可以不限输入长度")
+		}
+	}
+	if last := tiers[len(tiers)-1]; last.UpTo != 0 {
+		return fmt.Errorf("最后一档需要不限输入长度（上限留空）")
+	}
+	for i, w := range windows {
+		if !validClock(w.Start) || !validClock(w.End) {
+			return fmt.Errorf("第 %d 条时段的起止时间需为 HH:MM", i+1)
+		}
+		if w.Start == w.End {
+			return fmt.Errorf("第 %d 条时段的起止时间不能相同", i+1)
+		}
+		if w.Factor <= 0 {
+			return fmt.Errorf("第 %d 条时段的系数需大于 0", i+1)
+		}
+		for _, d := range w.Days {
+			if d < 0 || d > 6 {
+				return fmt.Errorf("第 %d 条时段的星期需为 0-6（0=周日）", i+1)
+			}
+		}
+	}
+	return nil
+}
+
+// validClock 判断是否为合法的 HH:MM（00:00-24:00）。
+func validClock(s string) bool {
+	parts := strings.Split(strings.TrimSpace(s), ":")
+	if len(parts) != 2 {
+		return false
+	}
+	var h, m int
+	if _, err := fmt.Sscanf(parts[0], "%d", &h); err != nil {
+		return false
+	}
+	if _, err := fmt.Sscanf(parts[1], "%d", &m); err != nil {
+		return false
+	}
+	if h < 0 || h > 24 || m < 0 || m > 59 {
+		return false
+	}
+	return !(h == 24 && m != 0)
 }
 
 func (a *API) deletePrice(w http.ResponseWriter, r *http.Request) {

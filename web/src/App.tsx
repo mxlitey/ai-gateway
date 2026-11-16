@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from './lib/api'
 import { useAuth } from './lib/auth'
+import { setCurrencySymbol } from './lib/money'
 import Layout from './components/Layout'
 import { Loading, Toaster } from './components/ui'
 import Login from './pages/Login'
@@ -20,6 +21,13 @@ import Settings from './pages/Settings'
 export default function App() {
   const { token } = useAuth()
   const setupState = useQuery({ queryKey: ['setup'], queryFn: api.setupState })
+  // 货币符号只在展示层生效：读到运行期设置后同步给格式化函数
+  const settings = useQuery({
+    queryKey: ['settings'],
+    queryFn: api.settings,
+    enabled: Boolean(token) && Boolean(setupState.data?.initialized),
+  })
+  if (settings.data) setCurrencySymbol(settings.data.settings.currency_symbol)
 
   if (setupState.isLoading) {
     return (

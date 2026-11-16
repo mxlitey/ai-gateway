@@ -359,44 +359,80 @@ type ErrorLog struct {
 // RequestLog 一次 /v1 调用的最终结果（含用量与估算费用）。
 // 同一次请求的多目标故障转移只落一条记录，attempts 表示尝试过的目标数。
 type RequestLog struct {
-	ID                int64   `json:"id"`
-	CreatedAt         int64   `json:"created_at"`
-	APIKeyID          string  `json:"api_key_id"`
-	APIKeyName        string  `json:"api_key_name"`
-	ChannelID         string  `json:"channel_id"`
-	ChannelName       string  `json:"channel_name"`
-	Endpoint          string  `json:"endpoint"`
-	Stream            bool    `json:"stream"`
-	Model             string  `json:"model"`
-	UpstreamModel     string  `json:"upstream_model"`
-	UpstreamKeyHint   string  `json:"upstream_key_hint"`
-	Status            int     `json:"status"`
-	Success           bool    `json:"success"`
-	Attempts          int     `json:"attempts"`
-	DurationMS        int64   `json:"duration_ms"`
-	PromptTokens      int     `json:"prompt_tokens"`
-	CompletionTokens  int     `json:"completion_tokens"`
-	TotalTokens       int     `json:"total_tokens"`
-	CachedTokens      int     `json:"cached_tokens"`
-	ReasoningTokens   int     `json:"reasoning_tokens"`
-	CostPromptUSD     float64 `json:"cost_prompt_usd"`
-	CostCompletionUSD float64 `json:"cost_completion_usd"`
-	CostUSD           float64 `json:"cost_usd"`
-	PriceModel        string  `json:"price_model"`
-	PriceSource       string  `json:"price_source"`
-	Error             string  `json:"error"`
+	ID               int64   `json:"id"`
+	CreatedAt        int64   `json:"created_at"`
+	APIKeyID         string  `json:"api_key_id"`
+	APIKeyName       string  `json:"api_key_name"`
+	ChannelID        string  `json:"channel_id"`
+	ChannelName      string  `json:"channel_name"`
+	Endpoint         string  `json:"endpoint"`
+	Stream           bool    `json:"stream"`
+	Model            string  `json:"model"`
+	UpstreamModel    string  `json:"upstream_model"`
+	UpstreamKeyHint  string  `json:"upstream_key_hint"`
+	Status           int     `json:"status"`
+	Success          bool    `json:"success"`
+	Attempts         int     `json:"attempts"`
+	DurationMS       int64   `json:"duration_ms"`
+	PromptTokens     int     `json:"prompt_tokens"`
+	CompletionTokens int     `json:"completion_tokens"`
+	TotalTokens      int     `json:"total_tokens"`
+	CachedTokens     int     `json:"cached_tokens"`
+	ReasoningTokens  int     `json:"reasoning_tokens"`
+	CostPrompt       float64 `json:"cost_prompt"`
+	CostCompletion   float64 `json:"cost_completion"`
+	Cost             float64 `json:"cost"`
+	PriceModel       string  `json:"price_model"`
+	PriceSource      string  `json:"price_source"`
+	Error            string  `json:"error"`
 }
 
-// ModelPrice 模型价格条目，价格为「美元 / 百万 token」。
-type ModelPrice struct {
-	Model           string  `json:"model"`
-	DisplayName     string  `json:"display_name"`
+// 价格单位。
+const (
+	PriceUnitToken   = "per_token"   // 按 token 计费（对话、嵌入等）
+	PriceUnitRequest = "per_request" // 按请求次数计费（生图等按次收费的端点）
+)
+
+// PriceTier 输入档位：输入 token 不超过 UpTo 时适用这一档单价。
+//
+// UpTo 为 0 表示该档没有上限，必须作为兜底档排在最后。
+type PriceTier struct {
+	UpTo            int     `json:"up_to"`
 	PromptPrice     float64 `json:"prompt_price"`
 	CompletionPrice float64 `json:"completion_price"`
-	CacheReadPrice  float64 `json:"cache_read_price"`
-	ContextLength   int     `json:"context_length"`
-	Source          string  `json:"source"`
-	UpdatedAt       int64   `json:"updated_at"`
+}
+
+// TimeWindow 时段系数：北京时间落在 [Start, End) 内的请求乘以 Factor。
+//
+// Factor 小于 1 表示错峰折扣（如 0.5 五折），大于 1 表示高峰加价；
+// Start 大于 End 时跨午夜（如 22:00-06:00）。
+// Days 限定适用的星期，0=周日 … 6=周六；为空表示每天都适用。
+type TimeWindow struct {
+	Start  string  `json:"start"`
+	End    string  `json:"end"`
+	Factor float64 `json:"factor"`
+	Days   []int   `json:"days,omitempty"`
+}
+
+// ModelPrice 手工维护的价格条目，按公开模型名匹配。
+//
+// 只用于与官方价格做对比，因此不区分上游模型、渠道或密钥——
+// 同一个公开模型无论落到哪个渠道，都按这一份价格估算。
+type ModelPrice struct {
+	Model string `json:"model"`
+	// Unit 计费单位：per_token（默认）或 per_request。
+	Unit string `json:"unit"`
+	// Tiers 输入分档单价；按 token 计费时至少一档，最后一档 UpTo 必须为 0。
+	Tiers []PriceTier `json:"tiers"`
+	// CacheReadPrice 缓存命中输入的单价（每百万 token），不分档；0 表示按输入价计。
+	// 币种由面板的「货币符号」决定，这里只存纯数字。
+	CacheReadPrice float64 `json:"cache_read_price"`
+	// RequestPrice 每次请求的单价，仅 unit=per_request 时有意义。
+	RequestPrice float64 `json:"request_price"`
+	// TimeWindows 时段系数，空表示全天同价。
+	TimeWindows []TimeWindow `json:"time_windows"`
+	Note        string       `json:"note"`
+	UpdatedAt   int64        `json:"updated_at"`
 }
 
 // UsageBucket 用量汇总的一个分组。
@@ -407,7 +443,7 @@ type UsageBucket struct {
 	CompletionTokens int64   `json:"completion_tokens"`
 	TotalTokens      int64   `json:"total_tokens"`
 	CachedTokens     int64   `json:"cached_tokens"`
-	CostUSD          float64 `json:"cost_usd"`
+	Cost             float64 `json:"cost"`
 }
 
 // UsageSummary 时间区间内的用量与费用汇总。
@@ -422,7 +458,7 @@ type UsageSummary struct {
 	CompletionTokens int64         `json:"completion_tokens"`
 	TotalTokens      int64         `json:"total_tokens"`
 	CachedTokens     int64         `json:"cached_tokens"`
-	CostUSD          float64       `json:"cost_usd"`
+	Cost             float64       `json:"cost"`
 	ByModel          []UsageBucket `json:"by_model"`
 	ByChannel        []UsageBucket `json:"by_channel"`
 	ByAPIKey         []UsageBucket `json:"by_api_key"`

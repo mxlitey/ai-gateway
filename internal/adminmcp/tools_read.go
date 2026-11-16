@@ -60,11 +60,10 @@ func registerUsageTool(s *Server, d ReadDeps) {
 				return nil, err
 			}
 			return map[string]any{
-				"from":         from,
-				"to":           to,
-				"days":         days,
-				"summary":      sum,
-				"price_source": pricing.Endpoint(),
+				"from":    from,
+				"to":      to,
+				"days":    days,
+				"summary": sum,
 			}, nil
 		})
 }
@@ -388,12 +387,12 @@ func registerErrorLogsTool(s *Server, d ReadDeps) {
 
 func registerPriceTool(s *Server, d ReadDeps) {
 	s.Tools("get_price",
-		"查询某个模型的价格（每百万 token 的输入/输出/缓存读价格），以及价格表来源与快照时间。模型名支持模糊匹配（大小写、厂商前缀会归一化）。",
+		"查询某个模型在价格表里的计费规则：按 token 计费时给出各输入档位的输入/输出单价、缓存价与峰谷时段，生图模型给出每张单价。价格由用户手工维护，只按公开模型名匹配。",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"model": map[string]any{"type": "string", "description": "模型名，如 gpt-4o、claude-sonnet-4"},
-				"limit": map[string]any{"type": "integer", "description": "未指定 model 时返回多少个低价/高价样本，默认 20"},
+				"model": map[string]any{"type": "string", "description": "公开模型名，如 gpt-4o、deepseek-chat"},
+				"limit": map[string]any{"type": "integer", "description": "未指定 model 时最多返回多少条，默认 50"},
 			},
 		}, false, func(args map[string]any) (any, error) {
 			name := argString(args, "model")
@@ -404,7 +403,7 @@ func registerPriceTool(s *Server, d ReadDeps) {
 				return map[string]any{
 					"found":  false,
 					"model":  name,
-					"reason": "价格表中没有该模型，可调用不分组的 list 查看已收录的模型",
+					"reason": "价格表中没有该模型，可在面板「价格表」页补填",
 				}, nil
 			}
 
@@ -412,19 +411,13 @@ func registerPriceTool(s *Server, d ReadDeps) {
 			if err != nil {
 				return nil, err
 			}
-			limit := clampInt(argInt(args, "limit", 20), 1, 200)
+			limit := clampInt(argInt(args, "limit", 50), 1, 500)
 			if len(all) > limit {
 				all = all[:limit]
 			}
-			source := ""
-			if v, ok, _ := d.Store.GetSetting(store.SettingPriceRefreshAt); ok {
-				source = v
-			}
 			return map[string]any{
-				"price_source": pricing.Endpoint(),
-				"refreshed_at": source,
-				"count":        len(all),
-				"prices":       all,
+				"count":  len(all),
+				"prices": all,
 			}, nil
 		})
 }

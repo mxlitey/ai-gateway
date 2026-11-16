@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Channel, type KeyCooldown, type UsageBucket } from '../lib/api'
 import { Badge, Card, Empty, ErrorText, Loading } from '../components/ui'
 import { toast } from '../lib/toast'
+import { fmtCost } from '../lib/money'
 import { fmtDate } from '../components/DatePicker'
 
 // isPluginChannel 判断渠道是否由插件注册（source 形如 plugin:<插件id>）。
@@ -53,7 +54,7 @@ export default function Dashboard() {
       ? `${((usageSummary.cached_tokens / usageSummary.prompt_tokens) * 100).toFixed(1)}%`
       : '—'
 
-  const maxModelCost = Math.max(1, ...(usageSummary?.by_model.map((b) => b.cost_usd) ?? [1]))
+  const maxModelCost = Math.max(1, ...(usageSummary?.by_model.map((b) => b.cost) ?? [1]))
   const maxErrors = Math.max(1, ...errorGroups.map((g) => g.errors.length))
 
   return (
@@ -67,7 +68,7 @@ export default function Dashboard() {
         <Stat label="请求数" value={fmtInt(usageSummary?.requests ?? 0)} />
         <Stat label="总 token" value={fmtCompact(usageSummary?.total_tokens ?? 0)} />
         <Stat label="缓存命中率" value={cacheHitRate} />
-        <Stat label="市场价" value={fmtUSD(usageSummary?.cost_usd ?? 0)} />
+        <Stat label="市场价" value={fmtCost(usageSummary?.cost ?? 0)} />
         <Stat label="渠道" value={`${availableChannels} / ${channelList.length}`} />
         <Stat label="客户端密钥" value={`${enabledKeys} / ${keyList.length}`} />
         <Stat label="错误" value={String(dateErrors)} />
@@ -98,14 +99,14 @@ export default function Dashboard() {
                     <span className="shrink-0 font-mono text-xs text-zinc-500">
                       {fmtInt(b.requests)} 次 · {fmtCompact(b.total_tokens)} tok ·{' '}
                       <span className="text-emerald-600 dark:text-emerald-400">
-                        {fmtUSD(b.cost_usd)}
+                        {fmtCost(b.cost)}
                       </span>
                     </span>
                   </div>
                   <div className="h-1.5 rounded-full bg-zinc-100 dark:bg-zinc-800">
                     <div
                       className="h-1.5 rounded-full bg-emerald-500"
-                      style={{ width: `${Math.min(100, (b.cost_usd / maxModelCost) * 100)}%` }}
+                      style={{ width: `${Math.min(100, (b.cost / maxModelCost) * 100)}%` }}
                     />
                   </div>
                 </li>
@@ -262,7 +263,7 @@ function BucketTable({ buckets }: { buckets: UsageBucket[] }) {
             <td className="py-2 pr-3 text-right font-mono text-xs">{fmtInt(b.requests)}</td>
             <td className="py-2 pr-3 text-right font-mono text-xs">{fmtCompact(b.total_tokens)}</td>
             <td className="py-2 text-right font-mono text-xs text-emerald-600 dark:text-emerald-400">
-              {fmtUSD(b.cost_usd)}
+              {fmtCost(b.cost)}
             </td>
           </tr>
         ))}
@@ -280,14 +281,6 @@ function fmtCompact(n: number): string {
   if (v < 1000) return String(v)
   if (v < 1_000_000) return `${(v / 1000).toFixed(1)}K`
   return `${(v / 1_000_000).toFixed(2)}M`
-}
-
-function fmtUSD(n: number): string {
-  const v = n ?? 0
-  if (v === 0) return '$0'
-  if (v < 0.01) return `$${v.toFixed(4)}`
-  if (v < 1) return `$${v.toFixed(3)}`
-  return `$${v.toFixed(2)}`
 }
 
 // KeyCooldownCard 展示当前被临时禁用的上游密钥，倒计时并支持手动恢复。

@@ -411,24 +411,81 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error(404, "账号不存在：%s" % acc_id)
         try:
             acc.ready()
-            result = acc.checkin()
         except Exception as exc:
-            return self._send_error(400, "签到失败：%s" % exc)
-        if not result.get("ok"):
-            try:
-                acc.save(POOL.dir)
-            except Exception:
-                pass
-            return self._send_error(400, "签到失败：%s" % (result.get("error") or result))
+            return self._send_error(401, "账号 %s 刷新凭据失败：%s" % (acc.uid, exc))
+
+        # 官方已把每日签到迁到活动平台（/sash/api/v1/me/campaigns），旧的
+        # daily-check-in 接口只剩 status=DISABLED 空壳。先走活动平台领取。
+        campaign = {}
+        campaign_err = ""
+        try:
+            campaign = acc.campaign_checkin(only_kinds=("", "CREDITS"))
+        except Exception as exc:
+            campaign_err = str(exc)
+            print("[qoder] campaign checkin failed: %s" % exc, flush=True)
+
+        if campaign.get("claimed") or campaign.get("already"):
+            return self._checkin_success(acc, campaign)
+
+        # 活动平台查询成功：领取成功 / 已领 / 名额发完 / 任务未完成 / 暂无活动
+        # 都是正常终态，按幂等语义返回成功并附说明，避免宿主定时签到重试。
+        # 例外：服务端把活动列表整条隐藏（showCampaign=false，通常意味着机器
+        # 身份未被认可），此时继续回退旧接口，不能直接报"暂无活动"。
+        status = getattr(acc, "campaign_status", None) or {}
+        hidden = bool(campaign.get("ok")) and \
+            status.get("show_campaign") is False and \
+            not (campaign.get("campaigns") or [])
+        if campaign.get("ok") and not hidden:
+            return self._checkin_success(acc, campaign)
+
+        # 活动平台查询/领取失败：回退旧接口（部分区域仍在用）
+        legacy = {}
+        legacy_err = ""
+        try:
+            legacy = acc.checkin()
+        except Exception as exc:
+            legacy_err = str(exc)
+        if legacy.get("ok") and not legacy.get("disabled"):
+            return self._checkin_success(acc, legacy)
+
+        parts = []
+        if hidden:
+            parts.append("官方活动列表未对该账号显示（showCampaign=false）")
+        elif campaign.get("message"):
+            parts.append(campaign["message"])
+        elif campaign.get("error"):
+            parts.append("活动平台报错：%s" % str(campaign["error"])[:200])
+        elif campaign_err:
+            parts.append("活动平台查询失败：%s" % campaign_err[:160])
+        else:
+            parts.append("活动平台未返回可领取的签到活动")
+        if campaign.get("errors"):
+            parts.append("领取错误：%s" % "; ".join(campaign["errors"])[:200])
+        if legacy.get("disabled"):
+            parts.append("旧版签到接口 status=%s" % (legacy.get("status") or "?"))
+        elif legacy.get("error"):
+            parts.append("旧版签到接口报错：%s" % str(legacy["error"])[:160])
+        elif legacy_err:
+            parts.append("旧版签到接口异常：%s" % legacy_err[:160])
+        hint = (getattr(acc, "campaign_status", None) or {}).get("hint") or ""
+        if hint:
+            parts.append(hint)
+        return self._send_error(400, "签到失败：%s" % "；".join(parts))
+
+    def _checkin_success(self, acc, result):
         try:
             acc.save(POOL.dir)
         except Exception:
             pass
+        message = result.get("message") or result.get("msg") or "签到成功"
         if result.get("streak_days") is not None:
             acc._plugin_streak = result["streak_days"]
-        message = result.get("msg") or result.get("message") or "签到成功"
-        if result.get("reward_credits"):
-            message += "，+%s 积分" % result["reward_credits"]
+        earned = result.get("earned")
+        if earned and "Credits" not in message:
+            message += "，+%s Credits" % earned
+        reward = result.get("reward_credits")
+        if reward and "积分" not in message:
+            message += "，+%s 积分" % reward
         return self._send_json(200, {"message": message,
                                      "account": account_view(acc)})
 

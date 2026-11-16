@@ -58,7 +58,8 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.srv.cfg.Authorize(r.Header.Get("Authorization")) {
+	writable, authorized := h.srv.cfg.Authorize(r.Header.Get("Authorization"))
+	if !authorized {
 		// JSON-RPC 错误统一走 200，避免客户端把它当成传输层故障
 		writeRPCError(w, req.ID, CodeInvalidRequest, "Unauthorized: 管理令牌无效或服务未启用")
 		return
@@ -66,24 +67,29 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Method {
 	case "initialize":
-		h.handleInitialize(w, req)
+		h.handleInitialize(w, req, writable)
 	case "ping":
 		writeRPCResult(w, req.ID, map[string]any{})
 	case "tools/list":
-		writeRPCResult(w, req.ID, map[string]any{"tools": h.srv.ListTools()})
+		writeRPCResult(w, req.ID, map[string]any{"tools": h.srv.ListTools(writable)})
 	case "tools/call":
-		h.handleToolsCall(w, req)
+		h.handleToolsCall(w, req, writable)
 	default:
 		writeRPCError(w, req.ID, CodeMethodNotFound, "管理网关未实现该方法: "+req.Method)
 	}
 }
 
 // handleInitialize 协商协议版本并声明能力。
-func (h *Handler) handleInitialize(w http.ResponseWriter, req request) {
+func (h *Handler) handleInitialize(w http.ResponseWriter, req request, writable bool) {
 	var params struct {
 		ProtocolVersion string `json:"protocolVersion"`
 	}
 	_ = json.Unmarshal(req.Params, &params)
+
+	instructions := "当前使用只读令牌：只能查询网关状态，写操作工具不会出现在 tools/list 中，也不可调用。"
+	if writable {
+		instructions = "当前使用读写令牌：包含查询与写操作工具，写操作会真实修改网关配置，请确认后再调用。"
+	}
 
 	writeRPCResult(w, req.ID, map[string]any{
 		"protocolVersion": negotiateVersion(params.ProtocolVersion),
@@ -92,11 +98,12 @@ func (h *Handler) handleInitialize(w http.ResponseWriter, req request) {
 			"name":    "ai-gateway-admin",
 			"version": "1.0.0",
 		},
+		"instructions": instructions,
 	})
 }
 
 // handleToolsCall 校验参数并执行工具。
-func (h *Handler) handleToolsCall(w http.ResponseWriter, req request) {
+func (h *Handler) handleToolsCall(w http.ResponseWriter, req request, writable bool) {
 	var params struct {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
@@ -109,7 +116,7 @@ func (h *Handler) handleToolsCall(w http.ResponseWriter, req request) {
 		writeRPCError(w, req.ID, CodeInvalidParams, "缺少工具名")
 		return
 	}
-	writeRPCResult(w, req.ID, h.srv.CallTool(params.Name, params.Arguments))
+	writeRPCResult(w, req.ID, h.srv.CallTool(params.Name, params.Arguments, writable))
 }
 
 // ---------- JSON-RPC 输出 ----------

@@ -72,20 +72,25 @@ func VerifyToken(token, storedHash string) bool {
 	return subtle.ConstantTimeCompare([]byte(HashToken(token)), []byte(storedHash)) == 1
 }
 
-// Config 管理 MCP 的运行期状态：开关、写权限、令牌摘要，随面板保存即时切换。
+// Config 管理 MCP 的运行期状态：开关与两枚令牌摘要，随面板保存即时切换。
 //
-// 令牌摘要只存摘要不存明文，因此「查看令牌」只在生成的那一刻可用；
+// 令牌按权限分两档：只读令牌只能调用查询类工具，读写令牌可调用全部工具。
+// 摘要只存摘要不存明文，因此「查看令牌」只在生成的那一刻可用；
 // 之后只能重置（旧令牌立即失效）。
 type Config struct {
 	mu        sync.RWMutex
 	enabled   bool
-	writable  bool
-	tokenHash string
+	readHash  string
+	writeHash string
 }
 
 // NewConfig 用库中读到的值构造运行期状态。
-func NewConfig(enabled, writable bool, tokenHash string) *Config {
-	return &Config{enabled: enabled, writable: writable, tokenHash: strings.TrimSpace(tokenHash)}
+func NewConfig(enabled bool, readonlyHash, writableHash string) *Config {
+	return &Config{
+		enabled:   enabled,
+		readHash:  strings.TrimSpace(readonlyHash),
+		writeHash: strings.TrimSpace(writableHash),
+	}
 }
 
 // Enabled 返回管理 MCP 是否启用。
@@ -95,48 +100,62 @@ func (c *Config) Enabled() bool {
 	return c.enabled
 }
 
-// Writable 返回是否允许写操作（未启用时一律为 false）。
-func (c *Config) Writable() bool {
+// HasReadonlyToken 判断是否已生成只读令牌。
+func (c *Config) HasReadonlyToken() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.writable && c.enabled
+	return c.readHash != ""
 }
 
-// HasToken 判断是否已生成过令牌。
-func (c *Config) HasToken() bool {
+// HasWritableToken 判断是否已生成读写令牌。
+func (c *Config) HasWritableToken() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.tokenHash != ""
+	return c.writeHash != ""
 }
 
-// Update 更新开关与写权限。
-func (c *Config) Update(enabled, writable bool) {
+// Update 更新开关。
+func (c *Config) Update(enabled bool) {
 	c.mu.Lock()
 	c.enabled = enabled
-	c.writable = writable
 	c.mu.Unlock()
 }
 
-// SetTokenHash 更新令牌摘要。
-func (c *Config) SetTokenHash(hash string) {
+// SetReadonlyTokenHash 更新只读令牌摘要（空串表示撤销）。
+func (c *Config) SetReadonlyTokenHash(hash string) {
 	c.mu.Lock()
-	c.tokenHash = strings.TrimSpace(hash)
+	c.readHash = strings.TrimSpace(hash)
 	c.mu.Unlock()
 }
 
-// Authorize 校验请求头里的管理令牌：必须启用、已生成令牌、且摘要匹配。
-func (c *Config) Authorize(authorization string) bool {
+// SetWritableTokenHash 更新读写令牌摘要（空串表示撤销）。
+func (c *Config) SetWritableTokenHash(hash string) {
+	c.mu.Lock()
+	c.writeHash = strings.TrimSpace(hash)
+	c.mu.Unlock()
+}
+
+// Authorize 校验请求头里的管理令牌：必须启用且与某一档摘要匹配。
+// 返回 writable 表示该令牌是否具备写权限。
+func (c *Config) Authorize(authorization string) (writable bool, ok bool) {
 	if !c.Enabled() {
-		return false
+		return false, false
 	}
 	token := strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer "))
 	if !strings.HasPrefix(token, TokenPrefix) {
-		return false
+		return false, false
 	}
 	c.mu.RLock()
-	hash := c.tokenHash
+	readHash, writeHash := c.readHash, c.writeHash
 	c.mu.RUnlock()
-	return VerifyToken(token, hash)
+
+	if VerifyToken(token, writeHash) {
+		return true, true
+	}
+	if VerifyToken(token, readHash) {
+		return false, true
+	}
+	return false, false
 }
 
 // ToolHandler 工具实现：返回结构化结果（由调用方序列化）或错误。
@@ -153,10 +172,9 @@ type tool struct {
 
 // Server 管理 MCP 的工具注册表与执行入口。
 type Server struct {
-	cfg        *Config
-	tools      map[string]*tool
-	order      []string
-	tokenIssue func() (string, error)
+	cfg   *Config
+	tools map[string]*tool
+	order []string
 }
 
 // NewServer 创建注册表。cfg 为运行期状态，所有工具都按它的开关过滤。
@@ -167,10 +185,7 @@ func NewServer(cfg *Config) *Server {
 // Config 返回运行期状态，供 HTTP 层做鉴权与状态查询。
 func (s *Server) Config() *Config { return s.cfg }
 
-// SetTokenIssuer 注册「重置令牌」的生成逻辑（由 admin 包注入，负责落库）。
-func (s *Server) SetTokenIssuer(fn func() (string, error)) { s.tokenIssue = fn }
-
-// Tools 注册一个工具。write 为 true 时，仅在「允许写操作」开启后可见可调用。
+// Tools 注册一个工具。write 为 true 时，只有读写令牌可见可调用。
 func (s *Server) Tools(name, description string, schema map[string]any, write bool, h ToolHandler) {
 	if schema == nil {
 		schema = map[string]any{"type": "object", "properties": map[string]any{}}
@@ -179,9 +194,8 @@ func (s *Server) Tools(name, description string, schema map[string]any, write bo
 	s.order = append(s.order, name)
 }
 
-// ListTools 返回当前可见的工具定义（写操作按写权限过滤）。
-func (s *Server) ListTools() []map[string]any {
-	writable := s.cfg.Writable()
+// ListTools 返回给定令牌权限下可见的工具定义（只读令牌看不到写工具）。
+func (s *Server) ListTools(writable bool) []map[string]any {
 	out := make([]map[string]any, 0, len(s.order))
 	for _, name := range s.order {
 		t := s.tools[name]
@@ -198,13 +212,13 @@ func (s *Server) ListTools() []map[string]any {
 }
 
 // CallTool 执行工具，返回 MCP 的 result 结构（成功或 isError）。
-func (s *Server) CallTool(name string, args map[string]any) map[string]any {
+func (s *Server) CallTool(name string, args map[string]any, writable bool) map[string]any {
 	t, ok := s.tools[name]
 	if !ok {
 		return ErrorResult("未知工具: " + name)
 	}
-	if t.write && !s.cfg.Writable() {
-		return ErrorResult("写操作未开启：请在设置页同时启用「管理 MCP」与「允许写操作」")
+	if t.write && !writable {
+		return ErrorResult("当前令牌只有只读权限：该工具会修改网关状态，请改用读写令牌")
 	}
 	if args == nil {
 		args = map[string]any{}

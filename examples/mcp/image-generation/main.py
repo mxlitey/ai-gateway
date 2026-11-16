@@ -10,8 +10,8 @@
 
 为什么用作业模型：
   生图实测可达数分钟，而 MCP 工具调用与 HTTP 等待响应头都有超时限制。
-  因此 generate_image 最多等待 wait_seconds（默认 20 秒）：完成就直接返回图片，
-  没完成就返回 job_id，由客户端每 5 秒调用 get_image_job 轮询。
+  因此 generate_image 只负责提交：立即返回 job_id 与 status，
+  由客户端每 5 秒调用 get_image_job 轮询。
   作业记录保存在网关 SQLite 中（保留 24 小时），网关或本服务重启都不会丢：
   已提交到上游的异步任务会继续轮询，同步任务会标记为 gateway_restarted 提示重新提交。
 
@@ -35,11 +35,12 @@
   get_image_job      查询生图作业状态与结果
   cancel_image_job   取消仍在排队或执行的作业
   list_image_models  列出可用生图模型（等价于网关 /v1/models?type=image）
+  image_host_info    查询图床直传端点，图片走 HTTP 直传，不进 MCP 的 8 MB 限制
 
 自描述：initialize 会返回 instructions，说明模型查询、作业轮询、交付方式，
 客户端不依赖外部技能文档也能完成第一次调用。图床能力（HTTP 直传，不经过 MCP，
-不受 8 MB 请求体限制）只由网关在转发 initialize 时追加，这里不重复，避免出现
-两套互相矛盾的地址。
+不受 8 MB 请求体限制）由 image_host_info 工具描述与返回值承载，不再写进 instructions，
+避免地址写死或与工具说明重复。
 """
 
 import base64
@@ -60,8 +61,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 SUPPORTED_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"]
 MCP_PATH = "/mcp"
 
-DEFAULT_WAIT_SECONDS = 20
-MAX_WAIT_SECONDS = 600
 # 单次 MCP 调用允许的请求体上限，与网关 MCP 入口保持一致
 MAX_REQUEST_BYTES = 8 << 20
 MAX_DOWNLOAD_BYTES = 32 << 20
@@ -107,12 +106,12 @@ IMAGE_TOOLS = [
         "description": (
             "调用网关的 /v1/images/generations 生成图片，支持文生图与参考图编辑（image_url）。"
             "模型名不确定时先调用 list_image_models 查询，再显式传 model。"
-            "单次生图通常需要 1-3 分钟：本工具最多阻塞 wait_seconds 秒（默认 20）；"
-            "若返回 status=running，请每 5 秒调用 get_image_job(job_id)；"
-            "作业状态共 5 种：queued / running / succeeded / failed / canceled，"
-            "只有 succeeded 才是拿到图片，failed / canceled 会直接以错误返回。"
+            "本工具只负责提交，立即返回 job_id 与 status（通常为 queued），不等待出图；"
+            "请每 5 秒调用 get_image_job(job_id)。作业状态共 5 种："
+            "queued / running / succeeded / failed / canceled，只有 succeeded 才有图片，"
+            "failed / canceled 会直接以错误返回。"
             "成功结果的 url 是网关自身地址（/v1/images/files/...），"
-            + LINK_TTL_HINT + "，可直接下载或给用户；重要结果建议 download=true 落本地。"
+            + LINK_TTL_HINT + "，可直接下载或给用户；重要结果建议在 get_image_job 里传 download=true 落本地。"
             "参考图用公网 http(s) URL（image_url）或本机文件路径（image_path）；"
             "内网 URL 由本服务下载后转发。对话里粘贴的图片不会自动变成工具参数。"
         ),
@@ -160,8 +159,6 @@ IMAGE_TOOLS = [
                     "enum": ["url", "b64_json"],
                     "description": "默认 url；b64_json 会返回很大的 base64 文本，一般不建议",
                 },
-                "download": {"type": "boolean", "description": "为 true 时把图片下载到本地并返回路径"},
-                "wait_seconds": {"type": "integer", "description": "本次调用最多等待秒数，默认 20，上限 600"},
                 "request_id": {
                     "type": "string",
                     "description": (
@@ -209,6 +206,16 @@ IMAGE_TOOLS = [
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
+    {
+        "name": "image_host_info",
+        "description": (
+            "查询网关内置图床：是否开启、是否公网可达，以及直传端点、单张上限、URL 前缀与保留时长。"
+            "上传图片请用 HTTP 直接 POST 到 endpoint（Authorization 带调用 MCP 时同一把 sk- 密钥），"
+            "请求体是图片原始字节，不经过 MCP，因此不受 8 MB 请求体限制；"
+            "返回的 url 可直接作为 generate_image 的 image_url。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
 ]
 
 # initialize 返回的说明书：客户端不依赖外部技能包也能完成第一次调用。
@@ -216,16 +223,19 @@ INSTRUCTIONS = (
     "本服务把生图请求转发到 AI Gateway，作业由网关持久化（SQLite，保留 24 小时）。推荐流程："
     "1) 不确定模型时先调用 list_image_models，拿到 models 列表与 default_model；"
     "2) 调用 generate_image，至少传 prompt；没有 default_model 时必须显式传 model；"
-    "3) 返回 status=queued/running 时每 5 秒调用 get_image_job(job_id)；"
+    "它立即返回 job_id 与 status，不等待出图；"
+    "3) 每 5 秒调用 get_image_job(job_id)；"
     "作业状态共 queued/running/succeeded/failed/canceled 五种，只有 succeeded 才有图片，"
     "failed/canceled 会以 isError 返回；"
     "   网关或本服务重启不会丢作业：异步任务会继续轮询，同步任务会标记为 gateway_restarted 让你重提；"
     "4) 成功结果的 images[].url 是网关自身地址，images[].expires_at 是 Unix 秒过期时间，可直接下载或交给用户；"
-    "需要长期保存时用 download=true 落本地；"
+    "需要长期保存时在 get_image_job 里传 download=true 落本地；"
     "5) 失败时 isError=true，structuredContent.error 含 code/message/retryable；"
     "6) 超时重试请带上同一个 request_id，网关会复用已有作业，不会重复生图；"
     "7) 需要放弃时调用 cancel_image_job(job_id)：只停止网关侧等待与轮询，"
-    "不保证终止上游任务，异步渠道可能继续执行并已产生费用。"
+    "不保证终止上游任务，异步渠道可能继续执行并已产生费用；"
+    "8) 需要上传参考图时先调用 image_host_info 拿直传端点：用 HTTP POST 图片原始字节，"
+    "不经过 MCP，所以不受 8 MB 请求体限制，返回的 url 可直接作为 image_url。"
 )
 
 
@@ -356,17 +366,9 @@ def _submit_job(payload, request_id="", key=""):
     data = _gateway_call("POST", "/v1/images/generations", key, body)
     if isinstance(data, dict) and data.get("status") and data.get("id"):
         return data
-    # 兼容旧网关：没有作业概念时直接返回 data
-    if isinstance(data, dict) and isinstance(data.get("data"), list) and data["data"]:
-        return {
-            "id": "",
-            "status": "succeeded",
-            "model": payload.get("model", ""),
-            "data": data["data"],
-            "created": data.get("created"),
-        }
     raise ToolError(
-        "网关返回格式不可识别：%s" % _clip(json.dumps(data, ensure_ascii=False), 300),
+        "网关返回格式不可识别（缺少作业 id/status）：%s"
+        % _clip(json.dumps(data, ensure_ascii=False), 300),
         code="invalid_response",
         retryable=True,
     )
@@ -769,18 +771,60 @@ def _gateway_image_host(key):
         with _LOCAL_OPENER.open(req, timeout=10) as resp:
             data = json.loads(resp.read(1 << 20).decode("utf-8", "replace"))
     except Exception:
-        return {"enabled": False, "public": False}
+        return {"enabled": False, "public": False, "unavailable": True}
     if not isinstance(data, dict):
-        return {"enabled": False, "public": False}
+        return {"enabled": False, "public": False, "unavailable": True}
     value = {
         "enabled": bool(data.get("enabled")),
         "public": bool(data.get("public")),
         "max_mb": int(data.get("max_mb") or 0),
+        "public_base": str(data.get("public_base") or ""),
+        "url_prefix": str(data.get("url_prefix") or ""),
+        "ttl_seconds": int(data.get("ttl_seconds") or 0),
     }
     with _IMAGE_HOST_LOCK:
         _IMAGE_HOST_CACHE["at"] = now
         _IMAGE_HOST_CACHE["value"] = value
     return value
+
+
+def _image_host_info(key=""):
+    """把图床能力转成客户端可直接使用的直传说明。
+
+    只返回「端点 + 凭证用法」，文件本体由客户端 HTTP 直传，不进 MCP 的 JSON body。
+    """
+    cap = _gateway_image_host(key)
+    base = _base_url()
+    if cap.get("unavailable"):
+        return {
+            "enabled": False,
+            "public": False,
+            "hint": "读不到网关图床能力：请检查网关地址（AIGW_IMAGE_BASE_URL）与密钥是否正确。",
+        }
+    out = {"enabled": bool(cap.get("enabled")), "public": bool(cap.get("public"))}
+    if not out["enabled"]:
+        out["hint"] = (
+            "网关未开启图床：参考图请用公网 http(s) 链接，或压缩到单张 3 MB 以内。"
+        )
+        return out
+    out.update({
+        # 优先用网关声明的公网地址，远端客户端才连得上
+        "endpoint": (cap.get("public_base") or base) + "/v1/images/uploads",
+        "method": "POST",
+        "content_type": "image/png / image/jpeg / image/webp / image/gif",
+        "auth_header": "Authorization: Bearer <调用 MCP 时使用的同一把 sk- 密钥>",
+        "max_mb": int(cap.get("max_mb") or 0),
+        "url_prefix": cap.get("url_prefix") or "",
+        "ttl_seconds": int(cap.get("ttl_seconds") or 0),
+    })
+    hint = (
+        "请求体是图片原始字节；响应里的 url 可直接作为 generate_image 的 image_url。"
+        "该请求是普通 HTTP，不经过 MCP，因此不受 8 MB 请求体限制。"
+    )
+    if not out["public"]:
+        hint += "当前图床未声明公网可达，上传得到的链接可能无法被上游下载。"
+    out["hint"] = hint
+    return out
 
 
 def _upload_reference(raw, mime, index, key):
@@ -1029,37 +1073,29 @@ def _list_models(key=""):
 
 def _generate(args, key=""):
     payload = _build_payload(args, key)
-    download = _bool_arg(args, "download", False)
-    wait_seconds = _int_arg(args, "wait_seconds", DEFAULT_WAIT_SECONDS, 0, MAX_WAIT_SECONDS)
     request_id = _request_id(args)
 
     # 作业由网关持久化：相同 request_id 会复用同一个作业，重试不会重复生图
     view = _submit_job(payload, request_id, key)
     reused = bool(view.get("reused"))
     job_id = str(view.get("id") or "")
-    deadline = time.time() + wait_seconds
+    status = str(view.get("status") or "")
+    if status in ("failed", "canceled"):
+        _raise_job_failure(view)
+    if status == "succeeded":
+        # 复用已完成的作业时结果已就绪，不必再让客户端多轮一次
+        return _job_result(view, False, reused)
 
-    while True:
-        status = str(view.get("status") or "")
-        if status == "succeeded":
-            return _job_result(view, download, reused)
-        if status in ("failed", "canceled"):
-            _raise_job_failure(view)
-        if not job_id:
-            raise ToolError("网关未返回作业 ID", code="invalid_response", retryable=True)
-        if time.time() >= deadline:
-            break
-        time.sleep(0.5)
-        view = _fetch_job(job_id, key)
-
+    # 只提交不等待：出图耗时不可预测，阻塞调用容易撞客户端超时
     return {
         "status": status or "queued",
         "job_id": job_id,
         "stage": view.get("stage") or "",
-        "elapsed_ms": _job_elapsed_ms(view),
         "reused": reused,
-        "hint": "生图仍在进行，请每 5 秒调用 get_image_job(job_id=\"%s\")；作业保存在网关，重启不会丢失"
-                % job_id,
+        "hint": (
+            "作业已提交，请每 5 秒调用 get_image_job(job_id=\"%s\") 获取结果；"
+            "需要保存到本地时在 get_image_job 里传 download=true" % job_id
+        ),
     }
 
 
@@ -1126,6 +1162,8 @@ def call_tool(name, arguments, key=""):
             payload = _cancel(arguments, key)
         elif name == "list_image_models":
             payload = _list_models(key)
+        elif name == "image_host_info":
+            payload = _image_host_info(key)
         else:
             return _error_result("未知工具: %s" % name, code="unknown_tool")
     except ToolError as exc:

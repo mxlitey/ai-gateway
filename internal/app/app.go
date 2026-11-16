@@ -363,27 +363,43 @@ func (a *App) loadRuntimeSettings() store.RuntimeSettings {
 	return rs
 }
 
-// loadAdminMCPConfig 读取管理 MCP 的开关、写权限与令牌摘要。
+// loadAdminMCPConfig 读取管理 MCP 的开关与两档令牌摘要。
+//
+// 旧版是「单令牌 + 允许写操作」：若只读档还没生成，就把旧令牌按当时的写权限放进对应档位，
+// 另一档留空，待下次保存或重置时补齐。
 func loadAdminMCPConfig(st *store.Store) (*adminmcp.Config, error) {
-	var enabled, writable bool
-	var hash string
+	var enabled, legacyWritable bool
+	var readHash, writeHash string
 
 	if v, ok, err := st.GetSetting(store.SettingAdminMCPEnabled); err != nil {
-		return adminmcp.NewConfig(false, false, ""), err
+		return adminmcp.NewConfig(false, "", ""), err
 	} else if ok {
 		enabled = v == "1"
 	}
 	if v, ok, err := st.GetSetting(store.SettingAdminMCPWritable); err != nil {
-		return adminmcp.NewConfig(enabled, false, ""), err
+		return adminmcp.NewConfig(enabled, "", ""), err
 	} else if ok {
-		writable = v == "1"
+		legacyWritable = v == "1"
+	}
+	if v, ok, err := st.GetSetting(store.SettingAdminMCPReadOnlyTokenHash); err != nil {
+		return adminmcp.NewConfig(enabled, "", ""), err
+	} else if ok {
+		readHash = v
 	}
 	if v, ok, err := st.GetSetting(store.SettingAdminMCPTokenHash); err != nil {
-		return adminmcp.NewConfig(enabled, writable, ""), err
+		return adminmcp.NewConfig(enabled, readHash, ""), err
 	} else if ok {
-		hash = v
+		writeHash = v
 	}
-	return adminmcp.NewConfig(enabled, writable, hash), nil
+
+	if readHash == "" && writeHash != "" {
+		if legacyWritable {
+			// 旧令牌原本可写：继续作为读写令牌
+		} else {
+			readHash, writeHash = writeHash, ""
+		}
+	}
+	return adminmcp.NewConfig(enabled, readHash, writeHash), nil
 }
 
 // priceEndpoint 返回生效的价格源地址：面板设置优先，其次环境变量 / 内置默认。

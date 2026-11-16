@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -14,11 +13,9 @@ import (
 // SetAdminMCP 注入管理 MCP 注册表（由 app 层在构造后调用）。
 func (a *API) SetAdminMCP(srv *adminmcp.Server) {
 	a.adminMCP = srv
-	// 重置令牌需要落库，这里把生成逻辑注入给注册表，避免 adminmcp 反向依赖 store 细节
-	srv.SetTokenIssuer(a.resetAdminMCPToken)
 }
 
-// adminMCPState 返回管理 MCP 的当前状态与可复制的客户端配置。
+// adminMCPState 返回管理 MCP 的当前状态与两档令牌的情况。
 //
 // 令牌明文不落库，因此这里只能返回「是否已生成」；
 // 明文仅在开关打开或重置令牌的响应中出现一次。
@@ -29,23 +26,31 @@ func (a *API) adminMCPState(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := a.adminMCP.Config()
 
-	// 前端需要知道所有可见工具的清单，便于说明「开启后 AI 能做什么」
-	names := make([]string, 0, 16)
-	for _, t := range a.adminMCP.ListTools() {
-		if n, ok := t["name"].(string); ok {
-			names = append(names, n)
-		}
-	}
+	// 前端需要知道两个档位各自的工具数量，便于说明「这枚令牌能做什么」
+	names := toolNames(a.adminMCP.ListTools(true))
+	readNames := toolNames(a.adminMCP.ListTools(false))
 
 	jsonOK(w, map[string]any{
-		"enabled":    cfg.Enabled(),
-		"writable":   cfg.Writable(),
-		"has_token":  cfg.HasToken(),
-		"endpoint":   "/admin/mcp",
-		"access_url": a.adminMCPAccessURL(r),
-		"tool_count": len(names),
-		"tools":      names,
+		"enabled":             cfg.Enabled(),
+		"endpoint":            "/admin/mcp",
+		"access_url":          a.adminMCPAccessURL(r),
+		"tool_count":          len(names),
+		"readonly_tool_count": len(readNames),
+		"has_readonly_token":  cfg.HasReadonlyToken(),
+		"has_writable_token":  cfg.HasWritableToken(),
+		"tools":               names,
 	})
+}
+
+// toolNames 提取工具定义里的名称，供面板展示。
+func toolNames(tools []map[string]any) []string {
+	out := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if n, ok := t["name"].(string); ok {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // adminMCPAccessURL 返回客户端应填写的基础地址：按本次管理请求的 Host 推导，
@@ -90,7 +95,7 @@ func firstHeaderValue(v string) string {
 	return strings.ToLower(strings.TrimSpace(v))
 }
 
-// saveAdminMCP 保存开关与写权限；首次启用时自动生成令牌并返回明文。
+// saveAdminMCP 保存开关；首次启用时自动补齐两档令牌并返回明文。
 //
 // 立即生效：更新的是 adminmcp.Config 的内存状态，路由始终挂载，
 // 由 Config.Enabled() 决定是否响应。
@@ -100,55 +105,70 @@ func (a *API) saveAdminMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Enabled  bool `json:"enabled"`
-		Writable bool `json:"writable"`
+		Enabled bool `json:"enabled"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
 	}
-
-	cfg := a.adminMCP.Config()
-	needToken := body.Enabled && !cfg.HasToken()
 
 	// 开关先落库，令牌随后生成；两步都成功才算保存成功
 	if err := a.store.SetSetting(store.SettingAdminMCPEnabled, boolText(body.Enabled)); err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := a.store.SetSetting(store.SettingAdminMCPWritable, boolText(body.Writable)); err != nil {
-		jsonErr(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	cfg.Update(body.Enabled, body.Writable)
+	a.adminMCP.Config().Update(body.Enabled)
 
-	resp := map[string]any{"success": true, "enabled": body.Enabled, "writable": body.Writable}
+	resp := map[string]any{"success": true, "enabled": body.Enabled}
 
-	if needToken {
-		token, err := a.resetAdminMCPToken()
+	if body.Enabled {
+		readToken, writeToken, err := a.issueAdminMCPTokens(false)
 		if err != nil {
 			jsonErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		resp["token"] = token
-		resp["config_json"] = a.buildMCPConfigJSON(r, token)
-		resp["notice"] = "令牌明文只显示这一次，请立即复制保存"
+		if readToken != "" || writeToken != "" {
+			resp["readonly_token"] = readToken
+			resp["writable_token"] = writeToken
+			resp["notice"] = "令牌明文只显示这一次，请立即复制保存"
+		}
 	}
 	jsonOK(w, resp)
 }
 
-// resetAdminMCPToken 生成新令牌，落库其摘要并返回明文。
-// 旧令牌立即失效（摘要被覆盖）。
-func (a *API) resetAdminMCPToken() (string, error) {
+// issueAdminMCPTokens 补齐两档令牌：regenerate 为 false 时只生成缺失的那一档。
+// 返回本次新生成的明文（未生成的为空串）；对应档位的旧令牌在覆盖后立即失效。
+func (a *API) issueAdminMCPTokens(regenerate bool) (readToken, writeToken string, err error) {
 	if a.adminMCP == nil {
-		return "", fmt.Errorf("管理 MCP 未初始化")
+		return "", "", fmt.Errorf("管理 MCP 未初始化")
 	}
-	token := adminmcp.TokenPrefix + id.Hex(32)
-	hash := adminmcp.HashToken(token)
-	if err := a.store.SetSetting(store.SettingAdminMCPTokenHash, hash); err != nil {
-		return "", err
+	cfg := a.adminMCP.Config()
+
+	if regenerate || !cfg.HasReadonlyToken() {
+		plain := adminmcp.TokenPrefix + id.Hex(32)
+		hash := adminmcp.HashToken(plain)
+		if err := a.store.SetSetting(store.SettingAdminMCPReadOnlyTokenHash, hash); err != nil {
+			return "", "", err
+		}
+		cfg.SetReadonlyTokenHash(hash)
+		readToken = plain
 	}
-	a.adminMCP.Config().SetTokenHash(hash)
-	return token, nil
+	if regenerate || !cfg.HasWritableToken() {
+		plain := adminmcp.TokenPrefix + id.Hex(32)
+		hash := adminmcp.HashToken(plain)
+		if err := a.store.SetSetting(store.SettingAdminMCPTokenHash, hash); err != nil {
+			return "", "", err
+		}
+		cfg.SetWritableTokenHash(hash)
+		writeToken = plain
+	}
+	// 旧版「允许写操作」开关已由令牌档位取代
+	_ = a.store.DeleteSetting(store.SettingAdminMCPWritable)
+	return readToken, writeToken, nil
+}
+
+// resetAdminMCPToken 重新生成两档令牌，返回明文；旧令牌立即失效。
+func (a *API) resetAdminMCPToken() (readToken, writeToken string, err error) {
+	return a.issueAdminMCPTokens(true)
 }
 
 // resetAdminMCPTokenAPI 面板「重置令牌」按钮的入口。
@@ -157,37 +177,17 @@ func (a *API) resetAdminMCPTokenAPI(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusServiceUnavailable, "管理 MCP 未初始化")
 		return
 	}
-	token, err := a.resetAdminMCPToken()
+	readToken, writeToken, err := a.resetAdminMCPToken()
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	jsonOK(w, map[string]any{
-		"success":     true,
-		"token":       token,
-		"config_json": a.buildMCPConfigJSON(r, token),
-		"notice":      "旧令牌已失效；新令牌明文只显示这一次",
+		"success":        true,
+		"readonly_token": readToken,
+		"writable_token": writeToken,
+		"notice":         "旧令牌已失效；新令牌明文只显示这一次",
 	})
-}
-
-// buildMCPConfigJSON 生成通用的 mcpServers 配置片段，带鉴权头。
-func (a *API) buildMCPConfigJSON(r *http.Request, token string) string {
-	cfg := map[string]any{
-		"mcpServers": map[string]any{
-			"ai-gateway-admin": map[string]any{
-				"type": "http",
-				"url":  a.adminMCPAccessURL(r),
-				"headers": map[string]string{
-					"Authorization": "Bearer " + token,
-				},
-			},
-		},
-	}
-	raw, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return ""
-	}
-	return string(raw)
 }
 
 // boolText 把布尔值转为落库形式 "1"/"0"。

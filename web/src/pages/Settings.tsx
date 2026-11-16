@@ -33,19 +33,20 @@ export default function Settings() {
 
   // 管理 MCP：把网关自身能力暴露为 /admin/mcp
   const adminMCP = useQuery({ queryKey: ['admin-mcp'], queryFn: api.adminMCPState })
-  // 当前页面上已拿到明文令牌时的配置片段（只在此次会话内保留，刷新即消失）
-  const [mcpConfig, setMcpConfig] = useState<string>('')
-  const [mcpToken, setMcpToken] = useState<string>('')
+  // 本次会话内拿到的明文令牌（刷新即消失，不落任何存储）
+  const [mcpTokens, setMcpTokens] = useState<{ readonly: string; writable: string }>({
+    readonly: '',
+    writable: '',
+  })
 
   const saveAdminMCP = useMutation({
-    mutationFn: (patch: { enabled?: boolean; writable?: boolean }) => {
+    mutationFn: (patch: { enabled?: boolean }) => {
       const cur = adminMCP.data
-      return api.saveAdminMCP(patch.enabled ?? cur?.enabled ?? false, patch.writable ?? cur?.writable ?? false)
+      return api.saveAdminMCP(patch.enabled ?? cur?.enabled ?? false)
     },
     onSuccess: (res) => {
-      if (res.token && res.config_json) {
-        setMcpToken(res.token)
-        setMcpConfig(res.config_json)
+      if (res.readonly_token || res.writable_token) {
+        setMcpTokens({ readonly: res.readonly_token ?? '', writable: res.writable_token ?? '' })
         toast('ok', res.notice || '管理 MCP 已开启')
       } else {
         toast('ok', '管理 MCP 设置已保存')
@@ -58,8 +59,7 @@ export default function Settings() {
   const resetAdminMCP = useMutation({
     mutationFn: () => api.resetAdminMCPToken(),
     onSuccess: (res) => {
-      if (res.token) setMcpToken(res.token)
-      if (res.config_json) setMcpConfig(res.config_json)
+      setMcpTokens({ readonly: res.readonly_token ?? '', writable: res.writable_token ?? '' })
       toast('ok', res.notice || '管理令牌已重置')
       void queryClient.invalidateQueries({ queryKey: ['admin-mcp'] })
     },
@@ -230,63 +230,86 @@ export default function Settings() {
             />
           </Field>
 
-          <Field
-            label="允许写操作"
-            hint="关闭时只读；开启后可签发密钥、修改渠道等"
-          >
-            <Segmented
-              value={adminMCP.data?.writable ? 'on' : 'off'}
-              onChange={(v) => saveAdminMCP.mutate({ writable: v === 'on' })}
-              options={[
-                { value: 'on', label: '开启' },
-                { value: 'off', label: '关闭' },
-              ]}
-            />
-          </Field>
-
           {adminMCP.data ? (
             <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              当前可见工具 {adminMCP.data.tool_count} 个
-              {adminMCP.data.enabled ? '' : '（服务未启用，客户端无法连接）'}；令牌
-              {adminMCP.data.has_token ? '已生成' : '尚未生成，开启后自动生成'}。
+              只读令牌可用 {adminMCP.data.readonly_tool_count} 个查询类工具；读写令牌可用全部{' '}
+              {adminMCP.data.tool_count} 个工具（含签发密钥、修改渠道等写操作）。
+              {adminMCP.data.enabled ? '' : '服务未启用，客户端暂时无法连接。'}
             </p>
           ) : null}
 
-          {mcpConfig ? (
-            <div className="space-y-2">
-              <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-300">
-                令牌明文仅显示一次，请立即复制保存；遗失后只能重置。
+          {mcpTokens.readonly || mcpTokens.writable ? (
+            <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-900 dark:bg-amber-950">
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                令牌明文只显示这一次，请立即复制保存；遗失后只能重置。
               </p>
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
-                  MCP 客户端配置
-                </span>
-                <div className="flex gap-2">
-                  <Button variant="ghost" onClick={() => void copyText(mcpConfig, '配置')}>
-                    复制配置
-                  </Button>
-                  <Button variant="ghost" onClick={() => void copyText(mcpToken, '令牌')}>
-                    复制令牌
-                  </Button>
-                </div>
-              </div>
-              <pre className="max-h-64 overflow-auto rounded-lg bg-zinc-900 p-3 text-xs leading-relaxed text-zinc-100">
-                {mcpConfig}
-              </pre>
+              {(
+                [
+                  ['readonly', '只读令牌', mcpTokens.readonly],
+                  ['writable', '读写令牌', mcpTokens.writable],
+                ] as const
+              ).map(([key, label, value]) =>
+                value ? (
+                  <div key={key} className="flex items-center gap-2">
+                    <span className="w-16 shrink-0 text-xs text-amber-700 dark:text-amber-300">{label}</span>
+                    <code className="min-w-0 flex-1 truncate rounded bg-white/70 px-2 py-1 font-mono text-xs text-zinc-700 dark:bg-black/30 dark:text-zinc-200">
+                      {value}
+                    </code>
+                    <Button variant="ghost" onClick={() => void copyText(value, label)}>
+                      复制
+                    </Button>
+                  </div>
+                ) : null,
+              )}
             </div>
           ) : null}
+
+          <div className="space-y-2">
+            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">客户端示例</span>
+            {(
+              [
+                ['readonly', '只读令牌（仅查询）', 'amcp_你的只读令牌', adminMCP.data?.has_readonly_token],
+                ['writable', '读写令牌（全部工具）', 'amcp_你的读写令牌', adminMCP.data?.has_writable_token],
+              ] as const
+            ).map(([key, label, placeholder, has]) => {
+              const example = adminMCPExample(
+                adminMCP.data?.access_url ?? 'http://127.0.0.1:8787/admin/mcp',
+                placeholder,
+              )
+              return (
+                <details key={key} className="rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+                  <summary className="cursor-pointer text-sm text-zinc-700 dark:text-zinc-200">
+                    {label}
+                    <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
+                      {has ? '已生成' : '未生成，开启或重置后自动补齐'}
+                    </span>
+                  </summary>
+                  <div className="mt-2 space-y-2">
+                    <pre className="max-h-64 overflow-auto rounded-lg bg-zinc-900 p-3 text-xs leading-relaxed text-zinc-100">
+                      {example}
+                    </pre>
+                    <div className="flex justify-end">
+                      <Button variant="ghost" onClick={() => void copyText(example, `${label}示例`)}>
+                        复制示例
+                      </Button>
+                    </div>
+                  </div>
+                </details>
+              )
+            })}
+          </div>
 
           <div className="flex items-center gap-3">
             <Button
               variant="ghost"
               disabled={!adminMCP.data?.enabled || resetAdminMCP.isPending}
               onClick={() => {
-                if (window.confirm('重置后旧令牌立即失效，所有已配置的客户端需要更新令牌。确定继续？')) {
+                if (window.confirm('重置后两枚旧令牌立即失效，所有已配置的客户端需要更新令牌。确定继续？')) {
                   resetAdminMCP.mutate()
                 }
               }}
             >
-              重置令牌
+              重置两枚令牌
             </Button>
           </div>
         </div>
@@ -560,5 +583,23 @@ export default function Settings() {
         </div>
       </Card>
     </div>
+  )
+}
+
+// adminMCPExample 生成通用 mcpServers 配置片段。
+// 令牌用占位符，避免明文出现在可随时展开的示例里；使用时替换成自己的令牌。
+function adminMCPExample(url: string, tokenPlaceholder: string) {
+  return JSON.stringify(
+    {
+      mcpServers: {
+        'ai-gateway-admin': {
+          type: 'http',
+          url,
+          headers: { Authorization: `Bearer ${tokenPlaceholder}` },
+        },
+      },
+    },
+    null,
+    2,
   )
 }

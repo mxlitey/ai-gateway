@@ -16,22 +16,19 @@ import (
 
 // TestInstructionsFor 验证 initialize 的说明书区分「聚合入口」与「单服务器直连」。
 func TestInstructionsFor(t *testing.T) {
-	aggregate := instructionsFor("", false)
+	aggregate := instructionsFor("")
 	if !strings.Contains(aggregate, "tools/list") || !strings.Contains(aggregate, "structuredContent.error") {
 		t.Fatalf("聚合入口说明书不完整: %s", aggregate)
 	}
 
-	single := instructionsFor("image-generation", false)
+	single := instructionsFor("image-generation")
 	if !strings.Contains(single, "image-generation") || !strings.Contains(single, "tools/call") {
 		t.Fatalf("直连说明书不完整: %s", single)
 	}
 
+	// 图床说明只在直连入口追加（且由 upstream 是否带 instructions 决定），聚合入口不追加
 	if strings.Contains(aggregate, "/v1/images/uploads") {
-		t.Fatalf("图床关闭时不应介绍上传接口: %s", aggregate)
-	}
-	withHost := instructionsFor("", true)
-	if !strings.Contains(withHost, "/v1/images/uploads") || !strings.Contains(withHost, "/v1/images/host") {
-		t.Fatalf("图床开启时缺少直传说明: %s", withHost)
+		t.Fatalf("聚合入口不应追加图床说明: %s", aggregate)
 	}
 }
 
@@ -150,5 +147,9 @@ func TestHandleInitializeAggregate(t *testing.T) {
 	}
 	if !strings.Contains(out.Result.Instructions, "tools/list") {
 		t.Fatalf("聚合说明书缺少调用指引: %s", out.Result.Instructions)
+	}
+	// 聚合入口只拼接上游说明，不追加网关图床说明
+	if strings.Contains(out.Result.Instructions, "/v1/images/uploads") {
+		t.Fatalf("聚合入口不应追加图床说明: %s", out.Result.Instructions)
 	}
 }

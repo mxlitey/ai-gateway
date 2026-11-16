@@ -142,7 +142,7 @@ func (h *Handler) handleInitialize(w http.ResponseWriter, r *http.Request, req r
 		"name":    "ai-gateway-mcp",
 		"version": "1.1.0",
 	}
-	instructions := instructionsFor(alias, h.imageHostEnabled())
+	instructions := instructionsFor(alias)
 
 	if err == nil {
 		switch {
@@ -159,7 +159,7 @@ func (h *Handler) handleInitialize(w http.ResponseWriter, r *http.Request, req r
 					}
 				}
 				if text := strings.TrimSpace(info.Instructions); text != "" {
-					instructions = text + imageHostSection(h.imageHostEnabled())
+					instructions = text
 				}
 			}
 		case alias == "" && len(servers) > 0:
@@ -195,25 +195,20 @@ func (h *Handler) aggregateInstructions(r *http.Request, servers []model.MCPServ
 		sections = append(sections, "## "+srv.Name+"\n"+text)
 	}
 	if len(sections) == 0 {
-		return instructionsFor("", h.imageHostEnabled())
+		return instructionsFor("")
 	}
 	text := "以下是各上游 MCP 服务器自己的使用说明（按服务器分段）。" +
 		"聚合入口的工具名格式为「服务器别名__上游工具名」（如 image-generation__generate_image），" +
 		"先调用 tools/list 获取真实工具名与参数，再调用 tools/call。\n\n" +
-		strings.Join(sections, "\n\n") + imageHostSection(h.imageHostEnabled())
+		strings.Join(sections, "\n\n")
 	if len(text) > maxLen {
 		text = text[:maxLen] + "\n…（说明书过长已截断，以 tools/list 为准）"
 	}
 	return text
 }
 
-// imageHostEnabled 读取图床开关，用于决定说明书中是否介绍直传能力。
-func (h *Handler) imageHostEnabled() bool {
-	return h.svc != nil && h.svc.cfg != nil && h.svc.cfg.ImageHost
-}
-
-// instructionsFor 生成 initialize 的说明书，让客户端不依赖外部文档也能上手。
-func instructionsFor(alias string, imageHost bool) string {
+// instructionsFor 生成聚合入口的说明书：只讲调用方式，图床能力由工具描述承载。
+func instructionsFor(alias string) string {
 	text := "AI Gateway 把多个上游 MCP 服务器的工具聚合在一个入口，工具名可能带服务器前缀。" +
 		"先调用 tools/list 获取工具与参数说明，再调用 tools/call；" +
 		"失败时返回 isError=true，错误详情在 structuredContent.error（含 code / retryable / upstream_status）。"
@@ -221,23 +216,7 @@ func instructionsFor(alias string, imageHost bool) string {
 		text = "当前直连 MCP 服务器 " + alias + "。先调用 tools/list 查看工具名与参数说明，" +
 			"再调用 tools/call；失败时返回 isError=true，错误详情在 structuredContent.error（含 code / retryable）。"
 	}
-	if !imageHost {
-		return text
-	}
-	return text + imageHostSection(true)
-}
-
-// imageHostSection 网关内置图床的说明片段，拼接在上游说明书之后。
-func imageHostSection(enabled bool) string {
-	if !enabled {
-		return ""
-	}
-	// 图床是网关自身能力，不经过 MCP，因此不受 8 MB 请求体限制。
-	return "\n\n网关内置图床（默认开启）：直接 HTTP 调用网关，不经过 MCP，不受 8 MB 请求体限制。" +
-		"上传 POST <网关地址>/v1/images/uploads，Authorization: Bearer <调用 MCP 时同一把 sk- 密钥>，" +
-		"Content-Type 为 image/png|jpeg|webp|gif，请求体是图片原始字节（不是 multipart/form-data），" +
-		"单张默认上限 100 MB，返回 {id,url,expires_at,...}，链接有时效。" +
-		"能力查询 GET <网关地址>/v1/images/host，删除 DELETE <网关地址>/v1/uploads/<id>。"
+	return text
 }
 
 // negotiateVersion 取交集：客户端声明的版本受支持就用它，否则回退到最新版本。

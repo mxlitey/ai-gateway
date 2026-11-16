@@ -29,10 +29,13 @@ const (
 
 	// 管理 MCP（/admin/mcp）：把网关自身的管理能力暴露为 MCP 工具。
 	// 与 RuntimeSettings 分开存：这几项含凭据摘要，不参与整体覆盖式保存。
-	SettingAdminMCPEnabled  = "admin_mcp.enabled"
+	SettingAdminMCPEnabled = "admin_mcp.enabled"
+	// SettingAdminMCPReadOnlyTokenHash / SettingAdminMCPTokenHash 两枚令牌的 SHA-256 摘要（十六进制），明文不落库。
+	// 只读令牌只能调用查询类工具，读写令牌可调用全部工具。
+	SettingAdminMCPReadOnlyTokenHash = "admin_mcp.readonly_token_hash"
+	SettingAdminMCPTokenHash         = "admin_mcp.token_hash"
+	// SettingAdminMCPWritable 旧版「是否允许写操作」开关，现已由令牌区分权限，仅用于识别旧版单令牌的档位。
 	SettingAdminMCPWritable = "admin_mcp.writable"
-	// SettingAdminMCPTokenHash 管理令牌的 SHA-256 摘要（十六进制），明文不落库。
-	SettingAdminMCPTokenHash = "admin_mcp.token_hash"
 )
 
 // RuntimeSettings 运行期设置：面板可改，多数立即生效（无需重启）。

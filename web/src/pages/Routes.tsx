@@ -3,23 +3,31 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { api, type ProbeResult, type RouteGroup } from '../lib/api'
 import { toast } from '../lib/toast'
-import { Badge, Button, Card, Empty, ErrorText, Input, Loading, Modal, Segmented, Switch } from '../components/ui'
+import { Badge, Button, Card, Empty, ErrorText, Loading, Modal, Segmented, Switch } from '../components/ui'
 
 export default function ModelRoutes() {
   const queryClient = useQueryClient()
   const routes = useQuery({ queryKey: ['routes'], queryFn: api.routes })
   // 对话模型与生图模型分开展示
   const [tab, setTab] = useState<'chat' | 'image'>('chat')
-  // key = `${model}::${channelId}` -> 输入框中的字符串
-  const [draft, setDraft] = useState<Record<string, string>>({})
   const [diag, setDiag] = useState<{ model: string; targets: Record<string, boolean> } | null>(null)
   const [probeRows, setProbeRows] = useState<ProbeResult[] | null>(null)
 
-  const save = useMutation({
-    mutationFn: (p: { channelId: string; model: string; priority: number }) =>
-      api.setPriority(p.channelId, p.model, p.priority),
+  // 顺序即优先级：上移/下移后把整组重写成 n-1..0，只提交真正变化的行
+  const reorder = useMutation({
+    mutationFn: async (p: { model: string; routes: RouteGroup['routes']; from: number; to: number }) => {
+      const next = [...p.routes]
+      const [moved] = next.splice(p.from, 1)
+      next.splice(p.to, 0, moved)
+      const changes = next
+        .map((route, i) => ({ route, priority: next.length - 1 - i }))
+        .filter(({ route, priority }) => route.priority !== priority)
+      await Promise.all(
+        changes.map(({ route, priority }) => api.setPriority(route.channel_id, p.model, priority)),
+      )
+    },
     onSuccess: async () => {
-      toast('ok', '优先级已保存')
+      toast('ok', '优先级已更新')
       await queryClient.invalidateQueries({ queryKey: ['routes'] })
       await queryClient.invalidateQueries({ queryKey: ['channels'] })
     },
@@ -43,6 +51,12 @@ export default function ModelRoutes() {
     },
     onError: (err: Error) => toast('err', err.message),
   })
+
+  // 复制对外模型名，便于直接填到客户端配置里
+  const copyModel = async (model: string) => {
+    if (await writeClipboard(model)) toast('ok', '已复制模型名 ' + model)
+    else toast('err', '复制失败，请手动选中复制')
+  }
 
   if (routes.isLoading) return <Loading />
   if (routes.isError) return <ErrorText text={(routes.error as Error).message} />
@@ -121,7 +135,31 @@ export default function ModelRoutes() {
           {visibleGroups.map((group) => (
             <Card
               key={group.model}
-              title={<code className="text-sm">{group.model}</code>}
+              title={
+                <span className="flex min-w-0 items-center gap-1">
+                  <code className="truncate text-sm">{group.model}</code>
+                  <button
+                    type="button"
+                    onClick={() => copyModel(group.model)}
+                    title="复制模型名"
+                    aria-label="复制模型名"
+                    className="flex-none rounded-md p-1 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                  >
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 16 16"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinejoin="round"
+                    >
+                      <rect x="5.5" y="5.5" width="8.5" height="8.5" rx="2.2" />
+                      <path d="M10.5 5.5V4.2A2.2 2.2 0 0 0 8.3 2H4.2A2.2 2.2 0 0 0 2 4.2v4.1a2.2 2.2 0 0 0 2.2 2.2h1.3" />
+                    </svg>
+                  </button>
+                </span>
+              }
               action={
                 <Button variant="ghost" className="px-2 py-0.5 text-xs" onClick={() => openDiag(group.model)}>
                   诊断
@@ -129,28 +167,24 @@ export default function ModelRoutes() {
               }
             >
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[34rem] table-fixed text-sm">
+                <table className="w-full min-w-[32rem] table-fixed text-sm">
                   <colgroup>
-                    <col className="w-[26%]" />
-                    <col className="w-[30%]" />
-                    <col className="w-[13%]" />
-                    <col className="w-[17%]" />
-                    <col className="w-[14%]" />
+                    <col className="w-[7rem]" />
+                    <col />
+                    <col className="w-[7.5rem]" />
+                    <col className="w-[7rem]" />
                   </colgroup>
                   <thead>
                     <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800">
                       <th className="py-2 pr-3 font-medium">渠道</th>
                       <th className="py-2 pr-3 font-medium">上游模型</th>
                       <th className="py-2 pr-3 font-medium">状态</th>
-                      <th className="py-2 pr-3 font-medium">优先级</th>
-                      <th className="py-2 font-medium">操作</th>
+                      <th className="py-2 font-medium">优先级</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {group.routes.map((route) => {
-                      const key = `${group.model}::${route.channel_id}`
-                      const value = draft[key] ?? String(route.priority)
-                      const changed = value !== String(route.priority)
+                    {group.routes.map((route, index) => {
+                      const last = group.routes.length - 1
                       return (
                         <tr
                           key={route.channel_id}
@@ -191,33 +225,74 @@ export default function ModelRoutes() {
                               />
                               {/* 模型本身启用、但渠道停用或无可用密钥时，模型实际不可用 */}
                               {!route.model_disabled && !route.enabled ? (
-                                <span className="text-xs text-zinc-400 dark:text-zinc-500">
+                                <span className="truncate text-xs text-zinc-400 dark:text-zinc-500">
                                   渠道不可用
                                 </span>
                               ) : null}
                             </div>
                           </td>
-                          <td className="py-2 pr-3">
-                            <Input
-                              className="w-full"
-                              value={value}
-                              onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
-                            />
-                          </td>
                           <td className="py-2">
-                            <Button
-                              variant={changed ? 'primary' : 'ghost'}
-                              disabled={!changed || save.isPending}
-                              onClick={() =>
-                                save.mutate({
-                                  channelId: route.channel_id,
-                                  model: group.model,
-                                  priority: Number(value) || 0,
-                                })
-                              }
-                            >
-                              保存
-                            </Button>
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-4 text-right text-xs tabular-nums text-zinc-400 dark:text-zinc-500">
+                                {index + 1}
+                              </span>
+                              <button
+                                type="button"
+                                title="上移，提升优先级"
+                                aria-label="上移，提升优先级"
+                                disabled={index === 0 || reorder.isPending}
+                                onClick={() =>
+                                  reorder.mutate({
+                                    model: group.model,
+                                    routes: group.routes,
+                                    from: index,
+                                    to: index - 1,
+                                  })
+                                }
+                                className="rounded-md border border-zinc-200 p-1 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                              >
+                                <svg
+                                  width="12"
+                                  height="12"
+                                  viewBox="0 0 16 16"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M4 10l4-4 4 4" />
+                                </svg>
+                              </button>
+                              <button
+                                type="button"
+                                title="下移，降低优先级"
+                                aria-label="下移，降低优先级"
+                                disabled={index === last || reorder.isPending}
+                                onClick={() =>
+                                  reorder.mutate({
+                                    model: group.model,
+                                    routes: group.routes,
+                                    from: index,
+                                    to: index + 1,
+                                  })
+                                }
+                                className="rounded-md border border-zinc-200 p-1 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700 disabled:opacity-40 disabled:hover:bg-transparent dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                              >
+                                <svg
+                                  width="12"
+                                  height="12"
+                                  viewBox="0 0 16 16"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.8"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                >
+                                  <path d="M4 6l4 4 4-4" />
+                                </svg>
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       )
@@ -335,4 +410,29 @@ export default function ModelRoutes() {
       ) : null}
     </div>
   )
+}
+
+// writeClipboard 优先用剪贴板 API，失败（如局域网 IP 经 http 访问时非安全上下文）再回退 execCommand。
+async function writeClipboard(text: string): Promise<boolean> {
+  if (window.isSecureContext && navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // 继续尝试回退方案
+    }
+  }
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.cssText = 'position:fixed;top:-1000px;opacity:0'
+  document.body.appendChild(ta)
+  ta.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  document.body.removeChild(ta)
+  return ok
 }

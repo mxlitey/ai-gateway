@@ -28,7 +28,7 @@ type WriteDeps struct {
 // RegisterWriteTools 注册第二梯队：3 个只读 + 5 个会触达外部的工具。
 //
 // 其中 reset_key_cooldown / issue_api_key / create_channel / update_channel / restart_plugin
-// 属于写操作，仅在「允许写操作」开启后可见可调用。
+// 属于写操作，只在读写令牌下可见可调用；只读令牌调用会直接报错。
 func RegisterWriteTools(s *Server, d WriteDeps) {
 	registerListPluginsTool(s, d)
 	registerListMCPServersTool(s, d)

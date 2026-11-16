@@ -343,24 +343,26 @@ export type PythonSettingsResponse = {
   settings: PythonSettings
 }
 
-/** 管理 MCP 的运行状态：开关、写权限、令牌是否存在、可用工具清单。 */
+/** 管理 MCP 的运行状态：开关、两档令牌是否存在、可用工具清单。 */
 export type AdminMCPState = {
   enabled: boolean
-  writable: boolean
-  has_token: boolean
+  has_readonly_token: boolean
+  has_writable_token: boolean
   endpoint: string
   access_url: string
+  /** 读写令牌可见的工具数 */
   tool_count: number
+  /** 只读令牌可见的工具数 */
+  readonly_tool_count: number
   tools: string[]
 }
 
-/** 保存管理 MCP 开关的响应；首次启用或重置令牌时会带回明文令牌与配置片段。 */
+/** 保存管理 MCP 开关的响应；首次启用或重置令牌时会带回新生成的明文令牌。 */
 export type AdminMCPSaveResult = {
   success: boolean
   enabled: boolean
-  writable: boolean
-  token?: string
-  config_json?: string
+  readonly_token?: string
+  writable_token?: string
   notice?: string
 }
 
@@ -638,10 +640,10 @@ export const api = {
 
   // 管理 MCP：把网关自身能力暴露为独立 MCP 服务器（/admin/mcp）
   adminMCPState: () => request<AdminMCPState>('/admin/api/admin-mcp'),
-  saveAdminMCP: (enabled: boolean, writable: boolean) =>
+  saveAdminMCP: (enabled: boolean) =>
     request<AdminMCPSaveResult>('/admin/api/admin-mcp', {
       method: 'PUT',
-      ...json({ enabled, writable }),
+      ...json({ enabled }),
     }),
   resetAdminMCPToken: () =>
     request<AdminMCPSaveResult>('/admin/api/admin-mcp/token', { method: 'POST', ...json({}) }),

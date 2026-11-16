@@ -1,0 +1,9 @@
+{
+  "name": "Qoder",
+  "version": "1.0.0",
+  "description": "把 Qoder 账号接入网关：设备授权 / PAT 登录、多账号管理、每日签到、额度查询与 OpenAI 兼容对话转发",
+  "entry": "main.py",
+  "startup_timeout_ms": 30000,
+  "console": true,
+  "capabilities": ["checkin", "quota"]
+}

@@ -182,10 +182,10 @@ export default function V2Dashboard() {
 
   const s = model?.s
 
-  // 按模型横条：分别取费用与请求的最大值，让两条进度条各自可比
+  // 按模型横条：以全部模型的总和为分母，两条各自表示费用占比与请求占比
   const modelBuckets = s?.by_model ?? []
-  const maxModelCost = Math.max(1, ...modelBuckets.map((b) => b.cost))
-  const maxModelReq = Math.max(1, ...modelBuckets.map((b) => b.requests))
+  const totalModelCost = modelBuckets.reduce((sum, b) => sum + b.cost, 0)
+  const totalModelReq = modelBuckets.reduce((sum, b) => sum + b.requests, 0)
   const errorGroups = errors.data?.channels ?? []
 
   return (
@@ -352,7 +352,7 @@ export default function V2Dashboard() {
                   <div className="mb-bar">
                     <i
                       style={{
-                        width: `${Math.min(100, (b.cost / maxModelCost) * 100)}%`,
+                        width: `${totalModelCost > 0 ? (b.cost / totalModelCost) * 100 : 0}%`,
                         background: 'var(--brand)',
                       }}
                     />
@@ -360,7 +360,7 @@ export default function V2Dashboard() {
                   <div className="mb-bar">
                     <i
                       style={{
-                        width: `${Math.min(100, (b.requests / maxModelReq) * 100)}%`,
+                        width: `${totalModelReq > 0 ? (b.requests / totalModelReq) * 100 : 0}%`,
                         background: 'var(--s1)',
                       }}
                     />

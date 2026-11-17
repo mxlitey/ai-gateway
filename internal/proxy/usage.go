@@ -95,6 +95,19 @@ func (r *Recorder) nextAttempt(t routing.Target) *Recorder {
 	return n
 }
 
+// MarkNonStream 标记本次上游实际返回的不是流式响应。
+//
+// 客户端可能请求了 stream:true，但上游一次性返回全文（常见于插件渠道降级）。
+// 这种调用没有「首字」概念，记录按非流式展示，也不参与渠道卡片的 TTFT 与输出速度统计。
+func (r *Recorder) MarkNonStream() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.row.Stream = false
+	r.mu.Unlock()
+}
+
 // Finish 记录终态；已写入的非空字段不会被覆盖。
 func (r *Recorder) Finish(status int, message string) {
 	if r == nil {

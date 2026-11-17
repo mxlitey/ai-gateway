@@ -224,18 +224,7 @@ export default function V2Usage() {
       ) : null}
 
       <div className="v2grid g4">
-        <Kpi
-          label="上游请求"
-          value={fmtInt(s.requests)}
-          sub={
-            s.failed_requests > 0
-              ? `失败 ${fmtInt(s.failed_requests)} 次 · 成功率 ${(
-                  ((s.success_requests / s.requests) * 100) || 0
-                ).toFixed(1)}%`
-              : '全部成功'
-          }
-          subTone={s.failed_requests > 0 ? 'warn' : undefined}
-        />
+        <Kpi label="上游请求" value={fmtInt(s.requests)} />
         <Kpi label="总 Token" value={fmtCompact(s.total_tokens)} />
         <Kpi label="缓存命中率" value={cacheHitRate} />
         <Kpi label="市场价" value={fmtCost(s.cost)} />
@@ -298,15 +287,6 @@ export default function V2Usage() {
                         <Badge tone={r.success ? 'ok' : 'warn'}>
                           {r.status === 0 ? '网络' : r.status}
                         </Badge>
-                        {!r.success && r.error ? (
-                          <span
-                            className="faint truncate"
-                            title={r.error}
-                            style={{ display: 'block', fontSize: 10, maxWidth: '10rem' }}
-                          >
-                            {r.error}
-                          </span>
-                        ) : null}
                       </td>
                       <td className="r num tiny">{fmtInt(Math.max(0, r.prompt_tokens - r.cached_tokens))}</td>
                       <td className="r num tiny">{fmtInt(r.cached_tokens)}</td>
@@ -358,17 +338,7 @@ export default function V2Usage() {
   )
 }
 
-function Kpi({
-  label,
-  value,
-  sub,
-  subTone,
-}: {
-  label: string
-  value: string
-  sub?: string
-  subTone?: 'warn' | 'bad' | 'ok'
-}) {
+function Kpi({ label, value }: { label: string; value: string }) {
   return (
     <div className="panel" style={{ padding: '11px 13px' }}>
       <div className="tiny" style={{ color: 'var(--text-2)' }}>
@@ -377,24 +347,6 @@ function Kpi({
       <div className="num" style={{ fontSize: 19, fontWeight: 600, marginTop: 1 }}>
         {value}
       </div>
-      {sub ? (
-        <div
-          className="tiny"
-          style={{
-            marginTop: 1,
-            color:
-              subTone === 'bad'
-                ? 'var(--danger)'
-                : subTone === 'warn'
-                  ? 'var(--warn)'
-                  : subTone === 'ok'
-                    ? 'var(--ok)'
-                    : 'var(--text-2)',
-          }}
-        >
-          {sub}
-        </div>
-      ) : null}
     </div>
   )
 }

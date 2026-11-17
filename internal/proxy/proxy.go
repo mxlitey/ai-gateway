@@ -634,6 +634,9 @@ func (h *Handler) openaiUpstreamResponse(up *http.Response, t routing.Target, up
 
 	if isStream {
 		slog.Warn("[proxy] 上游对 stream:true 返回了非 SSE 响应，回退到非流式校验", "content_type", ct)
+		// 客户端请求了流式，但上游一次性返回全文：这条记录按非流式展示，
+		// 否则明细里会标成「流式」却没有首字耗时，且污染渠道卡片的 TTFT/速度均值。
+		rec.MarkNonStream()
 	}
 
 	// 非流式：校验 chat/completions 的 200 响应体

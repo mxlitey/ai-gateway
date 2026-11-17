@@ -107,6 +107,8 @@ func (h *Handler) claudeUpstreamResponse(up *http.Response, t routing.Target, mo
 
 	if isStream {
 		slog.Warn("[proxy][claude] 上游对 stream:true 返回了非 SSE 响应，回退到非流式校验", "content_type", ct)
+		// 同 OpenAI 路径：按非流式记录，避免明细标「流式」却没有首字耗时
+		rec.MarkNonStream()
 	}
 
 	raw, err := io.ReadAll(up.Body)

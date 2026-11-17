@@ -408,6 +408,7 @@ func (h *Handler) recordJobUsage(job *store.ImageJob) {
 		Endpoint:    "images",
 		Model:       job.Model,
 		Status:      http.StatusOK,
+		Attempts:    1,
 		PriceSource: pricing.SourceNone,
 	}
 	if key, err := h.store.GetAPIKey(job.APIKeyID); err == nil && key != nil {

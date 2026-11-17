@@ -2,6 +2,7 @@ package adminmcp
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -36,7 +37,7 @@ func RegisterReadTools(s *Server, d ReadDeps) {
 
 func registerUsageTool(s *Server, d ReadDeps) {
 	s.Tools("get_usage_summary",
-		"查询指定时间区间内的用量与费用汇总：请求数、成功/失败数、各类 token 用量、总费用，并按模型、渠道、API 密钥、上游密钥、日期分组。默认最近 7 天。",
+		"查询指定时间区间内的上游调用与费用汇总：请求数、成功/失败数、成功率、各类 token 用量、总费用，并按模型、渠道、API 密钥、上游密钥、日期分组。默认最近 7 天。请求数按实际发往上游的次数统计，故障转移的每次尝试分别计数；网关级拒绝不算。成功率 = success_requests / requests。",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -64,6 +65,8 @@ func registerUsageTool(s *Server, d ReadDeps) {
 				"to":      to,
 				"days":    days,
 				"summary": sum,
+				// 成功率直接给出，避免调用方拿 success_requests / requests 自己算时漏掉失败请求
+				"success_rate": successRate(sum.SuccessRequests, sum.Requests),
 			}, nil
 		})
 }
@@ -72,7 +75,7 @@ func registerUsageTool(s *Server, d ReadDeps) {
 
 func registerUsageLogsTool(s *Server, d ReadDeps) {
 	s.Tools("get_usage_logs",
-		"分页查询逐条请求记录（时间倒序）：每次调用的模型、渠道、上游密钥、状态、耗时、token 用量与费用。用于定位具体哪次请求失败或花了多少钱。",
+		"分页查询逐条上游调用记录（时间倒序）：每次实际请求的模型、渠道、上游密钥、状态、耗时、token 用量与费用。故障转移的每次尝试分别记录，成功与失败都会出现（success=false 表示失败）；网关级拒绝不在此表。",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -130,7 +133,7 @@ func registerUsageLogsTool(s *Server, d ReadDeps) {
 
 func registerUsageSeriesTool(s *Server, d ReadDeps) {
 	s.Tools("get_usage_series",
-		"按时间桶返回用量趋势（请求数、token、费用），用于观察峰值与波动。bucket 可选 hour / day，默认 day。",
+		"按时间桶返回上游调用趋势（请求数、成功数、token、费用），用于观察峰值与波动。bucket 可选 hour / day，默认 day。每个桶的 requests 含失败请求，success_requests 为其中成功的部分；故障转移的每次上游尝试分别计数。",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -477,6 +480,17 @@ func argInt64(args map[string]any, key string, def int64) int64 {
 		return t
 	}
 	return def
+}
+
+// successRate 返回成功率百分比（0-100，保留一位小数）；没有请求时返回 0。
+//
+// 请求数包含失败请求，因此直接相除即可；单独封装是为了让 MCP 调用方不必自己算，
+// 避免出现「只有成功数据、失败数据在另一张表」时算出 100% 的错觉。
+func successRate(success, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return math.Round(float64(success)/float64(total)*1000) / 10
 }
 
 func clampInt(v, low, high int) int {

@@ -222,9 +222,12 @@ export type RequestLogItem = {
 
 export type UsageBucket = {
   key: string
+  /** 请求数，包含失败请求（失败的那次调用也算一次） */
   requests: number
-  /** 成功请求数；趋势桶与分组都会返回 */
+  /** 其中成功的请求数；趋势桶与分组都会返回 */
   success_requests: number
+  /** 其中失败的请求数 = requests - success_requests */
+  failed_requests: number
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number

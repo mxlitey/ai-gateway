@@ -356,8 +356,8 @@ type ErrorLog struct {
 	CreatedAt     int64  `json:"created_at"`
 }
 
-// RequestLog 一次 /v1 调用的最终结果（含用量与估算费用）。
-// 同一次请求的多目标故障转移只落一条记录，attempts 表示尝试过的目标数。
+// RequestLog 一次「网关 → 上游」请求的最终结果（含用量与估算费用）。
+// 每次故障转移都实际请求了一次上游，因此分别落一条记录；网关级拒绝不记录。
 type RequestLog struct {
 	ID               int64   `json:"id"`
 	CreatedAt        int64   `json:"created_at"`
@@ -437,10 +437,12 @@ type ModelPrice struct {
 }
 
 // UsageBucket 用量汇总的一个分组。
+// Requests 包含失败请求（失败的那次调用也算一次），SuccessRequests 是其中成功的部分。
 type UsageBucket struct {
 	Key              string  `json:"key"`
 	Requests         int64   `json:"requests"`
 	SuccessRequests  int64   `json:"success_requests"`
+	FailedRequests   int64   `json:"failed_requests"`
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`
 	TotalTokens      int64   `json:"total_tokens"`

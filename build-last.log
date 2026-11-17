@@ -1,0 +1,282 @@
+﻿版本号: 1.3.4（来源：VERSION）
+[1/5] 构建前端 ...
+
+> ai-gateway-web@1.3.4 build
+> tsc --noEmit && vite build
+
+[36mvite v6.4.4 [32mbuilding for production...[36m[39m
+transforming...
+[32m✓[39m 109 modules transformed.
+rendering chunks...
+computing gzip size...
+[2mdist/[22m[32mindex.html                 [39m[1m[2m  0.73 kB[22m[1m[22m[2m │ gzip:   0.40 kB[22m
+[2mdist/[22m[35massets/index-CBR2UjLB.css  [39m[1m[2m 52.00 kB[22m[1m[22m[2m │ gzip:  11.05 kB[22m
+[2mdist/[22m[36massets/index-dGFPukCb.js   [39m[1m[2m458.62 kB[22m[1m[22m[2m │ gzip: 136.48 kB[22m
+[32m✓ built in 2.50s[39m
+[2/5] 解析 Go 依赖 ...
+[3/5] 编译可执行文件 ...
+  生成桌面端 bindings ...
+[4/5] 组装绿色版 ...
+  打包 Windows 绿色版与示例插件 ...
+[5/5] 构建 Docker 镜像（linux/amd64 / linux/arm64）...
+  构建 linux/amd64 -> ai-gateway:v1.3.4-amd64 ...
+powershell : #0 building with "desktop-linux" instance using docker driver
+所在位置 行:15 字符: 4588
++ ... M = 'dumb'; powershell -ExecutionPolicy Bypass -File build/build.ps1  ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (#0 building wit...g docker driver:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 4.92kB 0.0s done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:22-alpine
+#2 DONE 0.1s
+
+#3 [internal] load metadata for docker.io/library/python:3.11-slim-bookworm
+#3 DONE 0.2s
+
+#4 [internal] load metadata for docker.io/library/golang:1.26-alpine
+#4 DONE 0.2s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 552B done
+#5 DONE 0.0s
+
+#6 [web-builder 1/6] FROM docker.io/library/node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d
+73bde88481a
+#6 resolve docker.io/library/node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a 0.1
+s done
+#6 DONE 0.1s
+
+#7 [internal] load build context
+#7 transferring context: 322.65kB 0.1s done
+#7 DONE 0.1s
+
+#8 [go-builder 1/7] FROM docker.io/library/golang:1.26-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6
+ae85ddf92d02ab
+#8 resolve docker.io/library/golang:1.26-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6ae85ddf92d02ab
+ 0.1s done
+#8 DONE 0.1s
+
+#9 [stage-2 1/7] FROM docker.io/library/python:3.11-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb
+9fe43be570439e3b39
+#9 resolve docker.io/library/python:3.11-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be5704
+39e3b39 0.1s done
+#9 DONE 0.1s
+
+#10 [go-builder 3/7] COPY go.mod go.sum* ./
+#10 CACHED
+
+#11 [go-builder 2/7] WORKDIR /src
+#11 CACHED
+
+#12 [go-builder 4/7] RUN go mod download
+#12 CACHED
+
+#13 [web-builder 2/6] WORKDIR /src/web
+#13 CACHED
+
+#14 [web-builder 3/6] COPY web/package.json web/package-lock.json* ./
+#14 CACHED
+
+#15 [web-builder 4/6] RUN npm ci 2>/dev/null || npm install
+#15 CACHED
+
+#16 [web-builder 5/6] COPY web/ ./
+#16 DONE 0.1s
+
+#17 [go-builder 5/7] COPY . .
+#17 DONE 0.3s
+
+#18 [web-builder 6/6] RUN npm run build
+#18 0.725 
+#18 0.725 > ai-gateway-web@1.3.4 build
+#18 0.725 > tsc --noEmit && vite build
+#18 0.725 
+#18 6.506 vite v6.4.4 building for production...
+#18 6.606 transforming...
+#18 8.828 ✓ 109 modules transformed.
+#18 9.120 rendering chunks...
+#18 9.129 computing gzip size...
+#18 9.145 dist/index.html                   0.73 kB │ gzip:   0.40 kB
+#18 9.145 dist/assets/index-CBR2UjLB.css   52.00 kB │ gzip:  11.05 kB
+#18 9.145 dist/assets/index-dGFPukCb.js   458.62 kB │ gzip: 136.48 kB
+#18 9.146 ✓ built in 2.60s
+#18 DONE 9.2s
+
+#19 [go-builder 6/7] COPY --from=web-builder /src/web/dist ./web/dist
+#19 DONE 0.0s
+
+#20 [go-builder 7/7] RUN VERSION="1.3.4" &&     GOARCH=amd64 go build -trimpath       -ldflags "-s -w -X github.com/czg
+95/ai-gateway-v2/internal/version.Version=1.3.4"       -o /out/ai-gateway ./cmd/gateway
+#20 DONE 25.6s
+
+#21 [stage-2 2/7] RUN set -eux;     if [ -n "mirrors.aliyun.com" ]; then         if [ -f /etc/apt/sources.list.d/debian
+.sources ]; then             sed -i "s|deb.debian.org|mirrors.aliyun.com|g" /etc/apt/sources.list.d/debian.sources;    
+     else             sed -i "s|deb.debian.org|mirrors.aliyun.com|g" /etc/apt/sources.list;         fi;     fi;     apt
+-get -o Acquire::Retries=3 update;     apt-get install -y --no-install-recommends tzdata;     rm -rf /var/lib/apt/lists
+/*;     useradd --create-home --uid 10001 gateway;     mkdir -p /data /plugins /mcp;     chown -R gateway:gateway /data
+ /plugins /mcp
+#21 CACHED
+
+#22 [stage-2 3/7] COPY --from=go-builder /out/ai-gateway /usr/local/bin/ai-gateway
+#22 DONE 0.0s
+
+#23 [stage-2 4/7] COPY --chown=gateway:gateway examples/plugins/trae /plugins/trae
+#23 DONE 0.1s
+
+#24 [stage-2 5/7] COPY --chown=gateway:gateway examples/plugins/workbuddy /plugins/workbuddy
+#24 DONE 0.1s
+
+#25 [stage-2 6/7] COPY --chown=gateway:gateway examples/mcp/github-search /mcp/github-search
+#25 DONE 0.1s
+
+#26 [stage-2 7/7] COPY --chown=gateway:gateway examples/mcp/image-generation /mcp/image-generation
+#26 DONE 0.1s
+
+#27 exporting to image
+#27 exporting layers
+#27 exporting layers 0.7s done
+#27 exporting manifest sha256:b45926bfc2a4c112d249beb1f75b6a6e41632b2ffe7ffb522cbc625d3858ceda 0.0s done
+#27 exporting config sha256:f17e3e6358d265de513eae1dbd570ec52e94795035adeb33a105f29e0e061890 0.0s done
+#27 exporting attestation manifest sha256:dc9802fb5026b64387531e43d550c2fb62cef01fe55d222ef534c652de4f8ce3 0.0s done
+#27 exporting manifest list sha256:291c66b2e4282f410c06b1eadbab9cff9d4cad7a7593c078eb5f54955efc8dca 0.0s done
+#27 naming to docker.io/library/ai-gateway:v1.3.4-amd64 done
+#27 unpacking to docker.io/library/ai-gateway:v1.3.4-amd64
+#27 unpacking to docker.io/library/ai-gateway:v1.3.4-amd64 0.2s done
+#27 naming to docker.io/library/ai-gateway:latest done
+#27 unpacking to docker.io/library/ai-gateway:latest 0.0s done
+#27 DONE 1.2s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/pq1uob9m4qh6pfriq87zvao8j
+  导出镜像 -> dist/ai-gateway-v1.3.4-docker-amd64.tar ...
+  已导出: dist/ai-gateway-v1.3.4-docker-amd64.tar (50.9 MB)
+  构建 linux/arm64 -> ai-gateway:v1.3.4-arm64 ...
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 DONE 0.0s
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 4.92kB 0.0s done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/golang:1.26-alpine
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/node:22-alpine
+#3 DONE 0.0s
+
+#4 [internal] load metadata for docker.io/library/python:3.11-slim-bookworm
+#4 DONE 0.0s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 552B 0.1s done
+#5 DONE 0.2s
+
+#6 [internal] load build context
+#6 transferring context: 15.90kB 0.1s done
+#6 DONE 0.1s
+
+#7 [go-builder 1/7] FROM docker.io/library/golang:1.26-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6
+ae85ddf92d02ab
+#7 resolve docker.io/library/golang:1.26-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6ae85ddf92d02ab
+#7 resolve docker.io/library/golang:1.26-alpine@sha256:ecb67f987aa1a57794c91d19ade7ae0209f2f0f5496aaef9e6ae85ddf92d02ab
+ 0.1s done
+#7 DONE 0.1s
+
+#8 [web-builder 1/6] FROM docker.io/library/node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d
+73bde88481a
+#8 resolve docker.io/library/node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a 0.1
+s done
+#8 DONE 0.1s
+
+#9 [stage-2 1/7] FROM docker.io/library/python:3.11-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb
+9fe43be570439e3b39
+#9 resolve docker.io/library/python:3.11-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be5704
+39e3b39 0.1s done
+#9 DONE 0.1s
+
+#10 [go-builder 2/7] WORKDIR /src
+#10 CACHED
+
+#11 [go-builder 3/7] COPY go.mod go.sum* ./
+#11 CACHED
+
+#12 [go-builder 4/7] RUN go mod download
+#12 CACHED
+
+#13 [web-builder 5/6] COPY web/ ./
+#13 CACHED
+
+#14 [web-builder 4/6] RUN npm ci 2>/dev/null || npm install
+#14 CACHED
+
+#15 [web-builder 3/6] COPY web/package.json web/package-lock.json* ./
+#15 CACHED
+
+#16 [web-builder 2/6] WORKDIR /src/web
+#16 CACHED
+
+#17 [web-builder 6/6] RUN npm run build
+#17 CACHED
+
+#18 [go-builder 5/7] COPY . .
+#18 DONE 0.1s
+
+#19 [go-builder 6/7] COPY --from=web-builder /src/web/dist ./web/dist
+#19 DONE 0.0s
+
+#20 [go-builder 7/7] RUN VERSION="1.3.4" &&     GOARCH=arm64 go build -trimpath       -ldflags "-s -w -X github.com/czg
+95/ai-gateway-v2/internal/version.Version=1.3.4"       -o /out/ai-gateway ./cmd/gateway
+#20 DONE 27.6s
+
+#21 [stage-2 2/7] RUN set -eux;     if [ -n "mirrors.aliyun.com" ]; then         if [ -f /etc/apt/sources.list.d/debian
+.sources ]; then             sed -i "s|deb.debian.org|mirrors.aliyun.com|g" /etc/apt/sources.list.d/debian.sources;    
+     else             sed -i "s|deb.debian.org|mirrors.aliyun.com|g" /etc/apt/sources.list;         fi;     fi;     apt
+-get -o Acquire::Retries=3 update;     apt-get install -y --no-install-recommends tzdata;     rm -rf /var/lib/apt/lists
+/*;     useradd --create-home --uid 10001 gateway;     mkdir -p /data /plugins /mcp;     chown -R gateway:gateway /data
+ /plugins /mcp
+#21 CACHED
+
+#22 [stage-2 3/7] COPY --from=go-builder /out/ai-gateway /usr/local/bin/ai-gateway
+#22 DONE 0.1s
+
+#23 [stage-2 4/7] COPY --chown=gateway:gateway examples/plugins/trae /plugins/trae
+#23 DONE 0.1s
+
+#24 [stage-2 5/7] COPY --chown=gateway:gateway examples/plugins/workbuddy /plugins/workbuddy
+#24 DONE 0.1s
+
+#25 [stage-2 6/7] COPY --chown=gateway:gateway examples/mcp/github-search /mcp/github-search
+#25 DONE 0.1s
+
+#26 [stage-2 7/7] COPY --chown=gateway:gateway examples/mcp/image-generation /mcp/image-generation
+#26 DONE 0.1s
+
+#27 exporting to image
+#27 exporting layers
+#27 exporting layers 0.7s done
+#27 exporting manifest sha256:f466521ba2119765a62a4787d7833de3ddd7d9a8a4f88403b8d796c525c30e34 0.0s done
+#27 exporting config sha256:1cfde59053a4ca3d7b72800784e1902eac669c2bcdc929c40901ea624edb6683 0.0s done
+#27 exporting attestation manifest sha256:7bb8414a4768637363d06bd0ea31d5f50e02af9f0e79bd8b9d224613475f0ef4 0.0s done
+#27 exporting manifest list sha256:7ee8d00c14f25e3d165bef66d8fc356d861a10af0b3213f01a0831463f0a4edc 0.0s done
+#27 naming to docker.io/library/ai-gateway:v1.3.4-arm64 done
+#27 DONE 0.8s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/wkcth0qwxkivf6rr29pinqtxd
+  导出镜像 -> dist/ai-gateway-v1.3.4-docker-arm64.tar ...
+  已导出: dist/ai-gateway-v1.3.4-docker-arm64.tar (50.3 MB)
+
+构建完成: dist/ai-gateway-v1.3.4.exe (1.3.4)
+Windows 绿色版: dist/ai-gateway-v1.3.4-windows-amd64.zip
+示例插件包: dist/plugins-v1.3.4.zip
+双击 dist/ai-gateway-v1.3.4.exe 即可启动并打开管理面板
+Docker 镜像（linux/amd64 / linux/arm64）已导出：
+  dist/ai-gateway-v1.3.4-docker-amd64.tar
+  dist/ai-gateway-v1.3.4-docker-arm64.tar
+  目标机器导入: docker load -i <对应架构的 tar>
+  首次启动前清空旧插件卷: docker volume rm ai-gateway-plugins -f

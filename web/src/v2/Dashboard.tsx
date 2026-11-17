@@ -90,30 +90,29 @@ export default function V2Dashboard() {
   const model = useMemo(() => {
     const s = usage.data?.summary
     if (!s) return null
-    const errorCount = (errors.data?.channels ?? []).reduce((sum, g) => sum + g.errors.length, 0)
     const cacheHit = s.prompt_tokens > 0 ? (s.cached_tokens / s.prompt_tokens) * 100 : 0
-    const errorRate = s.requests > 0 ? (errorCount / (s.requests + errorCount)) * 100 : 0
+    // 失败数直接取自用量汇总：按实际请求上游的次数统计，故障转移的每次尝试各占一条
+    const errorCount = s.failed_requests
+    const errorRate = s.requests > 0 ? (errorCount / s.requests) * 100 : 0
     return { s, errorCount, cacheHit, errorRate }
-  }, [usage.data, errors.data])
+  }, [usage.data])
 
   // 今日已到达的小时数（含当前小时，按北京时间）。主图与趋势线都只画到这里，未来时段留空。
   const cutoff = useMemo(() => bjParts().h + 1, [])
 
-  // 失败请求不会写入 request_logs（失败只进 error_logs），因此失败数必须从错误日志按小时分桶统计
+  // 失败请求与成功请求同表（request_logs 每条记录带 success 标记），
+  // 因此直接按小时聚合，不需要再从 error_logs 换算。
+  // 口径是实际请求上游的次数：一次客户端请求发生多次故障转移时，每次尝试各占一条。
   const failuresByHour = useMemo(() => {
     const arr = new Array<number>(24).fill(0)
-    const from = dayStart()
-    const to = dayStart(1)
-    for (const g of errors.data?.channels ?? []) {
-      for (const e of g.errors) {
-        if (e.created_at < from || e.created_at >= to) continue
-        // 小时必须按北京时间取，与后端小时桶的 key 同口径
-        const h = bjParts(e.created_at).h
-        if (h >= 0 && h < 24) arr[h]++
-      }
+    // points 按小时升序且覆盖今天全部 24 个桶（含空桶），索引即小时
+    for (const p of series.data?.points ?? []) {
+      const h = Number(p.key.slice(-5, -3))
+      if (!Number.isFinite(h) || h < 0 || h >= 24) continue
+      arr[h] += Math.max(0, p.requests - p.success_requests)
     }
     return arr
-  }, [errors.data])
+  }, [series.data])
 
   // 主图：每个指标独占一行（不堆叠），共用同一组小时横坐标
   const miniRows = useMemo(() => {
@@ -202,8 +201,8 @@ export default function V2Dashboard() {
           <span className="lbl">今日等价费用</span>
           <div className="val">{fmtCost(s?.cost ?? 0)}</div>
           <div className="meta">
-            <span>
-              请求 <b className="num">{fmtInt(s?.requests ?? 0)}</b> 次
+            <span title="按实际请求上游的次数统计，故障转移的每次尝试各算一次">
+              上游请求 <b className="num">{fmtInt(s?.requests ?? 0)}</b> 次
             </span>
             <span className="sep" style={{ width: 1, height: 9, background: 'var(--border)' }} />
             <span>

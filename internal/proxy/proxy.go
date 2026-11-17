@@ -210,7 +210,7 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 	modelName, _ := body["model"].(string)
 	isStream, _ := body["stream"].(bool)
 	rec := newRecorder(h.store, h.pricer, apiKey, endpointOf(path), isStream, modelName)
-	// 兜底：任何提前返回都会结算一次（仅成功的请求落用量明细，失败走错误日志）
+	// 兜底：任何提前返回都会结算一次（成功与失败都落用量明细，失败原因另记 error_logs）
 	defer rec.Commit()
 
 	if strings.HasSuffix(path, "/messages") {
@@ -260,8 +260,9 @@ type fwdSpec struct {
 	applyModel         func(t routing.Target)
 	isStream           bool
 	acceptStreamHeader bool
-	// handleUpstream 处理「上游有响应且 <500」的情况；返回 retry=true 表示继续下一个目标
-	handleUpstream func(resp *http.Response, t routing.Target) (out *http.Response, retry bool, reason string)
+	// handleUpstream 处理「上游有响应且 <500」的情况；返回 retry=true 表示继续下一个目标。
+	// rec 是本次上游尝试的记录器，故障转移后会更换。
+	handleUpstream func(resp *http.Response, t routing.Target, rec *Recorder) (out *http.Response, retry bool, reason string)
 	// allFailed 生成全部目标失败后的响应
 	allFailed func(lastErr, last429 string) *http.Response
 	// rec 用量与费用记录器（可为 nil）
@@ -269,12 +270,19 @@ type fwdSpec struct {
 }
 
 // forward 依次尝试目标，遇到 404/429/5xx/网络错误/无效响应则切换下一个。
-func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwdSpec) *http.Response {
+func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwdSpec) (*http.Response, *Recorder) {
 	var lastErr, last429 string
 	cdCfg := h.coolerConfig()
+	rec := spec.rec
+	attempt := 0
 
 	for _, t := range spec.targets {
-		spec.rec.Attempt()
+		if attempt > 0 {
+			rec = rec.nextAttempt(t)
+		}
+		attempt++
+		rec.Attempt()
+		rec.Served(t)
 
 		targetURL := channel.BaseURL(t.Channel) + spec.buildPath(t)
 		if spec.rawQuery != "" {
@@ -313,6 +321,7 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 			lastErr = "network error: " + err.Error()
 			h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, 0)
 			h.logError(t, spec.publicModel, 0, lastErr+" ("+targetURL+")")
+			rec.Finish(0, lastErr+" ("+targetURL+")")
 			continue
 		}
 
@@ -321,6 +330,7 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 			lastErr = "HTTP 404 (model not found)"
 			h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, 404)
 			h.logError(t, spec.publicModel, 404, lastErr)
+			rec.Finish(404, lastErr)
 			closeBody(resp)
 			continue
 
@@ -329,6 +339,7 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 			lastErr = "HTTP 429 (rate limited)"
 			h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, 429)
 			h.logError(t, spec.publicModel, 429, lastErr)
+			rec.Finish(429, lastErr)
 			closeBody(resp)
 			continue
 
@@ -338,31 +349,36 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 			lastErr = "HTTP " + strconv.Itoa(resp.StatusCode) + " (credential rejected)"
 			h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, resp.StatusCode)
 			h.logError(t, spec.publicModel, resp.StatusCode, lastErr)
+			rec.Finish(resp.StatusCode, lastErr)
 			closeBody(resp)
 			continue
 
 		case resp.StatusCode < 500:
-			out, retry, reason := spec.handleUpstream(resp, t)
+			out, retry, reason := spec.handleUpstream(resp, t, rec)
 			if retry {
 				closeBody(resp)
 				lastErr = reason
 				h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, resp.StatusCode)
+				rec.Finish(resp.StatusCode, reason)
 				continue
 			}
-			spec.rec.Served(t)
+			rec.Served(t)
 			h.cooler.Success(t.Channel.ID, t.Key)
-			return out
+			return out, rec
 
 		default:
 			lastErr = "HTTP " + strconv.Itoa(resp.StatusCode)
 			h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, resp.StatusCode)
 			h.logError(t, spec.publicModel, resp.StatusCode, lastErr)
+			rec.Finish(resp.StatusCode, lastErr)
 			closeBody(resp)
 			continue
 		}
 	}
 
-	return spec.allFailed(lastErr, last429)
+	// 全部目标失败：把最后一次尝试记为失败，并把最后错误带进明细
+	rec.Finish(http.StatusBadGateway, lastErr)
+	return spec.allFailed(lastErr, last429), rec
 }
 
 // validateUpstreamResult 校验 HTTP 200 的响应体是否实为失败。
@@ -423,7 +439,6 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 	if err != nil {
 		slog.Error("选择生图渠道失败", "err", err)
 		h.logGatewayError(modelName, http.StatusInternalServerError, "选择渠道失败: "+err.Error())
-		rec.Finish(http.StatusInternalServerError, "select target failed: "+err.Error())
 		jsonError(w, http.StatusInternalServerError, "Internal Server Error", "server_error")
 		return
 	}
@@ -450,13 +465,20 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 	}
 
 	var lastErr string
-	for _, t := range targets {
+	for i, t := range targets {
+		if i > 0 {
+			// 每次故障转移都是一次真实的上游请求，单独记一条
+			rec = rec.nextAttempt(t)
+		}
 		rec.Attempt()
+		rec.Served(t)
 		res := GenerateImage(r.Context(), h.imageClient, t.Channel, t.Key, body, modelName, r, h.imagePersist(r))
 		if res.StatusCode >= 200 && res.StatusCode < 300 {
 			h.cooler.Success(t.Channel.ID, t.Key)
 			rec.Served(t)
 			rec.Finish(res.StatusCode, "")
+			// 同步生图没有响应体包装，需显式结算本次尝试
+			rec.Commit()
 			writeRawJSON(w, res.StatusCode, res.Body)
 			return
 		}
@@ -471,9 +493,11 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 			h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, failStatus)
 		}
 		h.logError(t, modelName, failStatus, "生图请求失败: "+res.Error)
+		rec.Finish(failStatus, "生图请求失败: "+res.Error)
 	}
 
 	rec.Finish(http.StatusBadGateway, lastErr)
+	rec.Commit()
 	jsonError(w, http.StatusBadGateway,
 		"所有生图渠道均失败。最后错误: "+lastErr, "server_error")
 }
@@ -497,7 +521,6 @@ func (h *Handler) handleOpenAI(w http.ResponseWriter, r *http.Request, body map[
 	if err != nil {
 		slog.Error("选择目标失败", "err", err)
 		h.logGatewayError(modelName, http.StatusInternalServerError, "选择渠道失败: "+err.Error())
-		rec.Finish(http.StatusInternalServerError, "select target failed: "+err.Error())
 		jsonError(w, http.StatusInternalServerError, "Internal Server Error", "server_error")
 		return
 	}
@@ -510,7 +533,8 @@ func (h *Handler) handleOpenAI(w http.ResponseWriter, r *http.Request, body map[
 			jsonError(w, http.StatusBadRequest, msg, "invalid_request_error")
 			return
 		}
-		h.logGatewayError(modelName, http.StatusServiceUnavailable, "没有可用渠道（渠道被停用、密钥全在冷却中或该模型未映射）")
+		h.logGatewayError(modelName, http.StatusServiceUnavailable,
+			"No available channel for model: "+modelName)
 		rec.Finish(http.StatusServiceUnavailable, "No available channel for model: "+modelName)
 		jsonError(w, http.StatusServiceUnavailable, "No available channel for model: "+modelName, "server_error")
 		return
@@ -529,7 +553,7 @@ func (h *Handler) handleOpenAI(w http.ResponseWriter, r *http.Request, body map[
 		body["stream_options"] = so
 	}
 
-	resp := h.forward(r.Context(), r, fwdSpec{
+	resp, rec := h.forward(r.Context(), r, fwdSpec{
 		targets:     targets,
 		publicModel: modelName,
 		body:        body,
@@ -548,11 +572,10 @@ func (h *Handler) handleOpenAI(w http.ResponseWriter, r *http.Request, body map[
 		},
 		isStream:           isStream,
 		acceptStreamHeader: false,
-		handleUpstream: func(resp *http.Response, t routing.Target) (*http.Response, bool, string) {
+		handleUpstream: func(resp *http.Response, t routing.Target, rec *Recorder) (*http.Response, bool, string) {
 			return h.openaiUpstreamResponse(resp, t, upstreamPath, isStream, rec)
 		},
 		allFailed: func(lastErr, last429 string) *http.Response {
-			rec.Finish(http.StatusBadGateway, lastErr)
 			return jsonResponse(http.StatusBadGateway, map[string]any{
 				"error": map[string]any{
 					"message": "All targets failed. Last error: " + lastErr + rateDetail(last429),
@@ -562,12 +585,6 @@ func (h *Handler) handleOpenAI(w http.ResponseWriter, r *http.Request, body map[
 		},
 	})
 
-	if resp == nil {
-		rec.Finish(http.StatusBadGateway, "all targets failed")
-		rec.Commit()
-		writeResponse(w, resp)
-		return
-	}
 	rec.Finish(resp.StatusCode, "")
 	resp.Body = &observeBody{ReadCloser: resp.Body, rec: rec}
 	writeResponse(w, resp)
@@ -609,6 +626,8 @@ func (h *Handler) openaiUpstreamResponse(up *http.Response, t routing.Target, up
 
 		stream := RewriteSSE(replayAfterPeek(prefix, br, up.Body), "chatcmpl-"+id.Hex(12), func(msg string) {
 			h.logError(t, t.PublicModel, 200, "HTTP 200 stream error: "+msg)
+			// 流里夹带的错误按失败结算：用量记录 Status 仍是 200，靠 Error 判定为失败
+			rec.Finish(0, msg)
 		}, rec.ObserveEvent, rec.Commit)
 		return &http.Response{StatusCode: up.StatusCode, Header: headers, Body: stream}, false, ""
 	}
@@ -718,6 +737,7 @@ func (h *Handler) handleModels(w http.ResponseWriter, allowed []string, onlyImag
 // logGatewayError 记录发生在转发之前的网关级拒绝（鉴权失败、请求体非法、无可用渠道等）。
 // 这类错误没有具体的上游目标，单独以「（网关）」条目落到错误日志，
 // 否则请求失败后无法在面板与数据库里查到任何痕迹，只能靠实时日志猜。
+// 它们不属于调用明细：request_logs 记录的是实际发往上游的请求。
 func (h *Handler) logGatewayError(publicModel string, status int, message string) {
 	slog.Warn("[proxy] 请求被拒绝", "status", status, "model", publicModel, "reason", message)
 	if h.store == nil {

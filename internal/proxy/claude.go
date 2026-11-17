@@ -39,13 +39,14 @@ func (h *Handler) handleClaude(w http.ResponseWriter, r *http.Request, claudeBod
 		return
 	}
 	if len(targets) == 0 {
-		h.logGatewayError(modelName, http.StatusServiceUnavailable, "没有可用渠道（渠道被停用、密钥全在冷却中或该模型未映射）")
+		h.logGatewayError(modelName, http.StatusServiceUnavailable,
+			"No available channel for model: "+modelName)
 		rec.Finish(http.StatusServiceUnavailable, "No available channel for model: "+modelName)
 		claudeError(w, http.StatusServiceUnavailable, "No available channel for model: "+modelName)
 		return
 	}
 
-	resp := h.forward(r.Context(), r, fwdSpec{
+	resp, rec := h.forward(r.Context(), r, fwdSpec{
 		targets:     targets,
 		publicModel: modelName,
 		body:        openaiBody,
@@ -59,22 +60,15 @@ func (h *Handler) handleClaude(w http.ResponseWriter, r *http.Request, claudeBod
 		},
 		isStream:           isStream,
 		acceptStreamHeader: true,
-		handleUpstream: func(up *http.Response, t routing.Target) (*http.Response, bool, string) {
+		handleUpstream: func(up *http.Response, t routing.Target, rec *Recorder) (*http.Response, bool, string) {
 			return h.claudeUpstreamResponse(up, t, modelName, isStream, rec)
 		},
 		allFailed: func(lastErr, last429 string) *http.Response {
-			rec.Finish(http.StatusBadGateway, lastErr)
 			return claudeErrorResponse(http.StatusBadGateway,
 				"All targets failed. Last error: "+lastErr+rateDetail(last429))
 		},
 	})
 
-	if resp == nil {
-		rec.Finish(http.StatusBadGateway, "all targets failed")
-		rec.Commit()
-		writeResponse(w, resp)
-		return
-	}
 	rec.Finish(resp.StatusCode, "")
 	resp.Body = &observeBody{ReadCloser: resp.Body, rec: rec}
 	writeResponse(w, resp)

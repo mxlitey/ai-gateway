@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -14,9 +15,9 @@ import (
 	"github.com/czg95/ai-gateway-v2/internal/store"
 )
 
-// Recorder 收集一次 /v1 调用的结果：命中渠道、用量、耗时与估算费用。
+// Recorder 收集一次「网关 → 上游」请求的结果：渠道、用量、耗时与估算费用。
 //
-// 同一次请求内的多次故障转移只产出一条记录；所有方法可并发调用，
+// 每次实际上游尝试使用一个 Recorder；故障转移后的下一次尝试使用新的 Recorder。
 // Commit 幂等，可以在响应体读完后与请求收尾处各调用一次。
 type Recorder struct {
 	store  *store.Store
@@ -66,6 +67,34 @@ func (r *Recorder) Served(t routing.Target) {
 	r.row.UpstreamKeyHint = model.KeyHint(t.Key)
 }
 
+// nextAttempt 结算当前上游尝试，并创建下一次尝试的记录器。
+// 无论当前尝试是否已结算都会返回新记录器：故障转移的每一次尝试都要单独落一条。
+func (r *Recorder) nextAttempt(t routing.Target) *Recorder {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	if r.row.Status == 0 {
+		r.row.Status = http.StatusBadGateway
+	}
+	if r.row.Error == "" {
+		r.row.Error = "upstream attempt failed"
+	}
+	// 快照要沿用的字段，避免在锁外读取
+	endpoint, stream, modelName := r.row.Endpoint, r.row.Stream, r.row.Model
+	apiKeyID, apiKeyName := r.row.APIKeyID, r.row.APIKeyName
+	r.mu.Unlock()
+	// Commit 内部有 done 幂等保护，已结算过的不会重复写
+	r.Commit()
+
+	n := newRecorder(r.store, r.pricer, nil, endpoint, stream, modelName)
+	n.row.CreatedAt = time.Now().UnixMilli()
+	n.row.APIKeyID = apiKeyID
+	n.row.APIKeyName = apiKeyName
+	n.Served(t)
+	return n
+}
+
 // Finish 记录终态；已写入的非空字段不会被覆盖。
 func (r *Recorder) Finish(status int, message string) {
 	if r == nil {
@@ -101,6 +130,11 @@ func (r *Recorder) ObserveJSON(raw []byte) {
 func (r *Recorder) ObserveEvent(chunk map[string]any) {
 	if r == nil || chunk == nil {
 		return
+	}
+	// 流里夹带的 error 事件按失败结算：HTTP 状态仍是 200，但这次调用对客户端是失败的。
+	// Claude 转发路径把上游错误转成 error 事件后仍会把它交给 onUsage，因此在这里统一处理。
+	if e, ok := chunk["error"].(map[string]any); ok {
+		r.Finish(0, "HTTP 200 stream error: "+errorMessage(e))
 	}
 	r.mu.Lock()
 	// 非流式响应是一次性返回全文，没有「首字」概念，保持 0
@@ -177,34 +211,39 @@ func (r *Recorder) Commit() {
 
 // RecordUsage 补齐派生字段、估算费用并异步写入一条用量记录。
 //
-// 除 /v1 转发外，诊断（test-upstream）等直接调用上游、消耗真实额度的流程也复用它，
-// 以保证任何一次真实模型请求都会体现在用量里。
+// 调用明细记录的是「网关 → 上游」的真实请求：每次故障转移都实际请求了一次上游，
+// 因此各自落一条；同一次客户端请求可以产生多条记录。成功与失败都记录，
+// 失败记录 Token 为 0、费用为 0，用于计算上游成功率与失败数。
+//
+// 网关级拒绝（鉴权失败、请求体非法、没有可用渠道等）没有请求上游，
+// 由 error_logs 记录，不进入调用明细。除 /v1 转发外，诊断（test-upstream）
+// 等直接调用上游的流程也复用本函数。
 //
 // 计费只按公开模型名匹配价格表（不看上游模型与渠道），与厂商官方价对比才有意义。
 func RecordUsage(s *store.Store, pricer *pricing.Resolver, row model.RequestLog) {
-	if s == nil {
+	if s == nil || row.Attempts == 0 {
 		return
 	}
 	if row.TotalTokens == 0 {
 		row.TotalTokens = row.PromptTokens + row.CompletionTokens
 	}
 	row.Success = row.Status >= 200 && row.Status < 300 && row.Error == ""
-	// 用量只统计成功的请求；失败的上游异常由 error_logs 单独记录（见「错误日志」页面）
-	if !row.Success {
-		return
-	}
 
 	if pricer != nil {
 		if price, ok := pricer.Resolve(row.Model); ok {
 			row.PriceModel = price.Model
 			row.PriceSource = pricing.SourceManual
-			q := pricing.Estimate(price, pricing.Usage{
-				PromptTokens:     row.PromptTokens,
-				CompletionTokens: row.CompletionTokens,
-				CachedTokens:     row.CachedTokens,
-				At:               time.UnixMilli(row.CreatedAt),
-			})
-			row.Cost, row.CostPrompt, row.CostCompletion = q.Total, q.Input, q.Output
+			// 失败请求没有实际产出，只记录「是否配了价」，不计算费用
+			// （按次计费的模型否则会给失败也记一笔钱）
+			if row.Success {
+				q := pricing.Estimate(price, pricing.Usage{
+					PromptTokens:     row.PromptTokens,
+					CompletionTokens: row.CompletionTokens,
+					CachedTokens:     row.CachedTokens,
+					At:               time.UnixMilli(row.CreatedAt),
+				})
+				row.Cost, row.CostPrompt, row.CostCompletion = q.Total, q.Input, q.Output
+			}
 		}
 	}
 

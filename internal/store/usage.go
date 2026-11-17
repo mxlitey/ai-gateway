@@ -189,7 +189,6 @@ func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName, keyHint
 		return nil, err
 	}
 	sum.FailedRequests = sum.Requests - sum.SuccessRequests
-
 	// 分组结果不受「自身」筛选影响：界面用它填充筛选下拉框，若跟着自身筛选走，
 	// 选中某个值后其余选项就会从下拉框里消失。例外：按模型的列表要跟随渠道筛选，
 	// 按上游密钥的列表要跟随渠道 + 模型筛选（保证选定渠道/模型后，密钥下拉只展示用过的密钥，
@@ -222,6 +221,8 @@ func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName, keyHint
 			if b.Key == "" {
 				b.Key = label
 			}
+			// 失败数 = 总数 - 成功数（失败记录也在这张表里，一次调用只算一条）
+			b.FailedRequests = b.Requests - b.SuccessRequests
 			out = append(out, b)
 		}
 		return out, rows.Err()
@@ -417,6 +418,8 @@ func (s *Store) usageSeriesBuckets(starts []time.Time, fromMs, endMs int64, buck
 		if err := rows.Scan(&b.Key, &b.Requests, &b.SuccessRequests, &b.PromptTokens, &b.CompletionTokens, &b.TotalTokens, &b.CachedTokens, &b.Cost); err != nil {
 			return nil, err
 		}
+		// 失败数 = 总数 - 成功数，让趋势桶与汇总口径一致
+		b.FailedRequests = b.Requests - b.SuccessRequests
 		byKey[b.Key] = b
 	}
 	if err := rows.Err(); err != nil {

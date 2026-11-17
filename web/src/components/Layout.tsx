@@ -75,6 +75,13 @@ export default function Layout({ children }: { children: ReactNode }) {
         版本
         <span className="font-mono text-[11px] text-zinc-600 dark:text-zinc-400">{version}</span>
       </p>
+      {/* 新界面入口：原版保留，随时可切回 */}
+      <NavLink
+        to="/v2"
+        className="mb-2 block rounded-lg border border-zinc-300 px-3 py-2 text-center text-sm text-zinc-600 hover:bg-zinc-50 active:bg-zinc-100 md:py-1.5 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+      >
+        新界面
+      </NavLink>
       <button
         onClick={signOut}
         className="w-full rounded-lg border border-zinc-300 px-3 py-2 text-sm text-zinc-600 hover:bg-zinc-50 active:bg-zinc-100 md:py-1.5 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"

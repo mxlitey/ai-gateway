@@ -1,8 +1,9 @@
-﻿package store
+package store
 
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -199,11 +200,12 @@ func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName, keyHint
 	group := func(expr, label, where string, args []any) ([]model.UsageBucket, error) {
 		rows, err := s.db.Query(
 			`SELECT `+expr+` AS k, COUNT(1),
+			        COALESCE(SUM(success), 0),
 			        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
 			        COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cached_tokens), 0),
 			        COALESCE(SUM(cost), 0)
 			 FROM request_logs WHERE `+where+`
-			 GROUP BY k ORDER BY 7 DESC`,
+			 GROUP BY k ORDER BY 8 DESC`,
 			args...,
 		)
 		if err != nil {
@@ -214,7 +216,7 @@ func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName, keyHint
 		out := []model.UsageBucket{}
 		for rows.Next() {
 			b := model.UsageBucket{}
-			if err := rows.Scan(&b.Key, &b.Requests, &b.PromptTokens, &b.CompletionTokens, &b.TotalTokens, &b.CachedTokens, &b.Cost); err != nil {
+			if err := rows.Scan(&b.Key, &b.Requests, &b.SuccessRequests, &b.PromptTokens, &b.CompletionTokens, &b.TotalTokens, &b.CachedTokens, &b.Cost); err != nil {
 				return nil, err
 			}
 			if b.Key == "" {
@@ -229,6 +231,10 @@ func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName, keyHint
 		return nil, err
 	}
 	if sum.ByChannel, err = group("channel_name", "(未命中渠道)", whereAll, argsAll); err != nil {
+		return nil, err
+	}
+	// 渠道卡片需要 P95 延迟：单独按渠道取耗时分布，再挑 95 分位
+	if err := s.fillChannelP95(sum.ByChannel, whereAll, argsAll); err != nil {
 		return nil, err
 	}
 	if sum.ByAPIKey, err = group("api_key_name", "(未知密钥)", whereAll, argsAll); err != nil {
@@ -248,6 +254,58 @@ func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName, keyHint
 		sum.ByDay[i], sum.ByDay[j] = sum.ByDay[j], sum.ByDay[i]
 	}
 	return sum, nil
+}
+
+// fillChannelP95 为按渠道分组的结果补 P95 耗时。
+// SQLite 没有分位函数，因此取出每组耗时在内存里排序取分位；渠道数量有限，开销可控。
+func (s *Store) fillChannelP95(buckets []model.UsageBucket, where string, args []any) error {
+	if len(buckets) == 0 {
+		return nil
+	}
+	rows, err := s.db.Query(
+		`SELECT channel_name, duration_ms FROM request_logs WHERE `+where+` ORDER BY channel_name, duration_ms`,
+		args...,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	// 已按渠道名、耗时升序返回，顺序扫一遍即可
+	idx := make(map[string][]int64, len(buckets))
+	for rows.Next() {
+		var name string
+		var ms int64
+		if err := rows.Scan(&name, &ms); err != nil {
+			return err
+		}
+		idx[name] = append(idx[name], ms)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for i := range buckets {
+		key := buckets[i].Key
+		vals, ok := idx[key]
+		if !ok || len(vals) == 0 {
+			// 未命中渠道的占位名与真实 channel_name 不一致，按占位名兜底
+			vals = idx[""]
+			if len(vals) == 0 {
+				continue
+			}
+		}
+		// 最近秩法：ceil(0.95*n)-1
+		pos := int(math.Ceil(0.95*float64(len(vals)))) - 1
+		if pos < 0 {
+			pos = 0
+		}
+		if pos >= len(vals) {
+			pos = len(vals) - 1
+		}
+		buckets[i].P95DurationMS = vals[pos]
+	}
+	return nil
 }
 
 // 趋势图的时间桶粒度。
@@ -326,6 +384,7 @@ func (s *Store) usageSeriesBuckets(starts []time.Time, fromMs, endMs int64, buck
 
 	rows, err := s.db.Query(
 		`SELECT `+expr+` AS k, COUNT(1),
+		        COALESCE(SUM(success), 0),
 		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0),
 		        COALESCE(SUM(total_tokens), 0), COALESCE(SUM(cached_tokens), 0),
 		        COALESCE(SUM(cost), 0)
@@ -341,7 +400,7 @@ func (s *Store) usageSeriesBuckets(starts []time.Time, fromMs, endMs int64, buck
 	byKey := map[string]model.UsageBucket{}
 	for rows.Next() {
 		b := model.UsageBucket{}
-		if err := rows.Scan(&b.Key, &b.Requests, &b.PromptTokens, &b.CompletionTokens, &b.TotalTokens, &b.CachedTokens, &b.Cost); err != nil {
+		if err := rows.Scan(&b.Key, &b.Requests, &b.SuccessRequests, &b.PromptTokens, &b.CompletionTokens, &b.TotalTokens, &b.CachedTokens, &b.Cost); err != nil {
 			return nil, err
 		}
 		byKey[b.Key] = b

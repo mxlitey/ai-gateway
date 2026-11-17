@@ -194,7 +194,8 @@ export default function ModelRoutes() {
                             <span className="block truncate">{route.channel_name}</span>
                           </td>
                           <td className="py-2 pr-3">
-                            <div className="flex items-center gap-1.5">
+                            {/* 徽章靠右对齐：模型名过长时截断，不挤压徽章 */}
+                            <div className="flex items-center justify-between gap-1.5">
                               <code className="min-w-0 truncate font-mono text-xs text-zinc-600 dark:text-zinc-400">
                                 {route.upstream_model}
                               </code>

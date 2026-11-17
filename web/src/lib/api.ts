@@ -1,4 +1,4 @@
-﻿/** 与网关后端交互的 API 封装与类型定义。 */
+﻿﻿﻿﻿/** 与网关后端交互的 API 封装与类型定义。 */
 
 export type ChannelKey = { key: string; enabled: boolean; label?: string }
 export type HeaderItem = { name: string; value: string }
@@ -221,11 +221,15 @@ export type RequestLogItem = {
 export type UsageBucket = {
   key: string
   requests: number
+  /** 成功请求数；趋势桶与分组都会返回 */
+  success_requests: number
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number
   cached_tokens: number
   cost: number
+  /** 该分组耗时的 95 分位（毫秒）；仅按渠道分组时填充 */
+  p95_duration_ms: number
 }
 
 export type UsageSummary = {

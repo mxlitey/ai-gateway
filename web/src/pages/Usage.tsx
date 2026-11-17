@@ -1,7 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type UsageBucket } from '../lib/api'
-import { Badge, Button, Card, Empty, ErrorText, IconButton, Loading, RefreshIcon, Segmented } from '../components/ui'
+import { Badge, Button, Card, Empty, ErrorText, Loading, Segmented } from '../components/ui'
 import RangePicker, { type RangeValue } from '../components/RangePicker'
 import { fmtCost } from '../lib/money'
 
@@ -128,6 +128,9 @@ export default function Usage() {
 
   const s = summary.data!.summary
   const priceCount = summary.data!.price_count
+  // 缓存命中率 = 缓存命中的输入 token / 输入 token 总数
+  const cacheHitRate =
+    s.prompt_tokens > 0 ? `${((s.cached_tokens / s.prompt_tokens) * 100).toFixed(1)}%` : '—'
   const items = logs.data?.items ?? []
   const total = logs.data?.total ?? 0
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
@@ -205,16 +208,6 @@ export default function Usage() {
             ]}
           />
           <RangePicker value={range} onChange={onRangeChange} granularity={granularity} />
-          <IconButton
-            title="刷新"
-            onClick={() => {
-              summary.refetch()
-              logs.refetch()
-              series.refetch()
-            }}
-          >
-            <RefreshIcon />
-          </IconButton>
         </div>
       </Card>
 
@@ -224,9 +217,10 @@ export default function Usage() {
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <Stat label="请求数" value={fmtInt(s.requests)} />
         <Stat label="总 token" value={fmtCompact(s.total_tokens)} />
+        <Stat label="缓存命中率" value={cacheHitRate} />
         <Stat label="市场价" value={fmtCost(s.cost)} />
       </div>
 

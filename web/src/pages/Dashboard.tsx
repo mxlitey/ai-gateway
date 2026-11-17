@@ -17,7 +17,6 @@ export default function Dashboard() {
   const date = fmtDate(new Date())
 
   const channels = useQuery({ queryKey: ['channels'], queryFn: api.channels })
-  const keys = useQuery({ queryKey: ['apikeys'], queryFn: api.apiKeys })
   const errors = useQuery({ queryKey: ['errors', date], queryFn: () => api.errors(date) })
   const plugins = useQuery({ queryKey: ['plugins'], queryFn: api.plugins })
   const usage = useQuery({
@@ -25,7 +24,7 @@ export default function Dashboard() {
     queryFn: () => api.usageSummary({ days: 1, date }),
   })
 
-  if (channels.isLoading || keys.isLoading || plugins.isLoading) return <Loading />
+  if (channels.isLoading || plugins.isLoading) return <Loading />
 
   // 没启动的插件不进入渠道统计：插件渠道随插件注册/停用，未运行时不算真实渠道
   const runningPluginIDs = new Set(
@@ -34,7 +33,6 @@ export default function Dashboard() {
   const channelList = (channels.data ?? []).filter(
     (c) => !isPluginChannel(c) || runningPluginIDs.has(c.source.slice('plugin:'.length)),
   )
-  const keyList = keys.data ?? []
   const errorGroups = errors.data?.channels ?? []
   // 运行中的插件置顶展示
   const pluginList = [...(plugins.data ?? [])].sort(
@@ -44,7 +42,6 @@ export default function Dashboard() {
   const availableChannels = channelList.filter(
     (c) => c.enabled && c.keys.some((k) => k.enabled),
   ).length
-  const enabledKeys = keyList.filter((k) => k.enabled).length
   const dateErrors = errorGroups.reduce((sum, g) => sum + g.errors.length, 0)
   const runningPlugins = pluginList.filter((p) => p.last_status === 'running').length
 
@@ -64,13 +61,12 @@ export default function Dashboard() {
       {errors.isError ? <ErrorText text={(errors.error as Error).message} /> : null}
 
       {/* 用量与运行状态一览（用量均为当天） */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-7">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-6">
         <Stat label="请求数" value={fmtInt(usageSummary?.requests ?? 0)} />
         <Stat label="总 token" value={fmtCompact(usageSummary?.total_tokens ?? 0)} />
         <Stat label="缓存命中率" value={cacheHitRate} />
         <Stat label="市场价" value={fmtCost(usageSummary?.cost ?? 0)} />
         <Stat label="渠道" value={`${availableChannels} / ${channelList.length}`} />
-        <Stat label="客户端密钥" value={`${enabledKeys} / ${keyList.length}`} />
         <Stat label="错误" value={String(dateErrors)} />
       </div>
 

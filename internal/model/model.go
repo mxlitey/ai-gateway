@@ -439,11 +439,14 @@ type ModelPrice struct {
 type UsageBucket struct {
 	Key              string  `json:"key"`
 	Requests         int64   `json:"requests"`
+	SuccessRequests  int64   `json:"success_requests"`
 	PromptTokens     int64   `json:"prompt_tokens"`
 	CompletionTokens int64   `json:"completion_tokens"`
 	TotalTokens      int64   `json:"total_tokens"`
 	CachedTokens     int64   `json:"cached_tokens"`
 	Cost             float64 `json:"cost"`
+	// P95DurationMS 该分组耗时的 95 分位（毫秒）；仅按渠道分组时填充，其余分组为 0。
+	P95DurationMS int64 `json:"p95_duration_ms"`
 }
 
 // UsageSummary 时间区间内的用量与费用汇总。

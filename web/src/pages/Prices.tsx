@@ -103,15 +103,6 @@ export default function Prices() {
     onError: (err: Error) => toast('err', err.message),
   })
 
-  const deletePrice = useMutation({
-    mutationFn: (name: string) => api.deletePrice(name),
-    onSuccess: async () => {
-      toast('ok', '价格已删除')
-      await prices.refetch()
-    },
-    onError: (err: Error) => toast('err', err.message),
-  })
-
   return (
     <div className="space-y-4">
       <h1 className="text-base font-semibold text-zinc-800 dark:text-zinc-100">价格表</h1>
@@ -120,7 +111,6 @@ export default function Prices() {
         loading={prices.isLoading}
         saving={savePrice.isPending}
         onSave={(body) => savePrice.mutate(body)}
-        onDelete={(name) => deletePrice.mutate(name)}
       />
     </div>
   )
@@ -131,13 +121,11 @@ function PriceSection({
   loading,
   saving,
   onSave,
-  onDelete,
 }: {
   data?: PricesResponse
   loading: boolean
   saving: boolean
   onSave: (body: PriceInput) => void
-  onDelete: (name: string) => void
 }) {
   const [query, setQuery] = useState('')
   // 只显示未定价模型：填表时不必在长列表里翻找
@@ -255,19 +243,6 @@ function PriceSection({
                   >
                     {isOpen ? '收起' : r.priced ? '编辑' : '填写'}
                   </Button>
-                  {r.priced ? (
-                    <button
-                      className="text-xs text-red-600 hover:underline dark:text-red-400"
-                      onClick={() => {
-                        if (window.confirm(`删除 ${r.model} 的价格？历史用量不受影响。`)) {
-                          onDelete(r.normalized)
-                          if (isOpen) close()
-                        }
-                      }}
-                    >
-                      删除
-                    </button>
-                  ) : null}
                 </div>
 
                 {isOpen && draft ? (

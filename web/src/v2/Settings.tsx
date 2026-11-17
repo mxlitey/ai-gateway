@@ -1,0 +1,623 @@
+import { useState, type FormEvent } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api, type PythonSettings, type RuntimeSettings } from '../lib/api'
+import { toast } from '../lib/toast'
+import {
+  Badge,
+  Button,
+  ErrorText,
+  Field,
+  Input,
+  PageHead,
+  Panel,
+  Segmented,
+} from './ui'
+
+export default function V2Settings() {
+  const queryClient = useQueryClient()
+  const [oldPassword, setOldPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [cleanupDays, setCleanupDays] = useState('90')
+
+  const runtime = useQuery({ queryKey: ['runtime'], queryFn: api.runtimeInfo })
+  const info = runtime.data
+
+  const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: api.settings })
+  const [draft, setDraft] = useState<RuntimeSettings | null>(null)
+  if (settingsQuery.data && draft === null) {
+    setDraft(settingsQuery.data.settings)
+  }
+  const defaults = settingsQuery.data?.defaults
+
+  const python = useQuery({ queryKey: ['python-status'], queryFn: api.pythonStatus })
+  const pythonSettingsQuery = useQuery({ queryKey: ['python-settings'], queryFn: api.pythonSettings })
+  const [pyDraft, setPyDraft] = useState<PythonSettings | null>(null)
+  if (pythonSettingsQuery.data && pyDraft === null) {
+    setPyDraft(pythonSettingsQuery.data.settings)
+  }
+
+  const adminMCP = useQuery({ queryKey: ['admin-mcp'], queryFn: api.adminMCPState })
+  const [mcpTokens, setMcpTokens] = useState<{ readonly: string; writable: string }>({
+    readonly: '',
+    writable: '',
+  })
+
+  const saveAdminMCP = useMutation({
+    mutationFn: (patch: { enabled?: boolean }) => {
+      const cur = adminMCP.data
+      return api.saveAdminMCP(patch.enabled ?? cur?.enabled ?? false)
+    },
+    onSuccess: () => {
+      toast('ok', '管理 MCP 设置已保存')
+      void queryClient.invalidateQueries({ queryKey: ['admin-mcp'] })
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  const issueMCPToken = useMutation({
+    mutationFn: (kind: 'readonly' | 'writable') => api.issueAdminMCPToken(kind),
+    onSuccess: (res) => {
+      setMcpTokens((prev) => ({ ...prev, [res.kind]: res.token }))
+      toast('ok', res.notice || '令牌已生成')
+      void queryClient.invalidateQueries({ queryKey: ['admin-mcp'] })
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  async function copyText(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      toast('ok', `${label}已复制到剪贴板`)
+    } catch {
+      toast('err', '复制失败，请手动选中复制')
+    }
+  }
+
+  const savePythonSettings = useMutation({
+    mutationFn: (body: PythonSettings) => api.updatePythonSettings(body),
+    onSuccess: () => {
+      toast('ok', 'Python 运行时设置已保存')
+      void queryClient.invalidateQueries({ queryKey: ['python-status'] })
+      void queryClient.invalidateQueries({ queryKey: ['python-settings'] })
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  const saveSettings = useMutation({
+    mutationFn: (body: RuntimeSettings) => api.updateSettings(body),
+    onSuccess: () => {
+      toast('ok', '运行期设置已保存并生效')
+      void queryClient.invalidateQueries({ queryKey: ['settings'] })
+      void queryClient.invalidateQueries({ queryKey: ['prices'] })
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  function setNum(key: keyof RuntimeSettings, raw: string) {
+    if (!draft) return
+    setDraft({ ...draft, [key]: raw === '' ? 0 : Number(raw) })
+  }
+
+  const change = useMutation({
+    mutationFn: () => api.changePassword(oldPassword, newPassword),
+    onSuccess: () => {
+      toast('ok', '密码已更新')
+      setOldPassword('')
+      setNewPassword('')
+      setConfirm('')
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  const cleanup = useMutation({
+    mutationFn: (keepDays: number) => api.cleanupUsage(keepDays),
+    onSuccess: (res) => {
+      const scope = res.days === 0 ? '全部记录（含当天）' : `${res.days} 天前的记录`
+      toast('ok', `已清理${scope}：用量明细 ${res.removed} 条、错误日志 ${res.removed_errors} 条`)
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    if (newPassword.length < 8) {
+      toast('err', '新密码长度至少 8 位')
+      return
+    }
+    if (newPassword !== confirm) {
+      toast('err', '两次输入的新密码不一致')
+      return
+    }
+    change.mutate()
+  }
+
+  return (
+    <div className="stack">
+      <PageHead title="设置" />
+
+      <Panel title="修改管理员密码">
+        <form onSubmit={submit} style={{ maxWidth: 440, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Field label="当前密码">
+            <Input
+              type="password"
+              value={oldPassword}
+              onChange={(e) => setOldPassword(e.target.value)}
+              placeholder="当前密码"
+            />
+          </Field>
+          <Field label="新密码" hint="至少 8 位">
+            <Input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              placeholder="新密码"
+            />
+          </Field>
+          <Field label="确认新密码">
+            <Input
+              type="password"
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              placeholder="再输入一次"
+            />
+          </Field>
+          <div>
+            <Button type="submit" variant="primary" disabled={change.isPending || !oldPassword || !newPassword}>
+              {change.isPending ? '提交中…' : '更新密码'}
+            </Button>
+          </div>
+        </form>
+      </Panel>
+
+      <Panel title="运行信息">
+        {runtime.isError ? <ErrorText text={(runtime.error as Error).message} /> : null}
+        <dl className="kvgrid" style={{ maxWidth: 720, gap: '9px 20px', fontSize: 11.5 }}>
+          <dt>访问地址</dt>
+          <dd className="mono" style={{ wordBreak: 'break-all' }}>
+            {info?.access_url ?? '读取中…'}
+          </dd>
+          <dt>API 地址</dt>
+          <dd className="mono" style={{ wordBreak: 'break-all' }}>
+            {info?.api_url ?? '读取中…'}
+          </dd>
+          <dt>监听地址 / 端口</dt>
+          <dd>
+            {info ? `${info.listen_host}:${info.port}` : '读取中…'}
+            {info ? (
+              <span className="tiny faint" style={{ marginLeft: 8 }}>
+                {info.lan ? '局域网可访问' : '仅本机可访问'}
+              </span>
+            ) : null}
+          </dd>
+          <dt>数据目录</dt>
+          <dd className="mono" style={{ wordBreak: 'break-all' }}>
+            {info?.data_dir ?? '读取中…'}
+          </dd>
+        </dl>
+        <p
+          className="tiny"
+          style={{
+            margin: '12px 0 0',
+            display: 'inline-block',
+            border: '1px solid var(--warn)',
+            background: 'var(--warn-weak)',
+            color: 'var(--warn)',
+            borderRadius: 8,
+            padding: '5px 9px',
+          }}
+          title="对外监听前请确认访问控制"
+        >
+          仅本机监听
+        </p>
+      </Panel>
+
+      <Panel title="管理 MCP">
+        {adminMCP.isError ? <ErrorText text={(adminMCP.error as Error).message} /> : null}
+        <div style={{ maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Field label="启用管理 MCP" hint={`端点为 ${adminMCP.data?.access_url ?? '—'}`}>
+            <Segmented
+              value={adminMCP.data?.enabled ? 'on' : 'off'}
+              onChange={(v) => saveAdminMCP.mutate({ enabled: v === 'on' })}
+              options={[
+                { value: 'on', label: '开启' },
+                { value: 'off', label: '关闭' },
+              ]}
+            />
+          </Field>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <span style={{ fontSize: 11.5, fontWeight: 500 }}>令牌</span>
+            {(
+              [
+                ['readonly', '只读令牌'],
+                ['writable', '读写令牌'],
+              ] as const
+            ).map(([kind, label]) => {
+              const has =
+                kind === 'readonly' ? adminMCP.data?.has_readonly_token : adminMCP.data?.has_writable_token
+              const plain = mcpTokens[kind]
+              return (
+                <div
+                  key={kind}
+                  style={{
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    padding: '7px 10px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
+                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 11.5 }}>{label}</span>
+                    <Badge tone={has ? 'ok' : 'off'}>{has ? '已生成' : '未生成'}</Badge>
+                    <span style={{ flex: 1 }} />
+                    <Button
+                      variant={has ? 'ghost' : 'primary'}
+                      size="sm"
+                      disabled={!adminMCP.data?.enabled || issueMCPToken.isPending}
+                      onClick={() => {
+                        if (
+                          has &&
+                          !window.confirm(`重新生成${label}？旧令牌会立即失效，使用它的客户端需要更新。`)
+                        ) {
+                          return
+                        }
+                        issueMCPToken.mutate(kind)
+                      }}
+                    >
+                      {has ? '重新生成' : '生成'}
+                    </Button>
+                  </div>
+                  {plain ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <code
+                        className="mono truncate"
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          background: 'var(--warn-weak)',
+                          color: 'var(--warn)',
+                          borderRadius: 4,
+                          padding: '3px 7px',
+                          fontSize: 10.5,
+                        }}
+                      >
+                        {plain}
+                      </code>
+                      <Button variant="ghost" size="sm" onClick={() => void copyText(plain, label)}>
+                        复制
+                      </Button>
+                    </div>
+                  ) : null}
+                  {!plain && has ? (
+                    <p className="tiny faint" style={{ margin: 0 }} title="明文只在生成时显示一次">
+                      已生成
+                    </p>
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
+
+          <details style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '7px 10px' }}>
+            <summary className="small" style={{ cursor: 'pointer' }}>
+              客户端示例
+            </summary>
+            <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <pre
+                className="mono"
+                style={{
+                  margin: 0,
+                  maxHeight: 256,
+                  overflow: 'auto',
+                  background: 'var(--surface-2)',
+                  borderRadius: 8,
+                  padding: 10,
+                  fontSize: 11,
+                  lineHeight: 1.7,
+                }}
+              >
+                {adminMCPExample(
+                  adminMCP.data?.access_url ?? 'http://127.0.0.1:8787/admin/mcp',
+                  'amcp_你的令牌',
+                )}
+              </pre>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    void copyText(
+                      adminMCPExample(
+                        adminMCP.data?.access_url ?? 'http://127.0.0.1:8787/admin/mcp',
+                        'amcp_你的令牌',
+                      ),
+                      '客户端示例',
+                    )
+                  }
+                >
+                  复制示例
+                </Button>
+              </div>
+            </div>
+          </details>
+        </div>
+      </Panel>
+
+      <Panel title="运行期设置">
+        {settingsQuery.isError ? <ErrorText text={(settingsQuery.error as Error).message} /> : null}
+        {draft ? (
+          <div style={{ maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Field
+              label="日志级别"
+              hint={`留空沿用启动参数（当前 ${settingsQuery.data?.env_log_level || 'info'}）`}
+            >
+              <Segmented
+                value={draft.log_level}
+                onChange={(v) => setDraft({ ...draft, log_level: v })}
+                options={[
+                  { value: '', label: '跟随启动参数' },
+                  { value: 'debug', label: 'debug' },
+                  { value: 'info', label: 'info' },
+                  { value: 'warn', label: 'warn' },
+                  { value: 'error', label: 'error' },
+                ]}
+              />
+            </Field>
+
+            <Field
+              label="货币符号"
+              hint="价格与费用只显示数字，符号按这里填写的显示（如 ¥ / $ / €）；留空则不显示符号"
+            >
+              <Input
+                value={draft.currency_symbol}
+                onChange={(e) => setDraft({ ...draft, currency_symbol: e.target.value })}
+                placeholder="¥"
+                maxLength={4}
+                style={{ maxWidth: 128 }}
+              />
+            </Field>
+
+            <Field
+              label="自动签到间隔（分钟）"
+              hint={`默认 ${defaults?.plugin_auto_checkin_minutes ?? 60}`}
+            >
+              <Input
+                type="number"
+                min={1}
+                max={1440}
+                value={draft.plugin_auto_checkin_minutes}
+                onChange={(e) => setNum('plugin_auto_checkin_minutes', e.target.value)}
+              />
+            </Field>
+
+            <div className="v2grid g2">
+              <Field label="插件探活间隔（秒）" hint={`默认 ${defaults?.plugin_probe_interval_seconds ?? 2}`}>
+                <Input
+                  type="number"
+                  min={1}
+                  max={3600}
+                  value={draft.plugin_probe_interval_seconds}
+                  onChange={(e) => setNum('plugin_probe_interval_seconds', e.target.value)}
+                />
+              </Field>
+              <Field label="插件探活超时（秒）" hint={`默认 ${defaults?.plugin_probe_timeout_seconds ?? 2}`}>
+                <Input
+                  type="number"
+                  min={1}
+                  max={3600}
+                  value={draft.plugin_probe_timeout_seconds}
+                  onChange={(e) => setNum('plugin_probe_timeout_seconds', e.target.value)}
+                />
+              </Field>
+            </div>
+
+            <Field label="上游密钥失败冷却" hint="失败后暂停使用该密钥，连续失败逐次延长，成功即重置">
+              <Segmented
+                value={draft.key_cooldown_enabled ? 'on' : 'off'}
+                onChange={(v) => setDraft({ ...draft, key_cooldown_enabled: v === 'on' })}
+                options={[
+                  { value: 'on', label: '开启' },
+                  { value: 'off', label: '关闭' },
+                ]}
+              />
+            </Field>
+
+            <div className="v2grid g2">
+              <Field
+                label="初始冷却（秒）"
+                hint={`首次失败的冷却时长，默认 ${defaults?.key_cooldown_base_seconds ?? 60}`}
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={86400}
+                  value={draft.key_cooldown_base_seconds}
+                  onChange={(e) => setNum('key_cooldown_base_seconds', e.target.value)}
+                />
+              </Field>
+              <Field
+                label="冷却上限（秒）"
+                hint={`单次冷却最长时间，默认 ${defaults?.key_cooldown_max_seconds ?? 1800}`}
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={604800}
+                  value={draft.key_cooldown_max_seconds}
+                  onChange={(e) => setNum('key_cooldown_max_seconds', e.target.value)}
+                />
+              </Field>
+            </div>
+
+            <div className="v2grid g2">
+              <Field
+                label="不健康阈值（次）"
+                hint={`连续探活失败达到该次数即重启，默认 ${defaults?.plugin_unhealthy_threshold ?? 3}`}
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={draft.plugin_unhealthy_threshold}
+                  onChange={(e) => setNum('plugin_unhealthy_threshold', e.target.value)}
+                />
+              </Field>
+              <Field
+                label="最大失败次数（次）"
+                hint={`连续失败达到该次数后放弃自动重启，默认 ${defaults?.plugin_max_failures ?? 5}`}
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={draft.plugin_max_failures}
+                  onChange={(e) => setNum('plugin_max_failures', e.target.value)}
+                />
+              </Field>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Button variant="primary" disabled={saveSettings.isPending} onClick={() => saveSettings.mutate(draft)}>
+                {saveSettings.isPending ? '保存中…' : '保存'}
+              </Button>
+              <Button
+                variant="ghost"
+                disabled={saveSettings.isPending || !settingsQuery.data}
+                onClick={() => {
+                  if (settingsQuery.data) setDraft(settingsQuery.data.settings)
+                }}
+              >
+                重置
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="faint tiny">读取中…</div>
+        )}
+      </Panel>
+
+      <Panel title="Python 插件运行时">
+        {python.isError ? <ErrorText text={(python.error as Error).message} /> : null}
+        <dl className="kvgrid" style={{ maxWidth: 720, gap: '9px 20px', fontSize: 11.5 }}>
+          <dt>当前解释器</dt>
+          <dd>
+            {python.data ? (
+              python.data.found ? (
+                <span>
+                  {python.data.version}
+                  <div className="mono faint" style={{ marginTop: 3, fontSize: 10.5, wordBreak: 'break-all' }}>
+                    {python.data.path}
+                  </div>
+                </span>
+              ) : (
+                <span style={{ color: 'var(--warn)' }}>未找到 Python 3</span>
+              )
+            ) : (
+              '探测中…'
+            )}
+          </dd>
+          <dt>pip 源顺序</dt>
+          <dd className="tiny muted" style={{ wordBreak: 'break-all' }}>
+            {(python.data?.index_urls ?? []).join(' → ') || '—'}
+          </dd>
+        </dl>
+        {python.data && !python.data.found ? (
+          <p
+            className="tiny"
+            style={{
+              margin: '10px 0 0',
+              border: '1px solid var(--warn)',
+              background: 'var(--warn-weak)',
+              color: 'var(--warn)',
+              borderRadius: 8,
+              padding: '6px 9px',
+            }}
+          >
+            {python.data.error}
+          </p>
+        ) : null}
+
+        {pyDraft ? (
+          <div style={{ marginTop: 14, maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 11 }}>
+            <Field label="pip 源（按顺序退避）" hint="留空使用内置镜像顺序，多条用逗号分隔">
+              <Input
+                value={pyDraft.pip_index_urls}
+                onChange={(e) => setPyDraft({ ...pyDraft, pip_index_urls: e.target.value })}
+                placeholder="https://pypi.org/simple, https://pypi.tuna.tsinghua.edu.cn/simple"
+              />
+            </Field>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <Button
+                variant="primary"
+                disabled={savePythonSettings.isPending}
+                onClick={() => savePythonSettings.mutate(pyDraft)}
+              >
+                {savePythonSettings.isPending ? '保存中…' : '保存'}
+              </Button>
+              <Button
+                variant="ghost"
+                disabled={savePythonSettings.isPending || !pythonSettingsQuery.data}
+                onClick={() => {
+                  if (pythonSettingsQuery.data) setPyDraft(pythonSettingsQuery.data.settings)
+                }}
+              >
+                重置
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </Panel>
+
+      <Panel title="清理旧记录">
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+          <span className="small muted">保留最近</span>
+          <input
+            type="number"
+            min={0}
+            max={3650}
+            value={cleanupDays}
+            onChange={(e) => setCleanupDays(e.target.value)}
+            className="input"
+            style={{ width: 80 }}
+          />
+          <span className="small muted">天</span>
+          <Button
+            variant="ghost"
+            style={{ color: 'var(--danger)' }}
+            disabled={cleanup.isPending}
+            onClick={() => {
+              const n = Number(cleanupDays)
+              if (!Number.isInteger(n) || n < 0 || n > 3650) {
+                toast('err', '天数需为 0-3650 之间的整数')
+                return
+              }
+              const scope = n === 0 ? '全部用量明细与错误日志（含当天）' : `${n} 天前的用量明细与错误日志`
+              if (window.confirm(`确认清理${scope}？此操作不可撤销。`)) cleanup.mutate(n)
+            }}
+          >
+            {cleanup.isPending ? '清理中…' : '清理旧记录'}
+          </Button>
+        </div>
+      </Panel>
+    </div>
+  )
+}
+
+function adminMCPExample(url: string, tokenPlaceholder: string) {
+  return JSON.stringify(
+    {
+      mcpServers: {
+        'ai-gateway-admin': {
+          type: 'http',
+          url,
+          headers: { Authorization: `Bearer ${tokenPlaceholder}` },
+        },
+      },
+    },
+    null,
+    2,
+  )
+}

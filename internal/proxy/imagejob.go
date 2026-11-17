@@ -287,17 +287,20 @@ func (h *Handler) runImageJob(ctx context.Context, jobID string) {
 
 	var payload map[string]any
 	if err := json.Unmarshal(job.Payload, &payload); err != nil {
+		h.recordJobFailure(job.ID, "", "", 0, "作业请求体已损坏: "+err.Error())
 		h.finishJob(job.ID, store.ImageJobFailed, nil, "作业请求体已损坏: "+err.Error(), "internal_error")
 		return
 	}
 	targets, err := h.balancer.SelectImageTarget(job.Model, job.AllowedChannelIDs)
 	if err != nil {
+		h.recordJobFailure(job.ID, "", "", 0, "选择生图渠道失败: "+err.Error())
 		h.finishJob(job.ID, store.ImageJobFailed, nil, "选择生图渠道失败: "+err.Error(), "internal_error")
 		return
 	}
 	if len(targets) == 0 {
-		h.finishJob(job.ID, store.ImageJobFailed, nil,
-			"模型 "+job.Model+" 没有可用的生图渠道（未标记生图、渠道停用或密钥都在冷却中）", "no_channel")
+		msg := "模型 " + job.Model + " 没有可用的生图渠道（未标记生图、渠道停用或密钥都在冷却中）"
+		h.recordJobFailure(job.ID, "", "", 0, msg)
+		h.finishJob(job.ID, store.ImageJobFailed, nil, msg, "no_channel")
 		return
 	}
 
@@ -326,6 +329,8 @@ func (h *Handler) runImageJob(ctx context.Context, jobID string) {
 			if shouldCoolImageFailure(task.Result.UpstreamStatus) {
 				h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, failStatusOf(task.Result))
 			}
+			// 每一次失败的上游尝试都要留痕，故障转移的每一跳各算一次
+			h.recordJobFailure(job.ID, t.Channel.ID, t.Key, failStatusOf(task.Result), task.Result.Error)
 			continue
 		}
 
@@ -344,8 +349,10 @@ func (h *Handler) runImageJob(ctx context.Context, jobID string) {
 func (h *Handler) pollResumedJob(ctx context.Context, job *store.ImageJob) {
 	ch, err := h.store.GetChannel(job.ChannelID)
 	if err != nil || ch == nil || !ch.Enabled {
-		h.finishJob(job.ID, store.ImageJobFailed, nil,
-			"作业所属渠道已不可用，无法继续轮询上游任务", "resume_failed")
+		msg := "作业所属渠道已不可用，无法继续轮询上游任务"
+		// 轮询确实打到了上游，失败要留痕；渠道已删除时归到（网关）只写错误日志
+		h.recordJobFailure(job.ID, job.ChannelID, job.ChannelKey, 0, msg)
+		h.finishJob(job.ID, store.ImageJobFailed, nil, msg, "resume_failed")
 		return
 	}
 	if err := h.store.SetImageJobStage(job.ID, "polling", job.PollCount); err != nil {
@@ -379,6 +386,7 @@ func (h *Handler) finishFromResult(jobID, channelID, key string, res ImageGenRes
 		if shouldCoolImageFailure(res.UpstreamStatus) {
 			h.cooler.Fail(channelID, key, cdCfg, failStatusOf(&res))
 		}
+		h.recordJobFailure(jobID, channelID, key, failStatusOf(&res), res.Error)
 		h.finishJob(jobID, store.ImageJobFailed, nil, res.Error, imageJobErrorCode(&res))
 	}
 }
@@ -386,7 +394,8 @@ func (h *Handler) finishFromResult(jobID, channelID, key string, res ImageGenRes
 // finishJob 写终态；写入失败只记录日志，作业仍会按原状态过期清理。
 //
 // 成功时补写一条用量：生图按请求次数计费，一次作业算一次调用，
-// 与这次请求实际返回几张图无关。
+// 与这次请求实际返回几张图无关。失败痕迹由 recordJobFailure 按「每次上游尝试」
+// 单独写入，因此这里不处理失败。
 func (h *Handler) finishJob(jobID, status string, result []byte, errMsg, errCode string) {
 	// 终态会清空多数字段，先取出作业元数据供计费使用
 	job, jobErr := h.store.GetImageJob(jobID)
@@ -397,6 +406,68 @@ func (h *Handler) finishJob(jobID, status string, result []byte, errMsg, errCode
 	if status == store.ImageJobSucceeded && jobErr == nil && job != nil {
 		h.recordJobUsage(job)
 	}
+}
+
+// recordJobFailure 为一次失败的上游尝试补写错误日志与调用明细。
+//
+// 异步作业的故障转移同样是「每次都真实请求了上游」，因此每次尝试各写一条，
+// 与同步生图的调用明细口径一致。channelID 为空表示失败发生在上游请求之前
+// （作业请求体损坏、无可用渠道等网关级拒绝），只写错误日志。
+func (h *Handler) recordJobFailure(jobID, channelID, key string, upstreamStatus int, errMsg string) {
+	job, _ := h.store.GetImageJob(jobID)
+	if job == nil {
+		return
+	}
+	status := upstreamStatus
+	if status == 0 {
+		status = http.StatusBadGateway
+	}
+
+	channelName, baseURL := "（网关）", ""
+	if channelID != "" {
+		channelName = ""
+		if ch, err := h.store.GetChannel(channelID); err == nil && ch != nil {
+			channelName, baseURL = ch.Name, ch.BaseURL
+		}
+	}
+
+	msg := truncate(errMsg, 2000)
+	e := &model.ErrorLog{
+		ChannelID:   channelID,
+		ChannelName: channelName,
+		BaseURL:     baseURL,
+		Model:       job.Model,
+		Status:      status,
+		KeyHint:     model.KeyHint(key),
+		Message:     msg,
+	}
+	go func() {
+		if err := h.store.InsertErrorLog(e); err != nil {
+			slog.Error("[errorlog] 写入失败", "err", err)
+		}
+	}()
+
+	if channelID == "" {
+		return
+	}
+
+	row := model.RequestLog{
+		CreatedAt:       time.Now().UnixMilli(),
+		APIKeyID:        job.APIKeyID,
+		ChannelID:       channelID,
+		ChannelName:     channelName,
+		Endpoint:        "images",
+		Model:           job.Model,
+		UpstreamKeyHint: model.KeyHint(key),
+		Status:          status,
+		Attempts:        1,
+		Error:           msg,
+		PriceSource:     pricing.SourceNone,
+	}
+	if apiKey, err := h.store.GetAPIKey(job.APIKeyID); err == nil && apiKey != nil {
+		row.APIKeyName = apiKey.Name
+	}
+	RecordUsage(h.store, h.pricer, row)
 }
 
 // recordJobUsage 作业成功时补写一条用量，按一次请求计费。

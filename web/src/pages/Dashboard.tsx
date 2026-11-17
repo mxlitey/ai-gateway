@@ -5,7 +5,7 @@ import { api, type Channel, type KeyCooldown, type UsageBucket } from '../lib/ap
 import { Badge, Card, Empty, ErrorText, Loading } from '../components/ui'
 import { toast } from '../lib/toast'
 import { fmtCost } from '../lib/money'
-import { fmtDate } from '../components/DatePicker'
+import { bjDateString } from '../lib/tz'
 
 // isPluginChannel 判断渠道是否由插件注册（source 形如 plugin:<插件id>）。
 function isPluginChannel(ch: Channel): boolean {
@@ -13,8 +13,8 @@ function isPluginChannel(ch: Channel): boolean {
 }
 
 export default function Dashboard() {
-  // 仪表盘统计固定为当天
-  const date = fmtDate(new Date())
+  // 仪表盘统计固定为当天（北京时区，与后端日界一致）
+  const date = bjDateString()
 
   const channels = useQuery({ queryKey: ['channels'], queryFn: api.channels })
   const errors = useQuery({ queryKey: ['errors', date], queryFn: () => api.errors(date) })
@@ -63,7 +63,7 @@ export default function Dashboard() {
       {/* 用量与运行状态一览（用量均为当天） */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 sm:gap-4 xl:grid-cols-6">
         <Stat label="请求数" value={fmtInt(usageSummary?.requests ?? 0)} />
-        <Stat label="总 token" value={fmtCompact(usageSummary?.total_tokens ?? 0)} />
+        <Stat label="总 Token" value={fmtCompact(usageSummary?.total_tokens ?? 0)} />
         <Stat label="缓存命中率" value={cacheHitRate} />
         <Stat label="市场价" value={fmtCost(usageSummary?.cost ?? 0)} />
         <Stat label="渠道" value={`${availableChannels} / ${channelList.length}`} />
@@ -93,7 +93,7 @@ export default function Dashboard() {
                       {b.key}
                     </span>
                     <span className="shrink-0 font-mono text-xs text-zinc-500">
-                      {fmtInt(b.requests)} 次 · {fmtCompact(b.total_tokens)} tok ·{' '}
+                      {fmtInt(b.requests)} 次 · {fmtCompact(b.total_tokens)} Token ·{' '}
                       <span className="text-emerald-600 dark:text-emerald-400">
                         {fmtCost(b.cost)}
                       </span>
@@ -246,7 +246,7 @@ function BucketTable({ buckets }: { buckets: UsageBucket[] }) {
         <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800">
           <th className="py-2 pr-3 font-medium">名称</th>
           <th className="py-2 pr-3 text-right font-medium">请求</th>
-          <th className="py-2 pr-3 text-right font-medium">token</th>
+          <th className="py-2 pr-3 text-right font-medium">Token</th>
           <th className="py-2 text-right font-medium">等价费用</th>
         </tr>
       </thead>

@@ -1,4 +1,4 @@
-﻿﻿﻿﻿/** 与网关后端交互的 API 封装与类型定义。 */
+﻿﻿﻿﻿﻿﻿/** 与网关后端交互的 API 封装与类型定义。 */
 
 export type ChannelKey = { key: string; enabled: boolean; label?: string }
 export type HeaderItem = { name: string; value: string }
@@ -205,6 +205,8 @@ export type RequestLogItem = {
   success: boolean
   attempts: number
   duration_ms: number
+  /** 首字耗时（毫秒）：流式请求从发起调用到第一个内容增量；非流式为 0 */
+  first_token_ms: number
   prompt_tokens: number
   completion_tokens: number
   total_tokens: number
@@ -228,8 +230,10 @@ export type UsageBucket = {
   total_tokens: number
   cached_tokens: number
   cost: number
-  /** 该分组耗时的 95 分位（毫秒）；仅按渠道分组时填充 */
-  p95_duration_ms: number
+  /** 流式请求的平均首字耗时（毫秒）；仅按渠道分组时填充 */
+  ttft_ms: number
+  /** 流式请求的输出速度（token/秒，按首字之后的时间算）；仅按渠道分组时填充 */
+  tokens_per_sec: number
 }
 
 export type UsageSummary = {

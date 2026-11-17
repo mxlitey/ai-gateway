@@ -170,10 +170,12 @@ export default function V2Routes() {
               <div className="tbl-wrap">
                 <table className="tbl route-tbl">
                   <colgroup>
-                    <col style={{ width: '28%' }} />
+                    {/* 渠道 6 个汉字宽；状态列只容一个开关、顺序列只容两个小箭头，
+                        宽度写在 CSS 里，窄屏可以把渠道列再收一档 */}
+                    <col className="c-ch" />
                     <col />
-                    <col style={{ width: '22%' }} />
-                    <col style={{ width: 64 }} />
+                    <col className="c-state" />
+                    <col className="c-order" />
                   </colgroup>
                   <thead>
                     <tr>
@@ -195,7 +197,7 @@ export default function V2Routes() {
                             </div>
                           </td>
                           <td>
-                            {/* 模型名可截断，徽章固定在右侧 */}
+                            {/* 模型名尽量占满，超长截断；徽章紧跟其后 */}
                             <div className="up-cell">
                               <code className="up-name mono" style={{ fontSize: 11 }}>
                                 {route.upstream_model}
@@ -208,7 +210,7 @@ export default function V2Routes() {
                             </div>
                           </td>
                           <td>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                               <Switch
                                 checked={!route.model_disabled}
                                 disabled={saveModel.isPending}
@@ -225,11 +227,11 @@ export default function V2Routes() {
                                   })
                                 }
                               />
-                              {/* 模型本身启用、但渠道停用或无可用密钥时，模型实际不可用 */}
+                              {/* 模型启用但渠道停用 / 无可用密钥：用一个小圆点提示，
+                                  文字说明放 title，避免状态列被撑宽 */}
                               {!route.model_disabled && !route.enabled ? (
-                                <span className="truncate tiny faint" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                <span title="渠道不可用（已停用或无可用密钥）">
                                   <Dot tone="warn" />
-                                  渠道不可用
                                 </span>
                               ) : null}
                             </div>

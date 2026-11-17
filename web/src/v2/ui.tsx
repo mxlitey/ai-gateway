@@ -9,6 +9,7 @@ import {
   type TextareaHTMLAttributes,
 } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { bjFmtShort } from '../lib/tz'
 
 /* ---------- Button ---------- */
 
@@ -295,7 +296,7 @@ export function Modal({
 /* ---------- 空心双色环 ----------
    外环：本渠道今日请求数占全部请求数的比例
    内环：成功率（按状态着色）
-   环心：P95 数值 */
+   环心：输出速度 */
 
 export function Donut({
   share,
@@ -403,30 +404,19 @@ export function hourLabel(key: string): string {
   return m ? m[1] : key.slice(-5, -3)
 }
 
-/** 小时桶转时间段文案："2026-11-17 15:00" → "15-16"，末段为 "23-24"。 */
-export function hourRange(key: string): string {
-  const m = key.match(/(\d{2}):00$/)
-  if (!m) return key
-  const start = Number(m[1])
-  return `${m[1]}-${String(start + 1).padStart(2, '0')}`
-}
-
 export function SmallMultiples({
   rows,
   series,
   active,
   onActivate,
-  onHover,
   maxIndex,
 }: {
   rows: MiniRow[]
   series: MiniSeries[]
-  /** 已点选并固定的小时下标；用于高亮与底部统计 */
+  /** 已点选并固定的小时下标；用于高亮与标签读数 */
   active: number | null
   /** 点选某小时：传 null 取消。悬停不调用此函数 */
   onActivate: (index: number | null) => void
-  /** 悬停的小时变化时回调（含离开的 null），供上层同步读数 */
-  onHover?: (index: number | null) => void
   /** 只绘制到该下标（含）；用于隐藏今天尚未到达的小时 */
   maxIndex?: number
 }) {
@@ -435,11 +425,6 @@ export function SmallMultiples({
   const [hover, setHover] = useState<number | null>(null)
   const shownIndex = active ?? hover
   const rootRef = useRef<HTMLDivElement>(null)
-
-  // 悬停状态变化时通知上层，让主图外的读数与底部统计跟着走
-  useEffect(() => {
-    onHover?.(hover)
-  }, [hover, onHover])
 
   // 点击图表以外的区域取消选中；图表内部由柱子自己处理。
   // 同时清掉悬停：触屏点过柱子后浏览器会补一次 mouseenter，若不清，
@@ -472,18 +457,30 @@ export function SmallMultiples({
       onMouseLeave={() => setHover(null)}
     >
       {groups.map((g) => {
-        // 同一行的多段堆叠共用一个纵轴上限，才能看出构成比例
-        const max = Math.max(
-          1,
-          ...rows.slice(0, shown).map((r) => g.items.reduce((sum, s) => sum + (r.values[s.key] ?? 0), 0)),
-        )
+        // 每行独立缩放：以该行已到达时段内的峰值作为满格基准。
+        // 之前用 Math.max(1, ...) 兜底会把小于 1 的峰值（如费用 0.713 元）
+        // 抬到 1，导致该行永远到不了满格。
+        const peak = rows
+          .slice(0, shown)
+          .reduce((m, r) => Math.max(m, g.items.reduce((sum, s) => sum + (r.values[s.key] ?? 0), 0)), 0)
+        const max = peak > 0 ? peak : 1
+        // 标签下方数值：选中某小时显示该小时，未选中显示已到达时段的汇总
+        const pick = (i: number) =>
+          g.items.reduce((sum, s) => sum + (rows[i]?.values[s.key] ?? 0), 0)
+        const labelValue =
+          shownIndex !== null ? pick(shownIndex) : rows.slice(0, shown).reduce((sum, _r, i) => sum + pick(i), 0)
         return (
           <div className="sm-row" key={g.key}>
+            {/* 名称与汇总值上下两行：名称单行不换行，数值放它下面，
+                右侧不再单独占一列，省下的宽度全部留给柱状图 */}
             <span className="sm-lbl">
-              {g.items.map((s) => (
-                <i key={s.key} style={{ background: s.color }} title={s.label} />
-              ))}
-              {g.label}
+              <span className="sm-lbl-top">
+                <i style={{ background: g.items[0].color }} title={g.items[0].label} />
+                <span className="sm-lbl-name">{g.label}</span>
+              </span>
+              <span className={`sm-lbl-max${shownIndex !== null ? ' on' : ''}`}>
+                {g.items[0].format(labelValue)}
+              </span>
             </span>
             <div className="sm-plot">
               {rows.map((r, i) => {
@@ -521,7 +518,6 @@ export function SmallMultiples({
                 )
               })}
             </div>
-            <span className="sm-max">{g.items[0].format(max)}</span>
           </div>
         )
       })}
@@ -612,9 +608,7 @@ export function fmtCompact(n: number | undefined): string {
 }
 
 export function fmtTime(ts: number): string {
-  const d = new Date(ts * 1000)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  return bjFmtShort(ts)
 }
 
 export function fmtDuration(ms: number): string {

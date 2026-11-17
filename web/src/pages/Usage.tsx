@@ -4,6 +4,7 @@ import { api, type UsageBucket } from '../lib/api'
 import { Badge, Button, Card, Empty, ErrorText, Loading, Segmented } from '../components/ui'
 import RangePicker, { type RangeValue } from '../components/RangePicker'
 import { fmtCost } from '../lib/money'
+import { bjDayStart, bjFmtDateTime, bjStartOfHour } from '../lib/tz'
 
 const PAGE_SIZE = 50
 const HOUR = 60 * 60 * 1000
@@ -219,7 +220,7 @@ export default function Usage() {
 
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <Stat label="请求数" value={fmtInt(s.requests)} />
-        <Stat label="总 token" value={fmtCompact(s.total_tokens)} />
+        <Stat label="总 Token" value={fmtCompact(s.total_tokens)} />
         <Stat label="缓存命中率" value={cacheHitRate} />
         <Stat label="市场价" value={fmtCost(s.cost)} />
       </div>
@@ -242,7 +243,7 @@ export default function Usage() {
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[46rem] text-sm">
+              <table className="w-full min-w-[50rem] text-sm">
                 <thead>
                   <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800">
                     <th className="py-2 pr-3 font-medium">时间</th>
@@ -253,6 +254,7 @@ export default function Usage() {
                     <th className="py-2 pr-3 text-right font-medium">未缓存输入</th>
                     <th className="py-2 pr-3 text-right font-medium">缓存输入</th>
                     <th className="py-2 pr-3 text-right font-medium">输出</th>
+                    <th className="py-2 pr-3 text-right font-medium">首字</th>
                     <th className="py-2 pr-3 text-right font-medium">耗时</th>
                     <th className="py-2 text-right font-medium">等价费用</th>
                   </tr>
@@ -264,7 +266,7 @@ export default function Usage() {
                       className="border-b border-zinc-100 last:border-0 dark:border-zinc-800/60"
                     >
                       <td className="py-2 pr-3 text-xs whitespace-nowrap text-zinc-600 dark:text-zinc-400">
-                        {new Date(r.created_at).toLocaleString()}
+                        {bjFmtDateTime(r.created_at)}
                       </td>
                       <td className="py-2 pr-3 font-mono text-xs text-zinc-700 dark:text-zinc-300">
                         {r.model || '—'}
@@ -300,6 +302,9 @@ export default function Usage() {
                       </td>
                       <td className="py-2 pr-3 text-right font-mono text-xs text-zinc-600 dark:text-zinc-400">
                         {fmtInt(r.completion_tokens)}
+                      </td>
+                      <td className="py-2 pr-3 text-right font-mono text-xs text-zinc-500">
+                        {r.first_token_ms > 0 ? `${r.first_token_ms} ms` : '—'}
                       </td>
                       <td className="py-2 pr-3 text-right font-mono text-xs text-zinc-500">
                         {r.duration_ms} ms
@@ -395,7 +400,7 @@ function TrendChart({ points }: { points: UsageBucket[] }) {
 
   return (
     <div>
-      <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">单位 Tokens</p>
+      <p className="mb-2 text-xs text-zinc-500 dark:text-zinc-400">单位 Token</p>
       <div className="flex gap-3">
         <div className="flex h-40 w-14 shrink-0 flex-col justify-between text-right text-[11px] leading-none text-zinc-400 dark:text-zinc-500">
           {ticks.map((t, i) => (
@@ -457,7 +462,7 @@ function TrendChart({ points }: { points: UsageBucket[] }) {
                       </span>
                     </div>
                     <div className="mt-1.5 space-y-1">
-                      <TipRow label="总 Tokens" value={fmtInt(p.total_tokens)} />
+                      <TipRow label="总 Token" value={fmtInt(p.total_tokens)} />
                       <TipRow
                         label="缓存命中率"
                         value={
@@ -581,15 +586,11 @@ function fmtCompact(n: number): string {
 }
 
 function startOfDay(ms: number): number {
-  const d = new Date(ms)
-  d.setHours(0, 0, 0, 0)
-  return d.getTime()
+  return bjDayStart(ms)
 }
 
 function startOfHour(ms: number): number {
-  const d = new Date(ms)
-  d.setMinutes(0, 0, 0)
-  return d.getTime()
+  return bjStartOfHour(ms)
 }
 
 // dayRange 当天的自然日范围（[今天 00:00, 明天 00:00)）

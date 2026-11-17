@@ -316,7 +316,7 @@ function PriceForm({
   return (
     <div className="mt-3 space-y-3 border-t border-zinc-100 pt-3 dark:border-zinc-800">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge tone="info">{perRequest ? '按次计费' : '按 token 计费'}</Badge>
+        <Badge tone="info">{perRequest ? '按次计费' : '按 Token 计费'}</Badge>
         <span className="font-mono text-xs text-zinc-400">{model}</span>
       </div>
 
@@ -340,7 +340,7 @@ function PriceForm({
           </div>
           {draft.tiers.map((t, i) => (
             <div key={i} className="grid items-end gap-2 sm:grid-cols-4">
-              <Field label={i === 0 ? '输入上限（token）' : '本档上限'}>
+              <Field label={i === 0 ? '输入上限（Token）' : '本档上限'}>
                 <Input
                   value={t.up_to}
                   onChange={(e) => setTier(i, 'up_to', e.target.value)}

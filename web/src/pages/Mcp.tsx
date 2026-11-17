@@ -7,6 +7,7 @@ import {
   type MCPTool,
 } from '../lib/api'
 import { toast } from '../lib/toast'
+import { bjDayStart, bjFmtDateTime } from '../lib/tz'
 import RangePicker, { type RangeValue } from '../components/RangePicker'
 import {
   Badge,
@@ -952,7 +953,7 @@ function McpUsageCard() {
                 {items.map((r) => (
                   <tr key={r.id} className="border-b border-zinc-100 last:border-0 dark:border-zinc-800/60">
                     <td className="py-2 pr-3 text-xs whitespace-nowrap text-zinc-600 dark:text-zinc-400">
-                      {new Date(r.created_at).toLocaleString()}
+                      {bjFmtDateTime(r.created_at)}
                     </td>
                     <td className="py-2 pr-3 font-mono text-xs text-zinc-700 dark:text-zinc-300">
                       {r.tool || '—'}
@@ -1022,11 +1023,10 @@ function McpUsageCard() {
   )
 }
 
-// dayRange 当天的自然日范围（[今天 00:00, 明天 00:00)）
+// dayRange 当天的自然日范围（北京时间 [今天 00:00, 明天 00:00)）
 function dayRange(now: number): RangeValue {
-  const d = new Date(now)
-  d.setHours(0, 0, 0, 0)
-  return { from: d.getTime(), to: d.getTime() + DAY }
+  const from = bjDayStart(now)
+  return { from, to: from + DAY }
 }
 
 // ClientAccessCard 客户端接入说明，并提供开箱可用的 JSON 配置一键复制。

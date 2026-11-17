@@ -94,10 +94,21 @@ func (r *Recorder) ObserveJSON(raw []byte) {
 }
 
 // ObserveEvent 从流式响应的单个事件对象中提取用量。
+//
+// 同时承担首字耗时的打点：流式回复里第一个带文本（或推理）增量的 chunk
+// 到达时记一次时间差，之后不再覆盖。只有首字才有意义，
+// 后续 chunk 的到达时间受生成长度影响，不能作为响应速度指标。
 func (r *Recorder) ObserveEvent(chunk map[string]any) {
 	if r == nil || chunk == nil {
 		return
 	}
+	r.mu.Lock()
+	// 非流式响应是一次性返回全文，没有「首字」概念，保持 0
+	if r.row.Stream && r.row.FirstTokenMS == 0 && carriesContent(chunk) {
+		r.row.FirstTokenMS = time.Since(r.start).Milliseconds()
+	}
+	r.mu.Unlock()
+
 	usage, _ := chunk["usage"].(map[string]any)
 	if usage == nil {
 		return
@@ -105,6 +116,34 @@ func (r *Recorder) ObserveEvent(chunk map[string]any) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	applyUsage(&r.row, usage)
+}
+
+// carriesContent 判断该 chunk 是否携带了内容增量。
+//
+// 兼容两种形状：OpenAI 的 choices[].delta.content / reasoning_content，
+// 以及 Claude 原生事件的 delta.text。空串与纯 role 的首包不算。
+func carriesContent(chunk map[string]any) bool {
+	nonEmpty := func(v any) bool {
+		s, _ := v.(string)
+		return s != ""
+	}
+	if choices, ok := chunk["choices"].([]any); ok {
+		for _, c := range choices {
+			ch, _ := c.(map[string]any)
+			if ch == nil {
+				continue
+			}
+			if delta, ok := ch["delta"].(map[string]any); ok {
+				if nonEmpty(delta["content"]) || nonEmpty(delta["reasoning_content"]) {
+					return true
+				}
+			}
+		}
+	}
+	if delta, ok := chunk["delta"].(map[string]any); ok && nonEmpty(delta["text"]) {
+		return true
+	}
+	return false
 }
 
 // Discard 放弃本次记录（异步作业在提交阶段只返回作业号，真正完成时再补写用量）。

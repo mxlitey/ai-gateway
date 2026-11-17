@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type MCPServer, type MCPServerInput, type MCPTool } from '../lib/api'
+import { bjDayStart, bjFmtDateTime } from '../lib/tz'
 import { toast } from '../lib/toast'
 import RangePicker, { type RangeValue } from '../components/RangePicker'
 import {
@@ -891,7 +892,7 @@ function McpUsagePanel() {
                   {items.map((r) => (
                     <tr key={r.id}>
                       <td className="tiny faint num" style={{ whiteSpace: 'nowrap' }}>
-                        {new Date(r.created_at).toLocaleString()}
+                        {bjFmtDateTime(r.created_at)}
                       </td>
                       <td className="mono tiny">{r.tool || '—'}</td>
                       <td className="tiny">
@@ -941,9 +942,8 @@ function McpUsagePanel() {
 }
 
 function dayRange(now: number): RangeValue {
-  const d = new Date(now)
-  d.setHours(0, 0, 0, 0)
-  return { from: d.getTime(), to: d.getTime() + DAY }
+  const from = bjDayStart(now)
+  return { from, to: from + DAY }
 }
 
 /* 客户端接入 */

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Plugin, type PluginAccount, type PluginLoginMethod } from '../lib/api'
 import { toast } from '../lib/toast'
+import { bjFmtDateTime, bjFmtTime } from '../lib/tz'
 import { Badge, Button, Card, Empty, ErrorText, Field, IconButton, Input, Loading, Modal, RefreshIcon, Textarea } from '../components/ui'
 
 const statusTone: Record<string, 'ok' | 'off' | 'warn' | 'info'> = {
@@ -136,9 +137,7 @@ export default function Plugins() {
                     </dd>
                     <dt className="text-zinc-500">最后探活</dt>
                     <dd className="text-zinc-700 dark:text-zinc-300">
-                      {plugin.last_seen_at
-                        ? new Date(plugin.last_seen_at).toLocaleTimeString()
-                        : '—'}
+                      {plugin.last_seen_at ? bjFmtTime(plugin.last_seen_at) : '—'}
                     </dd>
                   </dl>
 
@@ -647,7 +646,7 @@ function AccountRow({
           expired ? (
             <span className="text-red-600 dark:text-red-400">已过期</span>
           ) : (
-            <span className="text-zinc-500">{new Date(account.expires_at).toLocaleString()}</span>
+            <span className="text-zinc-500">{bjFmtDateTime(account.expires_at)}</span>
           )
         ) : (
           <span className="text-zinc-400">—</span>

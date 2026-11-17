@@ -171,14 +171,7 @@ function PriceSection({
   }
 
   return (
-    <Panel
-      title="价格表"
-      action={
-        <span className="tiny faint">
-          {data ? `已定价 ${data.count} / ${data.model_count} 个模型` : ''}
-        </span>
-      }
-    >
+    <Panel>
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <Input
           style={{ width: 224 }}
@@ -194,9 +187,12 @@ function PriceSection({
             { value: 'unpriced', label: `未定价 ${unpriced}` },
           ]}
         />
-        <span className="tiny faint">
-          共 {rows.length} 行{q ? ` · 匹配 ${shown.length} 行` : ''}
-        </span>
+        {data ? (
+          <span className="tiny faint">
+            已定价 {data.count} / {data.model_count} 个模型
+            {q ? ` · 匹配 ${shown.length} 行` : ''}
+          </span>
+        ) : null}
       </div>
 
       {loading ? (
@@ -232,7 +228,12 @@ function PriceSection({
                       font: 'inherit',
                     }}
                   >
-                    <span className="mono" style={{ fontSize: 11 }}>
+                    {/* 模型名不换行，超长直接截断，把宽度让给右侧价格与按钮 */}
+                    <span
+                      className="mono truncate"
+                      style={{ fontSize: 11, flex: 1, minWidth: 0 }}
+                      title={r.model}
+                    >
                       {r.model}
                     </span>
                     {r.image ? <Badge tone="info">生图</Badge> : null}
@@ -318,7 +319,7 @@ function PriceForm({
       }}
     >
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
-        <Badge tone="info">{perRequest ? '按次计费' : '按 token 计费'}</Badge>
+        <Badge tone="info">{perRequest ? '按次计费' : '按 Token 计费'}</Badge>
         <span className="mono tiny faint">{model}</span>
       </div>
 
@@ -342,7 +343,7 @@ function PriceForm({
           </div>
           {draft.tiers.map((t, i) => (
             <div key={i} style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, alignItems: 'end' }}>
-              <Field label={i === 0 ? '输入上限（token）' : '本档上限'}>
+              <Field label={i === 0 ? '输入上限（Token）' : '本档上限'}>
                 <Input
                   value={t.up_to}
                   onChange={(e) => setTier(i, 'up_to', e.target.value)}
@@ -361,7 +362,6 @@ function PriceForm({
               </Field>
               <div style={{ display: 'flex', alignItems: 'flex-end' }}>
                 <Button
-                  size="sm"
                   variant="ghost"
                   disabled={draft.tiers.length <= 1}
                   onClick={() => onChange({ ...draft, tiers: draft.tiers.filter((_, j) => j !== i) })}
@@ -423,7 +423,6 @@ function PriceForm({
               </Field>
               <div style={{ display: 'flex', alignItems: 'flex-end' }}>
                 <Button
-                  size="sm"
                   variant="ghost"
                   onClick={() =>
                     onChange({ ...draft, windows: draft.windows.filter((_, j) => j !== i) })

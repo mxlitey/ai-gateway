@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Channel, type KeyCooldown, type UsageBucket } from '../lib/api'
 import { fmtCost } from '../lib/money'
+import { bjDateString, bjDayStart, bjFmtTime, bjParts } from '../lib/tz'
 import { toast } from '../lib/toast'
 import {
   Badge,
@@ -13,8 +14,8 @@ import {
   fmtCompact,
   fmtCountdown,
   fmtInt,
-  hourRange,
   Loading,
+  PageHead,
   Panel,
   SmallMultiples,
   useTick,
@@ -26,29 +27,13 @@ function isPluginChannel(ch: Channel): boolean {
   return ch.source.startsWith('plugin:')
 }
 
-/** 把小时桶转成图表行：未缓存输入 = prompt - cached，避免三段重叠。 */
-function rowsFromBuckets(points: UsageBucket[]) {
-  return points.map((p) => ({
-    label: p.key,
-    values: {
-      prompt: Math.max(0, p.prompt_tokens - p.cached_tokens),
-      cached: p.cached_tokens,
-      completion: p.completion_tokens,
-    },
-  }))
-}
-
-/** 时间窗口统一为自然日（北京时区），KPI、主图、昨日对比三者口径一致 */
+/** 时间窗口统一为北京时区的自然日，与后端 beijingDayRange / 小时分桶一致 */
 function dayStart(offsetDays = 0): number {
-  const d = new Date()
-  d.setHours(0, 0, 0, 0)
-  d.setDate(d.getDate() + offsetDays)
-  return d.getTime()
+  return bjDayStart(Date.now(), offsetDays)
 }
 
-function localDateString(d = new Date()): string {
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+function localDateString(): string {
+  return bjDateString(Date.now())
 }
 
 /**
@@ -76,9 +61,8 @@ function countChannelModels(c: Channel): number {
 }
 
 export default function V2Dashboard() {
-  // active = 点选固定的小时；hover = 鼠标悬停的小时。读数优先显示悬停，其次点选。
+  // active = 点选固定的小时；悬停只用于图表内预览，不影响读数
   const [active, setActive] = useState<number | null>(null)
-  const [hover, setHover] = useState<number | null>(null)
 
   const channels = useQuery({ queryKey: ['channels'], queryFn: api.channels })
   const errors = useQuery({ queryKey: ['errors'], queryFn: () => api.errors() })
@@ -112,27 +96,44 @@ export default function V2Dashboard() {
     return { s, errorCount, cacheHit, errorRate }
   }, [usage.data, errors.data])
 
-  // 今日已到达的小时数（含当前小时）。主图与趋势线都只画到这里，未来时段留空。
-  const cutoff = useMemo(() => {
-    const now = new Date()
-    return now.getHours() + 1
-  }, [])
+  // 今日已到达的小时数（含当前小时，按北京时间）。主图与趋势线都只画到这里，未来时段留空。
+  const cutoff = useMemo(() => bjParts().h + 1, [])
+
+  // 失败请求不会写入 request_logs（失败只进 error_logs），因此失败数必须从错误日志按小时分桶统计
+  const failuresByHour = useMemo(() => {
+    const arr = new Array<number>(24).fill(0)
+    const from = dayStart()
+    const to = dayStart(1)
+    for (const g of errors.data?.channels ?? []) {
+      for (const e of g.errors) {
+        if (e.created_at < from || e.created_at >= to) continue
+        // 小时必须按北京时间取，与后端小时桶的 key 同口径
+        const h = bjParts(e.created_at).h
+        if (h >= 0 && h < 24) arr[h]++
+      }
+    }
+    return arr
+  }, [errors.data])
 
   // 主图：每个指标独占一行（不堆叠），共用同一组小时横坐标
   const miniRows = useMemo(() => {
     const pts = series.data?.points ?? []
-    return pts.map((p) => ({
-      label: p.key,
-      values: {
-        prompt: Math.max(0, p.prompt_tokens - p.cached_tokens),
-        cached: p.cached_tokens,
-        completion: p.completion_tokens,
-        success: p.success_requests,
-        failures: Math.max(0, p.requests - p.success_requests),
-        cost: p.cost,
-      },
-    }))
-  }, [series.data])
+    return pts.map((p, i) => {
+      // 桶按小时升序生成，索引即小时；用 key 兜底解析，避免口径漂移
+      const hour = Number(p.key.slice(-5, -3))
+      return {
+        label: p.key,
+        values: {
+          prompt: Math.max(0, p.prompt_tokens - p.cached_tokens),
+          cached: p.cached_tokens,
+          completion: p.completion_tokens,
+          success: p.success_requests,
+          failures: failuresByHour[Number.isFinite(hour) ? hour : i] ?? 0,
+          cost: p.cost,
+        },
+      }
+    })
+  }, [series.data, failuresByHour])
 
   // 费用为 0 时（未配价格）整行没有意义，直接不显示这一行
   const miniSeries = useMemo(() => {
@@ -163,32 +164,6 @@ export default function V2Dashboard() {
     [yesterday.data],
   )
 
-  // 当前用于读数的小时：点选固定优先，没有选中时跟随悬停预览
-  const focus = active ?? hover
-
-  // 读数始终显示：选中某小时显示该小时，未选中显示全天合计
-  const readout = useMemo(() => {
-    if (focus === null) return null
-    return series.data?.points?.[focus] ?? null
-  }, [focus, series.data])
-
-  // 全天合计，供读数区在未选中时展示
-  const dayTotals = useMemo(() => {
-    return (series.data?.points ?? []).reduce(
-      (acc, p) => ({
-        total_tokens: acc.total_tokens + p.total_tokens,
-        requests: acc.requests + p.requests,
-        cost: acc.cost + p.cost,
-      }),
-      { total_tokens: 0, requests: 0, cost: 0 },
-    )
-  }, [series.data])
-
-  const readoutLabel = readout ? hourRange(readout.key) : '全天'
-  const readoutTokens = readout ? readout.total_tokens : dayTotals.total_tokens
-  const readoutRequests = readout ? readout.requests : dayTotals.requests
-  const readoutCost = readout ? readout.cost : dayTotals.cost
-
   // 渠道健康：只统计真实渠道（插件渠道需插件在运行）
   const runningPluginIDs = new Set(
     (plugins.data ?? []).filter((p) => p.last_status === 'running').map((p) => p.id),
@@ -207,19 +182,6 @@ export default function V2Dashboard() {
   }
 
   const s = model?.s
-  // 图表底部固定显示全天合计：聚焦某小时的明细只在上方读数里出现，
-  // 否则数值随悬停跳动又没标签，容易被误读成另一组合计。
-  const foot = rowsFromBuckets(series.data?.points ?? []).reduce(
-    (acc, r) => ({
-      prompt: acc.prompt + r.values.prompt,
-      cached: acc.cached + r.values.cached,
-      completion: acc.completion + r.values.completion,
-    }),
-    { prompt: 0, cached: 0, completion: 0 },
-  )
-  // 缓存输入占全部输入的比例
-  const cacheSavedPct =
-    foot.prompt + foot.cached > 0 ? (foot.cached / (foot.prompt + foot.cached)) * 100 : 0
 
   // 按模型横条：分别取费用与请求的最大值，让两条进度条各自可比
   const modelBuckets = s?.by_model ?? []
@@ -229,8 +191,8 @@ export default function V2Dashboard() {
 
   return (
     <div className="stack">
-      {/* 顶部状态带：网关状态 + 数据新鲜度 + 监听地址 */}
-      <StatusStrip />
+      {/* 页头统一由 PageHead 提供；顶部状态带作为副标题，避免顶栏与页头出现两个标题 */}
+      <PageHead title="仪表盘" desc={<StatusStrip />} />
 
       {errors.isError ? <ErrorText text={(errors.error as Error).message} /> : null}
 
@@ -245,7 +207,7 @@ export default function V2Dashboard() {
             </span>
             <span className="sep" style={{ width: 1, height: 9, background: 'var(--border)' }} />
             <span>
-              token <b className="num">{fmtCompact(s?.total_tokens ?? 0)}</b>
+              Token <b className="num">{fmtCompact(s?.total_tokens ?? 0)}</b>
             </span>
             <span className="sep" style={{ width: 1, height: 9, background: 'var(--border)' }} />
             <span>今日 00:00 起</span>
@@ -255,7 +217,7 @@ export default function V2Dashboard() {
 
         <div className="metrics">
           <MetricRow
-            k="总 token"
+            k="总 Token"
             v={fmtCompact(s?.total_tokens ?? 0)}
             sub={`输入 ${fmtCompact(s?.prompt_tokens ?? 0)} · 输出 ${fmtCompact(s?.completion_tokens ?? 0)}`}
             tone="good"
@@ -263,7 +225,7 @@ export default function V2Dashboard() {
           <MetricRow
             k="缓存命中率"
             v={`${(model?.cacheHit ?? 0).toFixed(1)}%`}
-            sub={`已省 ${fmtCompact(s?.cached_tokens ?? 0)} 缓存输入`}
+            sub={`缓存输入 ${fmtCompact(s?.cached_tokens ?? 0)}`}
             tone={(model?.cacheHit ?? 0) > 0 ? 'good' : undefined}
           />
           <MetricRow
@@ -300,15 +262,11 @@ export default function V2Dashboard() {
         </div>
       </div>
 
-      {/* 24 小时主图：每个指标独占一行（小倍数，不堆叠），共用横坐标 */}
+      {/* 24 小时主图：每个指标独占一行（小倍数，不堆叠），共用横坐标。
+          选中值直接体现在行标签下方，不再单独占右上角读数与底部统计。 */}
       <div className="panel">
         <div className="chart-head">
           <h2>今日 24 小时</h2>
-          <div className="readout">
-            <b>{readoutLabel}</b> · token {fmtCompact(readoutTokens)} · 请求{' '}
-            {fmtInt(readoutRequests)} 次
-            {readoutCost > 0 ? ` · ${fmtCost(readoutCost)}` : ''}
-          </div>
         </div>
         <div className="chart-body">
           {series.isLoading ? (
@@ -321,27 +279,9 @@ export default function V2Dashboard() {
               series={miniSeries}
               active={active}
               onActivate={setActive}
-              onHover={setHover}
               maxIndex={cutoff - 1}
             />
           )}
-        </div>
-        <div className="chart-foot">
-          <span>
-            未缓存输入 <b>{fmtCompact(foot.prompt)}</b>
-          </span>
-          <span>
-            缓存输入 <b>{fmtCompact(foot.cached)}</b>
-          </span>
-          {/* 输出与缓存占比绑定成一组：需要换行时两者一起换到下一行 */}
-          <span className="foot-tail">
-            <span>
-              输出 <b>{fmtCompact(foot.completion)}</b>
-            </span>
-            <span>
-              缓存占比 <b>{cacheSavedPct.toFixed(0)}%</b>
-            </span>
-          </span>
         </div>
       </div>
 
@@ -478,8 +418,6 @@ export default function V2Dashboard() {
 function StatusStrip() {
   const runtime = useQuery({ queryKey: ['runtime'], queryFn: api.runtimeInfo })
   const now = useTick(1000)
-  const d = new Date(now)
-  const p = (n: number) => String(n).padStart(2, '0')
   return (
     <div className="strip">
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -495,9 +433,7 @@ function StatusStrip() {
         网关运行中
       </span>
       <span className="sep" />
-      <span className="num">
-        {p(d.getHours())}:{p(d.getMinutes())}:{p(d.getSeconds())}
-      </span>
+      <span className="num">{bjFmtTime(now)}</span>
       <span className="sep hide-xs" />
       <span className="hide-xs mono">{runtime.data?.access_url ?? '—'}</span>
       <span className="sep hide-xs" />
@@ -651,7 +587,7 @@ function BucketTable({ buckets }: { buckets: UsageBucket[] }) {
           <tr>
             <th>名称</th>
             <th className="r">请求</th>
-            <th className="r">token</th>
+            <th className="r">Token</th>
             <th className="r">等价费用</th>
           </tr>
         </thead>

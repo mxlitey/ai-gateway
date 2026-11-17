@@ -374,6 +374,7 @@ type RequestLog struct {
 	Success          bool    `json:"success"`
 	Attempts         int     `json:"attempts"`
 	DurationMS       int64   `json:"duration_ms"`
+	FirstTokenMS     int64   `json:"first_token_ms"`
 	PromptTokens     int     `json:"prompt_tokens"`
 	CompletionTokens int     `json:"completion_tokens"`
 	TotalTokens      int     `json:"total_tokens"`
@@ -445,8 +446,9 @@ type UsageBucket struct {
 	TotalTokens      int64   `json:"total_tokens"`
 	CachedTokens     int64   `json:"cached_tokens"`
 	Cost             float64 `json:"cost"`
-	// P95DurationMS 该分组耗时的 95 分位（毫秒）；仅按渠道分组时填充，其余分组为 0。
-	P95DurationMS int64 `json:"p95_duration_ms"`
+	// 以下两项仅在按渠道分组时填充，用于渠道卡片的响应能力对比
+	TTFTMS       int64   `json:"ttft_ms"`
+	TokensPerSec float64 `json:"tokens_per_sec"`
 }
 
 // UsageSummary 时间区间内的用量与费用汇总。

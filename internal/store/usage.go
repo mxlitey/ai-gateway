@@ -13,13 +13,13 @@ import (
 // ---------- 请求用量 ----------
 
 const requestLogCols = `id, created_at, api_key_id, api_key_name, channel_id, channel_name,
-	endpoint, stream, model, upstream_model, upstream_key_hint, status, success, attempts, duration_ms,
+	endpoint, stream, model, upstream_model, upstream_key_hint, status, success, attempts, duration_ms, first_token_ms,
 	prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens,
 	cost_prompt, cost_completion, cost, price_model, price_source, error`
 
 // 插入时不带 id：INTEGER PRIMARY KEY 显式写入 0 会被当成合法 rowid
 const requestLogInsertCols = `created_at, api_key_id, api_key_name, channel_id, channel_name,
-	endpoint, stream, model, upstream_model, upstream_key_hint, status, success, attempts, duration_ms,
+	endpoint, stream, model, upstream_model, upstream_key_hint, status, success, attempts, duration_ms, first_token_ms,
 	prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens,
 	cost_prompt, cost_completion, cost, price_model, price_source, error`
 
@@ -29,7 +29,7 @@ func scanRequestLog(sc scanner) (*model.RequestLog, error) {
 	if err := sc.Scan(
 		&r.ID, &r.CreatedAt, &r.APIKeyID, &r.APIKeyName, &r.ChannelID, &r.ChannelName,
 		&r.Endpoint, &stream, &r.Model, &r.UpstreamModel, &r.UpstreamKeyHint,
-		&r.Status, &success, &r.Attempts, &r.DurationMS,
+		&r.Status, &success, &r.Attempts, &r.DurationMS, &r.FirstTokenMS,
 		&r.PromptTokens, &r.CompletionTokens, &r.TotalTokens, &r.CachedTokens, &r.ReasoningTokens,
 		&r.CostPrompt, &r.CostCompletion, &r.Cost,
 		&r.PriceModel, &r.PriceSource, &r.Error,
@@ -48,10 +48,10 @@ func (s *Store) InsertRequestLog(r *model.RequestLog) error {
 	}
 	res, err := s.db.Exec(
 		`INSERT INTO request_logs (`+requestLogInsertCols+`)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		r.CreatedAt, r.APIKeyID, r.APIKeyName, r.ChannelID, r.ChannelName,
 		r.Endpoint, boolToInt(r.Stream), r.Model, r.UpstreamModel, r.UpstreamKeyHint,
-		r.Status, boolToInt(r.Success), r.Attempts, r.DurationMS,
+		r.Status, boolToInt(r.Success), r.Attempts, r.DurationMS, r.FirstTokenMS,
 		r.PromptTokens, r.CompletionTokens, r.TotalTokens, r.CachedTokens, r.ReasoningTokens,
 		r.CostPrompt, r.CostCompletion, r.Cost,
 		r.PriceModel, r.PriceSource, truncateForDB(r.Error, 2000),
@@ -233,8 +233,8 @@ func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName, keyHint
 	if sum.ByChannel, err = group("channel_name", "(未命中渠道)", whereAll, argsAll); err != nil {
 		return nil, err
 	}
-	// 渠道卡片需要 P95 延迟：单独按渠道取耗时分布，再挑 95 分位
-	if err := s.fillChannelP95(sum.ByChannel, whereAll, argsAll); err != nil {
+	// 渠道卡片需要首字耗时与输出速度：单独按渠道聚合流式请求，再回填
+	if err := s.fillChannelSpeed(sum.ByChannel, whereAll, argsAll); err != nil {
 		return nil, err
 	}
 	if sum.ByAPIKey, err = group("api_key_name", "(未知密钥)", whereAll, argsAll); err != nil {
@@ -256,14 +256,27 @@ func (s *Store) UsageSummary(fromMs, toMs int64, channelName, modelName, keyHint
 	return sum, nil
 }
 
-// fillChannelP95 为按渠道分组的结果补 P95 耗时。
-// SQLite 没有分位函数，因此取出每组耗时在内存里排序取分位；渠道数量有限，开销可控。
-func (s *Store) fillChannelP95(buckets []model.UsageBucket, where string, args []any) error {
+// fillChannelSpeed 为按渠道分组的结果补首字耗时与输出速度。
+//
+// 为什么不用 P95 总耗时：总耗时受输出长度影响极大，长回复天然更慢，
+// 同一渠道换个模型就不可比。首字耗时（TTFT）与首字之后的输出速度
+// 都不受输出长度影响，才适合横向比较渠道的响应能力。
+//
+// 统计口径：
+//   - TTFT 取流式请求 first_token_ms 的算术平均，非流式不参与
+//   - 输出速度 = Σ completion_tokens / Σ(总耗时 - 首字耗时)，即首字之后每秒产出多少 token
+func (s *Store) fillChannelSpeed(buckets []model.UsageBucket, where string, args []any) error {
 	if len(buckets) == 0 {
 		return nil
 	}
 	rows, err := s.db.Query(
-		`SELECT channel_name, duration_ms FROM request_logs WHERE `+where+` ORDER BY channel_name, duration_ms`,
+		`SELECT channel_name,
+		        COUNT(1),
+		        COALESCE(SUM(first_token_ms), 0),
+		        COALESCE(SUM(completion_tokens), 0),
+		        COALESCE(SUM(duration_ms - first_token_ms), 0)
+		 FROM request_logs WHERE `+where+` AND stream = 1 AND first_token_ms > 0
+		 GROUP BY channel_name`,
 		args...,
 	)
 	if err != nil {
@@ -271,15 +284,20 @@ func (s *Store) fillChannelP95(buckets []model.UsageBucket, where string, args [
 	}
 	defer rows.Close()
 
-	// 已按渠道名、耗时升序返回，顺序扫一遍即可
-	idx := make(map[string][]int64, len(buckets))
+	type agg struct {
+		n       int64
+		ttftSum int64
+		tokens  int64
+		genMs   int64
+	}
+	idx := map[string]agg{}
 	for rows.Next() {
 		var name string
-		var ms int64
-		if err := rows.Scan(&name, &ms); err != nil {
+		var a agg
+		if err := rows.Scan(&name, &a.n, &a.ttftSum, &a.tokens, &a.genMs); err != nil {
 			return err
 		}
-		idx[name] = append(idx[name], ms)
+		idx[name] = a
 	}
 	if err := rows.Err(); err != nil {
 		return err
@@ -287,23 +305,19 @@ func (s *Store) fillChannelP95(buckets []model.UsageBucket, where string, args [
 
 	for i := range buckets {
 		key := buckets[i].Key
-		vals, ok := idx[key]
-		if !ok || len(vals) == 0 {
-			// 未命中渠道的占位名与真实 channel_name 不一致，按占位名兜底
-			vals = idx[""]
-			if len(vals) == 0 {
-				continue
-			}
+		a, ok := idx[key]
+		if !ok && key == "(未命中渠道)" {
+			// 分组时把空 channel_name 换成了占位名，聚合结果里对应的仍是空串
+			a, ok = idx[""]
 		}
-		// 最近秩法：ceil(0.95*n)-1
-		pos := int(math.Ceil(0.95*float64(len(vals)))) - 1
-		if pos < 0 {
-			pos = 0
+		if !ok || a.n == 0 {
+			continue
 		}
-		if pos >= len(vals) {
-			pos = len(vals) - 1
+		buckets[i].TTFTMS = a.ttftSum / a.n
+		if a.genMs > 0 {
+			// 保留一位小数，前端直接展示
+			buckets[i].TokensPerSec = math.Round(float64(a.tokens)/float64(a.genMs)*1000*10) / 10
 		}
-		buckets[i].P95DurationMS = vals[pos]
 	}
 	return nil
 }

@@ -1,14 +1,15 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type ErrorLog } from '../lib/api'
+import { bjDateString, bjFmtDateTime } from '../lib/tz'
 import { toast } from '../lib/toast'
-import DatePicker, { fmtDate } from '../components/DatePicker'
+import DatePicker from '../components/DatePicker'
 import { Button, Empty, ErrorText, Loading, PageHead } from './ui'
 
 // 明细行采用「表格行 + 点击展开详情」；窄屏由 CSS 切换为堆叠行
 
 export default function V2Errors() {
-  const [date, setDate] = useState(fmtDate(new Date()))
+  const [date, setDate] = useState(bjDateString())
   const [openId, setOpenId] = useState<number | null>(null)
 
   const errors = useQuery({ queryKey: ['errors', date], queryFn: () => api.errors(date) })
@@ -24,7 +25,7 @@ export default function V2Errors() {
         actions={
           <>
             <DatePicker value={date} onChange={setDate} />
-            <Button size="sm" variant="ghost" onClick={() => errors.refetch()}>
+            <Button variant="ghost" onClick={() => errors.refetch()}>
               刷新
             </Button>
           </>
@@ -228,7 +229,5 @@ async function copyRecord(e: ErrorLog) {
 }
 
 function fmtTime(ms: number): string {
-  const d = new Date(ms)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  return bjFmtDateTime(ms)
 }

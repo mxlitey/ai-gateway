@@ -51,10 +51,6 @@ export default function V2Layout({ children }: { children: ReactNode }) {
   }, [drawerOpen])
 
   const version = runtime.data?.version ? `v${runtime.data.version}` : '—'
-  // 当前页标题：用于顶栏
-  const current = navItems.find((n) =>
-    n.end ? location.pathname === n.to : location.pathname.startsWith(n.to),
-  )
 
   const nav = (
     <nav className="nav">
@@ -98,7 +94,7 @@ export default function V2Layout({ children }: { children: ReactNode }) {
         {/* 侧栏：>=941 常驻带文字；641~940 收成 54px 图标条 */}
         <aside className="side">
           <div className="brand">
-            <span className="logo" />
+            <img className="logo" src="/favicon.svg" alt="" />
             <b>AI Gateway</b>
           </div>
           {nav}
@@ -117,7 +113,8 @@ export default function V2Layout({ children }: { children: ReactNode }) {
                 <path d="M4 7h16M4 12h16M4 17h16" />
               </svg>
             </button>
-            <h1>{current?.label ?? 'AI Gateway'}</h1>
+            {/* 页面标题统一由内容区的 PageHead 呈现，顶栏不重复显示，
+                否则每页都会出现两个同样的标题 */}
             <div className="sp" />
             <span className="sub hide-xs">{version}</span>
             <button
@@ -142,7 +139,7 @@ export default function V2Layout({ children }: { children: ReactNode }) {
       <div className={`drawer-mask${drawerOpen ? ' open' : ''}`} onClick={() => setDrawerOpen(false)} />
       <aside className={`drawer${drawerOpen ? ' open' : ''}`}>
         <div className="drawer-h">
-          <span className="logo" style={{ width: 19, height: 19, borderRadius: 6, background: 'linear-gradient(140deg,#3b9dff,#35c759)' }} />
+          <img src="/favicon.svg" alt="" style={{ width: 19, height: 19, borderRadius: 6, flex: 'none' }} />
           <b style={{ fontSize: 12.5 }}>AI Gateway</b>
           <div className="sp" />
           <button type="button" className="icon-btn" onClick={() => setDrawerOpen(false)} aria-label="关闭菜单">

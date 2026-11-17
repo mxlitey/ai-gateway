@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Channel, type ChannelInput } from '../lib/api'
+import { bjDateString, bjDayStart } from '../lib/tz'
 import { toast } from '../lib/toast'
 import {
   Badge,
@@ -128,10 +129,14 @@ export default function V2Channels() {
   const queryClient = useQueryClient()
   const channels = useQuery({ queryKey: ['channels'], queryFn: api.channels })
   const plugins = useQuery({ queryKey: ['plugins'], queryFn: api.plugins })
-  // 今日用量：渠道卡片上的请求占比、成功率与 P95 都来自这里
+  // 今日用量：渠道卡片上的请求占比、成功率、首字耗时与输出速度都来自这里。
+  // 用 from/to 走北京自然日，与仪表盘、用量页的日界保持一致（days: 1 是滚动 24 小时）
   const usage = useQuery({
-    queryKey: ['usage-summary', 'today'],
-    queryFn: () => api.usageSummary({ days: 1 }),
+    queryKey: ['usage-summary', 'channels-today', bjDateString()],
+    queryFn: () => {
+      const from = bjDayStart()
+      return api.usageSummary({ from, to: from + 24 * 60 * 60 * 1000 })
+    },
   })
 
   const [form, setForm] = useState<FormState | null>(null)
@@ -290,12 +295,16 @@ export default function V2Channels() {
 
   // 今日每渠道用量：用于卡片双色环
   const channelUsage = useMemo(() => {
-    const map = new Map<string, { requests: number; success: number; p95: number }>()
+    const map = new Map<
+      string,
+      { requests: number; success: number; ttft: number; speed: number }
+    >()
     for (const b of usage.data?.summary.by_channel ?? []) {
       map.set(b.key, {
         requests: b.requests,
         success: b.success_requests,
-        p95: b.p95_duration_ms,
+        ttft: b.ttft_ms,
+        speed: b.tokens_per_sec,
       })
     }
     return map
@@ -346,7 +355,11 @@ export default function V2Channels() {
             const successTone = successRate >= 99 ? 'ok' : successRate >= 95 ? 'warn' : 'bad'
             // 状态圆点：停用=灰、无可用密钥=琥珀、启用且有密钥=绿
             const dotTone = !ch.enabled ? 'off' : enabledKeys === 0 ? 'warn' : 'ok'
-            const p95 = u ? `${(u.p95 / 1000).toFixed(2)}` : '—'
+            // 首字耗时不到 1 秒时用毫秒展示，避免 0.42s 这种小数字看不出差别
+            const ttft =
+              u && u.ttft > 0 ? (u.ttft < 1000 ? `${u.ttft}` : (u.ttft / 1000).toFixed(2)) : '—'
+            const ttftUnit = ttft === '—' ? undefined : u!.ttft < 1000 ? 'ms' : 's'
+            const speed = u && u.speed > 0 ? u.speed.toFixed(1) : '—'
 
             return (
               <div
@@ -398,18 +411,24 @@ export default function V2Channels() {
                             {enabledKeys} / {ch.keys.length}
                           </b>
                         </span>
+                        <span>
+                          首字 <b className="num">{ttft}</b>
+                          {ttftUnit ? <span className="faint"> {ttftUnit}</span> : null} · 输出{' '}
+                          <b className="num">{speed}</b>
+                          {speed === '—' ? null : <span className="faint"> tok/s</span>}
+                        </span>
                       </div>
                       <Donut
                         share={share}
                         shareTone={share > 50 ? 'warn' : 'brand'}
                         successRate={successRate}
                         successTone={successTone}
-                        center={p95}
-                        centerUnit={p95 === '—' ? undefined : 's'}
-                        label="P95"
+                        center={speed}
+                        centerUnit={speed === '—' ? undefined : 't/s'}
+                        label="速度"
                         title={`请求占比 ${share.toFixed(1)}% · 成功率 ${successRate.toFixed(1)}%${
-                          p95 === '—' ? '' : ` · P95 ${p95}s`
-                        }`}
+                          ttft === '—' ? '' : ` · 首字 ${ttft}${ttftUnit}`
+                        }${speed === '—' ? '' : ` · 输出 ${speed} tok/s`}`}
                       />
                     </div>
                   </div>
@@ -531,6 +550,9 @@ export default function V2Channels() {
                           border: '1px solid var(--border)',
                           borderRadius: 7,
                           padding: '5px 8px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 6,
                           fontSize: 11.5,
                         }}
                       >

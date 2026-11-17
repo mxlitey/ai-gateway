@@ -2,8 +2,9 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { fmtCost } from '../lib/money'
+import { bjDayStart, bjFmtDateTime, bjStartOfHour } from '../lib/tz'
 import RangePicker, { type RangeValue } from '../components/RangePicker'
-import { Badge, Button, Empty, ErrorText, fmtCompact, fmtInt, Loading, Panel } from './ui'
+import { Badge, Button, Empty, ErrorText, fmtCompact, fmtInt, Loading, PageHead, Panel } from './ui'
 
 const PAGE_SIZE = 50
 const HOUR = 60 * 60 * 1000
@@ -42,16 +43,16 @@ function saveFilters(v: StoredFilters): void {
   }
 }
 
+/** 当天自然日范围（北京时间 [今天 00:00, 明天 00:00)），与后端日界一致 */
 function dayRange(now: number): RangeValue {
-  const d = new Date(now)
-  d.setHours(0, 0, 0, 0)
-  return { from: d.getTime(), to: d.getTime() + DAY }
+  const from = bjDayStart(now)
+  return { from, to: from + DAY }
 }
 
+/** 最近 24 个小时桶范围（含当前小时，北京时间整点对齐） */
 function lastHoursRange(now: number): RangeValue {
-  const d = new Date(now)
-  d.setMinutes(0, 0, 0)
-  return { from: d.getTime() - 23 * HOUR, to: d.getTime() + HOUR }
+  const cur = bjStartOfHour(now)
+  return { from: cur - 23 * HOUR, to: cur + HOUR }
 }
 
 export default function V2Usage() {
@@ -122,7 +123,7 @@ export default function V2Usage() {
 
   return (
     <div className="stack">
-      <h1 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>用量</h1>
+      <PageHead title="用量" />
 
       {/* 控件：沿用原版一行 flex-wrap，渠道 → 模型 → 上游密钥 → 粒度 → 时间范围 */}
       {/* panel-overflow：让日期选择器的日历浮层能超出卡片边界显示 */}
@@ -183,23 +184,26 @@ export default function V2Usage() {
                   </option>
                 ))}
             </select>
-            <div className="seg">
-              <button
-                type="button"
-                className={granularity === 'hour' ? 'on' : ''}
-                onClick={() => switchGranularity('hour')}
-              >
-                按小时
-              </button>
-              <button
-                type="button"
-                className={granularity === 'day' ? 'on' : ''}
-                onClick={() => switchGranularity('day')}
-              >
-                按天
-              </button>
+            {/* 粒度与时间范围编成一组，组内不换行：窄屏时也保持同一行 */}
+            <div className="usage-time">
+              <div className="seg">
+                <button
+                  type="button"
+                  className={granularity === 'hour' ? 'on' : ''}
+                  onClick={() => switchGranularity('hour')}
+                >
+                  按小时
+                </button>
+                <button
+                  type="button"
+                  className={granularity === 'day' ? 'on' : ''}
+                  onClick={() => switchGranularity('day')}
+                >
+                  按天
+                </button>
+              </div>
+              <RangePicker value={range} onChange={onRangeChange} granularity={granularity} />
             </div>
-            <RangePicker value={range} onChange={onRangeChange} granularity={granularity} />
           </div>
         </div>
       </div>
@@ -221,7 +225,7 @@ export default function V2Usage() {
 
       <div className="v2grid g4">
         <Kpi label="请求数" value={fmtInt(s.requests)} />
-        <Kpi label="总 token" value={fmtCompact(s.total_tokens)} />
+        <Kpi label="总 Token" value={fmtCompact(s.total_tokens)} />
         <Kpi label="缓存命中率" value={cacheHitRate} />
         <Kpi label="市场价" value={fmtCost(s.cost)} />
       </div>
@@ -232,7 +236,7 @@ export default function V2Usage() {
         ) : (
           <>
             <div className="tbl-wrap">
-              <table className="tbl" style={{ minWidth: '46rem' }}>
+              <table className="tbl" style={{ minWidth: '50rem' }}>
                 <thead>
                   <tr>
                     <th>时间</th>
@@ -243,6 +247,7 @@ export default function V2Usage() {
                     <th className="r">未缓存输入</th>
                     <th className="r">缓存输入</th>
                     <th className="r">输出</th>
+                    <th className="r">首字</th>
                     <th className="r">耗时</th>
                     <th className="r">等价费用</th>
                   </tr>
@@ -251,7 +256,7 @@ export default function V2Usage() {
                   {items.map((r) => (
                     <tr key={r.id}>
                       <td className="tiny faint num" style={{ whiteSpace: 'nowrap' }}>
-                        {new Date(r.created_at).toLocaleString()}
+                        {bjFmtDateTime(r.created_at)}
                       </td>
                       <td className="mono tiny">
                         <span style={{ display: 'block', whiteSpace: 'nowrap' }}>
@@ -287,6 +292,10 @@ export default function V2Usage() {
                       <td className="r num tiny">{fmtInt(Math.max(0, r.prompt_tokens - r.cached_tokens))}</td>
                       <td className="r num tiny">{fmtInt(r.cached_tokens)}</td>
                       <td className="r num tiny">{fmtInt(r.completion_tokens)}</td>
+                      {/* 首字耗时只对流式有意义；非流式记录该字段为 0，显示占位符 */}
+                      <td className="r num tiny faint" style={{ whiteSpace: 'nowrap' }}>
+                        {r.first_token_ms > 0 ? `${r.first_token_ms} ms` : '—'}
+                      </td>
                       <td className="r num tiny faint" style={{ whiteSpace: 'nowrap' }}>
                         {r.duration_ms} ms
                       </td>

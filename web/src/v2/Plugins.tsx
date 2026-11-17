@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type Plugin, type PluginAccount, type PluginLoginMethod } from '../lib/api'
+import { bjFmtDateTime, bjFmtTime } from '../lib/tz'
 import { toast } from '../lib/toast'
 import {
   Badge,
@@ -162,7 +163,7 @@ export default function V2Plugins() {
                     <dd className="mono">{plugin.port || '启动后分配'}</dd>
                     <dt>最后探活</dt>
                     <dd>
-                      {plugin.last_seen_at ? new Date(plugin.last_seen_at).toLocaleTimeString() : '—'}
+                      {plugin.last_seen_at ? bjFmtTime(plugin.last_seen_at) : '—'}
                     </dd>
                   </dl>
 
@@ -674,7 +675,7 @@ function AccountRow({
           expired ? (
             <span style={{ color: 'var(--danger)' }}>已过期</span>
           ) : (
-            <span className="faint">{new Date(account.expires_at).toLocaleString()}</span>
+            <span className="faint">{bjFmtDateTime(account.expires_at)}</span>
           )
         ) : (
           <span className="faint">—</span>

@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type ErrorLog } from '../lib/api'
+import { bjDateString, bjFmtDateTime } from '../lib/tz'
 import { toast } from '../lib/toast'
 import { Card, Empty, ErrorText, IconButton, Loading, RefreshIcon } from '../components/ui'
-import DatePicker, { fmtDate } from '../components/DatePicker'
+import DatePicker from '../components/DatePicker'
 
 // 明细行的列宽：展开箭头 / 时间 / 渠道 / 模型 / 状态 / 错误信息 / 复制
 // 窄屏（< sm）把时间/渠道/模型/状态/错误信息合并成一列堆叠展示，避免横向溢出
@@ -12,7 +13,7 @@ const rowGrid =
 
 export default function Errors() {
   // 默认看今天（北京时区），与仪表盘的「今日错误分布」口径一致
-  const [date, setDate] = useState(fmtDate(new Date()))
+  const [date, setDate] = useState(bjDateString())
   const [openId, setOpenId] = useState<number | null>(null)
 
   const errors = useQuery({ queryKey: ['errors', date], queryFn: () => api.errors(date) })
@@ -230,9 +231,7 @@ async function copyRecord(e: ErrorLog) {
   }
 }
 
-// fmtTime 按本地时区输出 YYYY-MM-DD HH:mm:ss
+// fmtTime 按北京时间输出 YYYY-MM-DD HH:mm:ss
 function fmtTime(ms: number): string {
-  const d = new Date(ms)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+  return bjFmtDateTime(ms)
 }

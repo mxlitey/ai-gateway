@@ -1,4 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
+import {
+  bjDateStart,
+  bjDateString,
+  bjDayStart,
+  bjDaysInMonth,
+  bjFmtHour,
+  bjMonthString,
+  bjParts,
+  bjStartOfHour,
+  bjWeekday,
+} from '../lib/tz'
 import { toast } from '../lib/toast'
 
 const HOUR = 60 * 60 * 1000
@@ -62,11 +73,12 @@ export default function RangePicker({
   }
 
   const [y, m] = month.split('-').map(Number)
-  const lead = (new Date(y, m - 1, 1).getDay() + 6) % 7 // 周一作为第一列
-  const daysInMonth = new Date(y, m, 0).getDate()
+  // 日历按北京时间排布，与后端的分桶时区一致
+  const lead = (bjWeekday(y, m, 1) + 6) % 7 // 周一作为第一列
+  const daysInMonth = bjDaysInMonth(y, m)
   const cells: (number | null)[] = [
     ...Array.from({ length: lead }, () => null),
-    ...Array.from({ length: daysInMonth }, (_, i) => startOfDay(new Date(y, m - 1, i + 1).getTime())),
+    ...Array.from({ length: daysInMonth }, (_, i) => bjDateStart(y, m, i + 1)),
   ]
   while (cells.length % 7 !== 0) cells.push(null)
 
@@ -120,10 +132,10 @@ export default function RangePicker({
   const pointDisabled = (p: number) => allowed != null && (p < allowed.from || p > allowed.to)
 
   return (
-    <div ref={boxRef} className="relative">
+    <div ref={boxRef} className="dp-box relative">
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex max-w-full items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50 max-sm:py-2.5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+        className="dp-btn flex max-w-full items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm text-zinc-700 hover:bg-zinc-50 max-sm:py-2.5 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
       >
         <svg
           width="15"
@@ -149,28 +161,28 @@ export default function RangePicker({
         <>
           {/* 窄屏：日历改为底部弹层，避免浮层超出屏幕 */}
           <div className="fixed inset-0 z-20 bg-black/30 sm:hidden" onClick={close} />
-          <div className="absolute right-0 z-20 mt-2 w-72 rounded-xl border border-zinc-200 bg-white p-3 shadow-lg max-sm:fixed max-sm:inset-x-3 max-sm:top-auto max-sm:bottom-[calc(0.75rem+env(safe-area-inset-bottom))] max-sm:mt-0 max-sm:w-auto dark:border-zinc-700 dark:bg-zinc-900">
+          <div className="dp-pop absolute right-0 z-20 mt-2 w-72 rounded-xl border border-zinc-200 bg-white p-3 shadow-lg max-sm:fixed max-sm:inset-x-3 max-sm:top-auto max-sm:bottom-[calc(0.75rem+env(safe-area-inset-bottom))] max-sm:mt-0 max-sm:w-auto dark:border-zinc-700 dark:bg-zinc-900">
           <div className="mb-2 flex items-center justify-between">
             <button
               onClick={() => setMonth(shiftMonth(month, -1))}
               aria-label="上个月"
-              className="rounded-md px-2 py-0.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              className="dp-nav rounded-md px-2 py-0.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
             >
               ‹
             </button>
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-200">
+            <span className="dp-title text-sm font-medium text-zinc-700 dark:text-zinc-200">
               {y} 年 {m} 月
             </span>
             <button
               onClick={() => setMonth(shiftMonth(month, 1))}
               aria-label="下个月"
-              className="rounded-md px-2 py-0.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+              className="dp-nav rounded-md px-2 py-0.5 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
             >
               ›
             </button>
           </div>
 
-          <p className="mb-1 text-center text-[11px] text-emerald-600 dark:text-emerald-400">
+          <p className="dp-hint mb-1 text-center text-[11px] text-emerald-600 dark:text-emerald-400">
             {tab === 'start'
               ? granularity === 'hour'
                 ? '请选择开始日期与小时'
@@ -180,7 +192,7 @@ export default function RangePicker({
                 : '请选择结束日期'}
           </p>
 
-          <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-zinc-400 dark:text-zinc-500">
+          <div className="dp-week grid grid-cols-7 gap-1 text-center text-[11px] text-zinc-400 dark:text-zinc-500">
             {['一', '二', '三', '四', '五', '六', '日'].map((w) => (
               <span key={w}>{w}</span>
             ))}
@@ -195,19 +207,19 @@ export default function RangePicker({
                   disabled={dayDisabled(d)}
                   onMouseEnter={() => setHoverDay(d)}
                   onClick={() => pick(d, tab === 'end')}
-                  className={`h-8 rounded-lg text-xs max-sm:h-10 disabled:cursor-not-allowed ${
+                  className={`dp-day h-8 rounded-lg text-xs max-sm:h-10 disabled:cursor-not-allowed ${
                     dayDisabled(d)
-                      ? 'text-zinc-300 dark:text-zinc-700'
+                      ? 'is-off text-zinc-300 dark:text-zinc-700'
                       : d === pendingDay
-                        ? 'bg-emerald-600 text-white'
+                        ? 'is-on bg-emerald-600 text-white'
                         : inRange(d)
                           ? isEndpoint(d)
-                            ? 'bg-emerald-600 text-white'
-                            : 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
+                            ? 'is-on bg-emerald-600 text-white'
+                            : 'is-in bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300'
                           : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
                   }`}
                 >
-                  {Number(new Date(d).getDate())}
+                  {bjParts(d).d}
                 </button>
               ),
             )}
@@ -227,9 +239,9 @@ export default function RangePicker({
                       key={h}
                       disabled={off}
                       onClick={() => commit(p, tab === 'end')}
-                      className={`rounded-md px-1 py-1 text-[11px] max-sm:py-2 disabled:cursor-not-allowed ${
+                      className={`dp-hour rounded-md px-1 py-1 text-[11px] max-sm:py-2 disabled:cursor-not-allowed ${
                         off
-                          ? 'text-zinc-300 dark:text-zinc-700'
+                          ? 'is-off text-zinc-300 dark:text-zinc-700'
                           : 'text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800'
                       }`}
                     >
@@ -241,7 +253,7 @@ export default function RangePicker({
             </div>
           ) : null}
 
-          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-zinc-100 pt-2 dark:border-zinc-800">
+          <div className="dp-presets mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-zinc-100 pt-2 dark:border-zinc-800">
             {presets(granularity).map((p) => (
               <button
                 key={p.label}
@@ -253,7 +265,7 @@ export default function RangePicker({
                   onChange(p.value)
                   close()
                 }}
-                className="text-xs text-emerald-600 hover:underline dark:text-emerald-400"
+                className="dp-preset text-xs text-emerald-600 hover:underline dark:text-emerald-400"
               >
                 {p.label}
               </button>
@@ -270,13 +282,13 @@ export default function RangePicker({
 function presets(granularity: 'day' | 'hour'): { label: string; value: RangeValue }[] {
   const now = Date.now()
   if (granularity === 'hour') {
-    const cur = startOfHour(now)
+    const cur = bjStartOfHour(now)
     return [
       { label: '最近 12 小时', value: { from: cur - 11 * HOUR, to: cur + HOUR } },
       { label: '最近 24 小时', value: { from: cur - 23 * HOUR, to: cur + HOUR } },
     ]
   }
-  const today = startOfDay(now)
+  const today = bjDayStart(now)
   return [
     { label: '最近 3 天', value: { from: today - 2 * DAY, to: today + DAY } },
     { label: '最近 7 天', value: { from: today - 6 * DAY, to: today + DAY } },
@@ -285,36 +297,22 @@ function presets(granularity: 'day' | 'hour'): { label: string; value: RangeValu
 }
 
 function monthOf(ms: number): string {
-  const d = new Date(ms)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  return bjMonthString(ms)
 }
 
 function shiftMonth(month: string, delta: number): string {
   const [y, m] = month.split('-').map(Number)
-  const d = new Date(y, m - 1 + delta, 1)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  return bjMonthString(bjDateStart(y, m + delta, 1))
 }
 
 function startOfDay(ms: number): number {
-  const d = new Date(ms)
-  d.setHours(0, 0, 0, 0)
-  return d.getTime()
-}
-
-function startOfHour(ms: number): number {
-  const d = new Date(ms)
-  d.setMinutes(0, 0, 0)
-  return d.getTime()
+  return bjDayStart(ms)
 }
 
 function fmtDay(ms: number): string {
-  const d = new Date(ms)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+  return bjDateString(ms)
 }
 
 function fmtHour(ms: number): string {
-  const d = new Date(ms)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:00`
+  return bjFmtHour(ms)
 }

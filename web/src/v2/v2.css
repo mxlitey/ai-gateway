@@ -1257,8 +1257,8 @@
 }
 .v2 .flip-card {
   perspective: 1000px;
-  /* 高度要容纳 72px 双色环：头部 46px + 圆环 72px + 间距与内边距 */
-  height: 168px;
+  /* 高度容纳头部 46px + 底部信息四行（与卡片内边距、间距合计约 150px） */
+  height: 152px;
   cursor: pointer;
   outline: none;
 }
@@ -1299,11 +1299,10 @@
 }
 .v2 .ch-foot {
   display: flex;
+  flex-direction: column;
   /* 与 API 密钥 / MCP 卡片一致：数值贴住卡片底部，不居中悬浮 */
-  align-items: flex-end;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 10px;
-  min-height: 74px;
 }
 .v2 .ch-foot-info {
   display: flex;
@@ -1330,49 +1329,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 6em;
-}
-
-/* 空心双色环 */
-.v2 .donut {
-  position: relative;
-  flex: none;
-  width: 72px;
-  height: 72px;
-}
-.v2 .donut svg {
-  display: block;
-}
-.v2 .donut-c {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  line-height: 1.1;
-  pointer-events: none;
-}
-.v2 .donut-c b {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: -0.3px;
-  color: var(--text);
-}
-.v2 .donut-c b i {
-  font-style: normal;
-  font-size: 9px;
-  font-weight: 400;
-  color: var(--text-3);
-  margin-left: 1px;
-}
-.v2 .donut-c span {
-  font-size: 8.5px;
-  color: var(--text-3);
-  margin-top: 1px;
-  letter-spacing: 0.04em;
 }
 
 /* ---------- 错误日志（表格行 + 展开详情） ---------- */
@@ -1998,7 +1954,7 @@
     gap: 10px;
   }
   .v2 .flip-card {
-    height: 176px;
+    height: 156px;
   }
   .v2 .err-head {
     display: none;

@@ -7,7 +7,6 @@ import {
   Badge,
   Button,
   Dot,
-  Donut,
   Empty,
   ErrorText,
   Field,
@@ -388,6 +387,9 @@ export default function V2Channels() {
                       <div className="ch-foot-info">
                         <span>
                           今日请求 <b className="num">{u?.requests ?? 0}</b> 次
+                          {totalRequests > 0 ? (
+                            <span className="faint"> · {share.toFixed(0)}%</span>
+                          ) : null}
                         </span>
                         <span>
                           成功率{' '}
@@ -418,18 +420,6 @@ export default function V2Channels() {
                           {speed === '—' ? null : <span className="faint"> tok/s</span>}
                         </span>
                       </div>
-                      <Donut
-                        share={share}
-                        shareTone={share > 50 ? 'warn' : 'brand'}
-                        successRate={successRate}
-                        successTone={successTone}
-                        center={speed}
-                        centerUnit={speed === '—' ? undefined : 't/s'}
-                        label="速度"
-                        title={`请求占比 ${share.toFixed(1)}% · 成功率 ${successRate.toFixed(1)}%${
-                          ttft === '—' ? '' : ` · 首字 ${ttft}${ttftUnit}`
-                        }${speed === '—' ? '' : ` · 输出 ${speed} tok/s`}`}
-                      />
                     </div>
                   </div>
 

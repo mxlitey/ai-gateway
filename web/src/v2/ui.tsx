@@ -8,7 +8,6 @@ import {
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { bjFmtShort } from '../lib/tz'
 
 /* ---------- Button ---------- */
@@ -293,85 +292,6 @@ export function Modal({
   )
 }
 
-/* ---------- 空心双色环 ----------
-   外环：本渠道今日请求数占全部请求数的比例
-   内环：成功率（按状态着色）
-   环心：输出速度 */
-
-export function Donut({
-  share,
-  shareTone = 'brand',
-  successRate,
-  successTone,
-  center,
-  centerUnit,
-  label,
-  title,
-}: {
-  share: number
-  shareTone?: 'brand' | 'warn' | 'danger'
-  successRate: number
-  successTone: Tone
-  center: string
-  centerUnit?: string
-  label?: string
-  title?: string
-}) {
-  const size = 72
-  const c = size / 2
-  const rOuter = 31
-  const rInner = 23
-  const strokeOuter = 4
-  const strokeInner = 4
-  const shareColor =
-    shareTone === 'warn' ? 'var(--warn)' : shareTone === 'danger' ? 'var(--danger)' : 'var(--brand)'
-  const innerColor =
-    successTone === 'ok'
-      ? 'var(--ok)'
-      : successTone === 'warn'
-        ? 'var(--warn)'
-        : successTone === 'bad'
-          ? 'var(--danger)'
-          : 'var(--text-3)'
-
-  const ring = (r: number, pct: number, color: string, width: number) => {
-    const circumference = 2 * Math.PI * r
-    const dash = Math.max(0, Math.min(100, pct)) / 100 * circumference
-    return (
-      <>
-        <circle cx={c} cy={c} r={r} fill="none" stroke="var(--surface-3)" strokeWidth={width} />
-        <circle
-          cx={c}
-          cy={c}
-          r={r}
-          fill="none"
-          stroke={color}
-          strokeWidth={width}
-          strokeLinecap="round"
-          strokeDasharray={`${dash} ${circumference}`}
-          transform={`rotate(-90 ${c} ${c})`}
-        />
-      </>
-    )
-  }
-
-  return (
-    <div className="donut" title={title}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-        {ring(rOuter, share, shareColor, strokeOuter)}
-        {ring(rInner, successRate, innerColor, strokeInner)}
-      </svg>
-      <div className="donut-c">
-        <b>
-          {center}
-          {centerUnit ? <i>{centerUnit}</i> : null}
-        </b>
-        {label ? <span>{label}</span> : null}
-      </div>
-    </div>
-  )
-}
-
 /* ---------- 图表通用类型 ---------- */
 
 export type SeriesRow = { key: string; label: string; color: string }
@@ -580,17 +500,6 @@ export function MiniBars({ values }: { values: number[] }) {
         </span>
       ))}
     </span>
-  )
-}
-
-/* ---------- 回退入口（v2 → 经典版） ---------- */
-
-export function ClassicLink() {
-  const navigate = useNavigate()
-  return (
-    <button type="button" className="btn ghost" onClick={() => navigate('/')} title="回到经典版界面">
-      经典版
-    </button>
   )
 }
 

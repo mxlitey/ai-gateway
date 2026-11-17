@@ -1,21 +1,21 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { NavLink, useLocation, useNavigate } from 'react-router-dom'
+import { NavLink, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../lib/api'
 import { useAuth } from '../lib/auth'
 
-/** v2 导航：全部映射到 /v2 前缀，原版路由保持不变。 */
+/** 侧栏导航：路径即面板根路径下的页面。 */
 const navItems = [
-  { to: '/v2', label: '仪表盘', icon: 'dash', end: true },
-  { to: '/v2/channels', label: '渠道管理', icon: 'channel' },
-  { to: '/v2/routes', label: '模型路由', icon: 'route' },
-  { to: '/v2/keys', label: 'API 密钥', icon: 'key' },
-  { to: '/v2/mcp-servers', label: 'MCP 服务器', icon: 'mcp' },
-  { to: '/v2/plugins', label: '插件', icon: 'plugin' },
-  { to: '/v2/usage', label: '用量', icon: 'usage' },
-  { to: '/v2/prices', label: '价格表', icon: 'price' },
-  { to: '/v2/errors', label: '错误日志', icon: 'error' },
-  { to: '/v2/settings', label: '设置', icon: 'settings' },
+  { to: '/', label: '仪表盘', icon: 'dash', end: true },
+  { to: '/channels', label: '渠道管理', icon: 'channel' },
+  { to: '/routes', label: '模型路由', icon: 'route' },
+  { to: '/keys', label: 'API 密钥', icon: 'key' },
+  { to: '/mcp-servers', label: 'MCP 服务器', icon: 'mcp' },
+  { to: '/plugins', label: '插件', icon: 'plugin' },
+  { to: '/usage', label: '用量', icon: 'usage' },
+  { to: '/prices', label: '价格表', icon: 'price' },
+  { to: '/errors', label: '错误日志', icon: 'error' },
+  { to: '/settings', label: '设置', icon: 'settings' },
 ]
 
 const navGroups: { title: string; items: typeof navItems }[] = [
@@ -30,7 +30,6 @@ export default function V2Layout({ children }: { children: ReactNode }) {
   const runtime = useQuery({ queryKey: ['runtime'], queryFn: api.runtimeInfo })
   const [drawerOpen, setDrawerOpen] = useState(false)
   const location = useLocation()
-  const navigate = useNavigate()
 
   useEffect(() => {
     setDrawerOpen(false)
@@ -79,9 +78,6 @@ export default function V2Layout({ children }: { children: ReactNode }) {
         <span>版本</span>
         <span className="mono">{version}</span>
       </div>
-      <button type="button" onClick={() => navigate('/')} style={{ marginBottom: 6 }}>
-        回到经典版
-      </button>
       <button type="button" onClick={signOut}>
         退出登录
       </button>
@@ -117,18 +113,6 @@ export default function V2Layout({ children }: { children: ReactNode }) {
                 否则每页都会出现两个同样的标题 */}
             <div className="sp" />
             <span className="sub hide-xs">{version}</span>
-            <button
-              type="button"
-              className="icon-btn"
-              title="回到经典版界面"
-              aria-label="回到经典版界面"
-              onClick={() => navigate('/')}
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M3 12a9 9 0 1 0 3-6.7" />
-                <path d="M3 4v5h5" />
-              </svg>
-            </button>
           </div>
 
           <div className="content">{children}</div>

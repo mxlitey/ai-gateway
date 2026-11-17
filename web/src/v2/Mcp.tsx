@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type MCPServer, type MCPServerInput, type MCPTool } from '../lib/api'
 import { bjDayStart, bjFmtDateTime } from '../lib/tz'
@@ -255,34 +255,24 @@ export default function V2Mcp() {
                 <div className="flip-card-inner">
                   <div className="flip-face">
                     <McpHead s={s} onToggle={() => toggle.mutate(s.id)} />
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'flex-end',
-                        justifyContent: 'space-between',
-                        gap: 10,
-                      }}
-                    >
-                      <div className="ch-foot-info">
-                        <span>
-                          工具 <b className="num">{s.tool_count}</b>
-                        </span>
-                        <span>
-                          密钥{' '}
-                          <b className="num">
-                            {enabledKeys} / {s.keys.length}
-                          </b>
-                        </span>
-                        <span
-                          title="与上游控制台的计费次数对齐：默认按成功调用计，也可配置为响应含标记才计"
-                        >
-                          计费次数{' '}
-                          <b className="num">
-                            {limitedUsed} / {s.daily_limit_total > 0 ? s.daily_limit_total : '不限'}
-                          </b>
-                        </span>
-                      </div>
-                      <KeyPie s={s} />
+                    <div className="ch-foot-info">
+                      <span>
+                        工具 <b className="num">{s.tool_count}</b>
+                      </span>
+                      <span>
+                        密钥{' '}
+                        <b className="num">
+                          {enabledKeys} / {s.keys.length}
+                        </b>
+                      </span>
+                      <span
+                        title="与上游控制台的计费次数对齐：默认按成功调用计，也可配置为响应含标记才计"
+                      >
+                        计费次数{' '}
+                        <b className="num">
+                          {limitedUsed} / {s.daily_limit_total > 0 ? s.daily_limit_total : '不限'}
+                        </b>
+                      </span>
                     </div>
                   </div>
 
@@ -609,131 +599,6 @@ function ToolLimitsField({ form, setForm }: { form: FormState; setForm: (f: Form
     </Field>
   )
 }
-
-/* 配额饼图：整个圆 = 各启用密钥日上限之和，按已用次数分扇区 */
-function KeyPie({ s }: { s: MCPServer }) {
-  const [hover, setHover] = useState(false)
-  const [pinned, setPinned] = useState(false)
-  const boxRef = useRef<HTMLDivElement>(null)
-  const open = hover || pinned
-
-  useEffect(() => {
-    if (!pinned) return
-    const onDown = (e: PointerEvent) => {
-      if (!boxRef.current?.contains(e.target as Node)) setPinned(false)
-    }
-    document.addEventListener('pointerdown', onDown)
-    return () => document.removeEventListener('pointerdown', onDown)
-  }, [pinned])
-
-  const slices = s.keys
-    .filter((k) => k.enabled && k.daily_limit > 0)
-    .map((k, i) => ({
-      label: k.label || maskKey(k.key),
-      limit: k.daily_limit,
-      used: s.key_daily_calls?.[maskKey(k.key)] ?? 0,
-      color: PIE_COLORS[i % PIE_COLORS.length],
-    }))
-  const totalLimit = slices.reduce((n, x) => n + x.limit, 0)
-  const totalUsed = slices.reduce((n, x) => n + x.used, 0)
-
-  if (totalLimit === 0) {
-    return (
-      <span
-        className="tiny faint"
-        style={{ flex: 'none', width: 64, textAlign: 'center' }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        未设日上限
-      </span>
-    )
-  }
-
-  return (
-    <div
-      ref={boxRef}
-      style={{ position: 'relative', flex: 'none', cursor: 'pointer' }}
-      onPointerEnter={(e) => {
-        if (e.pointerType === 'mouse') setHover(true)
-      }}
-      onPointerLeave={(e) => {
-        if (e.pointerType === 'mouse') setHover(false)
-      }}
-      onClick={(e) => {
-        e.stopPropagation()
-        setPinned((v) => !v)
-      }}
-    >
-      <svg viewBox="0 0 42 42" width="64" height="64" style={{ transform: 'rotate(-90deg)' }}>
-        <circle cx="21" cy="21" r="15.9" fill="none" strokeWidth="6" stroke="var(--surface-3)" />
-        {(() => {
-          let offset = 0
-          return slices.map((slice) => {
-            const pct = Math.min(100, (slice.used / totalLimit) * 100)
-            const el = (
-              <circle
-                key={slice.label}
-                cx="21"
-                cy="21"
-                r="15.9"
-                fill="none"
-                strokeWidth="6"
-                stroke={slice.color}
-                strokeDasharray={`${pct} ${100 - pct}`}
-                strokeDashoffset={-offset}
-              />
-            )
-            offset += pct
-            return el
-          })
-        })()}
-      </svg>
-
-      {open ? (
-        <div
-          style={{
-            position: 'absolute',
-            right: '100%',
-            bottom: 0,
-            zIndex: 10,
-            marginRight: 8,
-            width: 'max-content',
-            maxWidth: 240,
-            border: '1px solid var(--border)',
-            borderRadius: 8,
-            background: 'var(--surface)',
-            padding: '8px 10px',
-            fontSize: 11,
-            lineHeight: 1.6,
-            boxShadow: '0 8px 24px rgba(0,0,0,.28)',
-          }}
-        >
-          <p className="faint" style={{ margin: 0 }}>
-            今日计费调用{' '}
-            <span className="mono" style={{ color: 'var(--text)' }}>
-              {totalUsed} / {totalLimit}
-            </span>
-          </p>
-          <ul style={{ margin: '4px 0 0', padding: 0, listStyle: 'none' }}>
-            {slices.map((x) => (
-              <li key={x.label} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <span style={{ width: 6, height: 6, borderRadius: 2, background: x.color, flex: 'none' }} />
-                <span className="truncate" style={{ maxWidth: 140 }} title={x.label}>
-                  {x.label}
-                </span>
-                <span className="mono" style={{ marginLeft: 'auto', paddingLeft: 8 }}>
-                  {x.used}/{x.limit}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-const PIE_COLORS = ['#007aff', '#34c759', '#ff9500', '#af52de', '#ff3b30', '#5ac8fa', '#ffcc00']
 
 /* 用量明细 */
 function McpUsagePanel() {

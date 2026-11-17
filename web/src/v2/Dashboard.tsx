@@ -290,7 +290,7 @@ export default function V2Dashboard() {
         <Panel
           title="异常与熔断"
           action={
-            <Link to="/v2/errors" className="btn ghost sm">
+            <Link to="/errors" className="btn ghost sm">
               查看错误日志
             </Link>
           }

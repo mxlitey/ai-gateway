@@ -87,13 +87,16 @@ func main() {
 
 // newMainWindow 创建主窗口。关窗不退出：隐藏到托盘，网关继续在后台运行。
 func newMainWindow(app *application.App, svc *GatewayService) *application.WebviewWindow {
+	// 窗口只承载网关控制（端口、启停、访问范围、面板入口），
+	// 插件与日志改由管理面板负责，因此高度按内容收紧，不做可滚动长列表。
 	win := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:      "main",
 		Title:     "AI Gateway",
 		Width:     520,
-		Height:    700,
+		Height:    190,
 		MinWidth:  460,
-		MinHeight: 560,
+		MinHeight: 190,
+		MaxHeight: 190,
 		URL:       "/",
 		// 无系统标题栏，改用页面内自绘标题栏（见 assets/index.html）。
 		// WebView2CompositionHosting 会启用 WebView2 的合成托管 + 非客户区路由，

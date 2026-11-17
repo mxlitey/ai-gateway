@@ -109,9 +109,6 @@
     flex-direction: column;
     gap: 10px;
   }
-  .card.grow { flex: 1 1 auto; min-height: 0; }
-  /* 插件卡片限高：插件数量增多时由内部列表滚动，不再把下方日志区域顶掉 */
-  .card.plugins { max-height: 40vh; }
 
   .row { display: flex; align-items: center; gap: 8px; }
   .spacer { flex: 1 1 auto; }
@@ -150,10 +147,7 @@
   button.primary { background: var(--blue); color: #fff; }
   button.primary:hover { background: var(--blue-hover); }
   button.primary:active { background: var(--blue-press); }
-  button.danger { background: var(--fill); color: var(--red); }
-  button.danger:hover { background: #ffeceb; }
   button:disabled { opacity: .45; }
-  button.small { height: 26px; padding: 0 10px; font-size: 12px; }
 
   /* 分段控件（iOS 风格） */
   .segmented {
@@ -209,72 +203,18 @@
   .icon-btn.copied .ico-copy { display: none; }
   .icon-btn.copied .ico-check { display: block; }
 
-  .section-head { display: flex; align-items: center; gap: 8px; }
-  .section-title { font-weight: 600; }
-  .count { color: var(--tertiary); font-size: 12px; }
-
-  .list { flex: 1 1 auto; min-height: 0; overflow: auto; }
-  .item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 9px 8px;
-    border-radius: 8px;
-    cursor: default;
-  }
-  .item:hover { background: var(--fill); }
-  .item.sel { background: var(--fill-hover); }
-  .item .grow { flex: 1 1 auto; min-width: 0; }
-  .item .name { font-weight: 600; }
-  .item .meta { color: var(--tertiary); font-size: 12px; }
-  .item .name, .item .meta {
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .empty {
-    color: var(--tertiary); font-size: 12px;
-    padding: 16px 2px; text-align: center;
-  }
-
-  .logs {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow: auto;
-    background: var(--fill);
-    border-radius: 10px;
-    padding: 8px 10px;
-    font: 400 12px/1.6 "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+  /* 单行操作反馈：替代原先的日志区，只在有消息时显示 */
+  .hint {
+    margin: 0;
+    min-height: 16px;
     color: var(--second);
-    user-select: text;
-    white-space: pre-wrap;
-    word-break: break-all;
-    /* 关掉滚动锚定，避免新增内容时浏览器回调整滚动位置 */
-    overflow-anchor: none;
+    font-size: 12px;
+    line-height: 16px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-
-  /* ---- 确认弹层 ---- */
-  .overlay {
-    position: absolute;
-    inset: 0;
-    background: rgba(0, 0, 0, .18);
-    display: none;
-    align-items: center;
-    justify-content: center;
-    padding: 24px;
-  }
-  .overlay.show { display: flex; }
-  .sheet {
-    width: 100%;
-    max-width: 340px;
-    background: var(--card);
-    border-radius: var(--radius-card);
-    padding: 18px;
-    box-shadow: 0 18px 48px rgba(0, 0, 0, .22);
-  }
-  .sheet-title { font-weight: 600; font-size: 15px; margin-bottom: 8px; }
-  .sheet-body { color: var(--second); font-size: 12px; line-height: 1.6; word-break: break-all; white-space: pre-line; }
-  .sheet-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
-  .sheet-actions .danger { background: var(--red); color: #fff; }
-  .sheet-actions .danger:hover { background: #e6352b; }
+  .hint.err { color: var(--red); }
 </style>
 </head>
 <body>
@@ -324,40 +264,9 @@
         </div>
       </div>
 
-      <!-- 插件 -->
-      <div class="card plugins">
-        <div class="section-head">
-          <span class="section-title">插件</span>
-          <span class="count" id="plugCount">0 个</span>
-          <span class="spacer"></span>
-          <button class="small" id="btnAdd">添加</button>
-          <button class="small danger" id="btnRemove" disabled>移除</button>
-          <button class="small" id="btnRescan">重扫</button>
-          <button class="small" id="btnDir">目录</button>
-        </div>
-        <div class="list" id="plugList">
-          <div class="empty">还没有插件</div>
-        </div>
-      </div>
+      <!-- 提示：操作结果单行反馈（原插件区与日志区已移除，插件在管理面板里管理） -->
+      <p class="hint" id="hint"></p>
 
-      <!-- 日志 -->
-      <div class="card grow">
-        <div class="section-head"><span class="section-title">日志</span></div>
-        <div class="logs" id="logs"></div>
-      </div>
-
-    </div>
-  </div>
-
-  <!-- 确认弹层 -->
-  <div class="overlay" id="overlay">
-    <div class="sheet">
-      <div class="sheet-title" id="sheetTitle">删除插件</div>
-      <div class="sheet-body" id="sheetBody"></div>
-      <div class="sheet-actions">
-        <button id="sheetCancel">取消</button>
-        <button class="danger" id="sheetOk">删除</button>
-      </div>
     </div>
   </div>
 
@@ -371,21 +280,23 @@
 
     const $ = (id) => document.getElementById(id);
     const dot = $("dot");
-    const portEl = $("port"), plugList = $("plugList"), plugCount = $("plugCount"), logsEl = $("logs");
-    const btnStart = $("btnStart"), btnStop = $("btnStop"), btnRemove = $("btnRemove");
-    const overlay = $("overlay"), sheetBody = $("sheetBody");
+    const portEl = $("port"), hintEl = $("hint");
+    const btnStart = $("btnStart"), btnStop = $("btnStop");
     const scopeBox = $("scope");
     const endpointEl = $("endpoint"), btnCopy = $("btnCopy");
 
     let loadedPort = 0;
     let lan = false;
-    let logCount = 0;
-    let logStick = true;
-    let rows = [];
-    let selectedId = "";
-    let confirmAction = null;
 
-    function toast(line) { if (line) appendLog(line); }
+    // 单行提示：成功/失败都走这里，3 秒后自动淡出，不占版面
+    let hintTimer = null;
+    function hint(text, isErr) {
+      if (!text) return;
+      hintEl.textContent = text;
+      hintEl.classList.toggle("err", !!isErr);
+      if (hintTimer) clearTimeout(hintTimer);
+      hintTimer = setTimeout(() => { hintEl.textContent = ""; }, 3000);
+    }
 
     function applyStatus(st) {
       if (!st) return;
@@ -410,96 +321,11 @@
       $("scopeLan").classList.toggle("on", lan);
     }
 
-    // 只有用户手动往上翻时才停止跟随；追加日志本身不会解除跟随
-    logsEl.addEventListener("scroll", () => {
-      logStick = logsEl.scrollHeight - logsEl.scrollTop - logsEl.clientHeight < 12;
-    });
-
-    function appendLog(line) {
-      const stick = logStick;
-      const div = document.createElement("div");
-      div.textContent = line;
-      logsEl.appendChild(div);
-      logCount++;
-      if (logCount > 500) { logsEl.removeChild(logsEl.firstChild); logCount--; }
-      if (stick) requestAnimationFrame(() => { logsEl.scrollTop = logsEl.scrollHeight; });
-    }
-
-    function renderPlugins(list) {
-      // 运行中的插件置顶展示，其余保持后端返回顺序
-      const all = Array.isArray(list) ? list : [];
-      rows = all
-        .map((p, i) => ({ p, i }))
-        .sort((a, b) => (Number(b.p.status === "运行中") - Number(a.p.status === "运行中")) || (a.i - b.i))
-        .map((x) => x.p);
-      if (!rows.some((p) => p.id === selectedId)) selectedId = "";
-      btnRemove.disabled = !selectedId;
-
-      plugList.innerHTML = "";
-      if (rows.length === 0) {
-        plugCount.textContent = "0 个";
-        const empty = document.createElement("div");
-        empty.className = "empty";
-        empty.textContent = "还没有插件";
-        plugList.appendChild(empty);
-        schedulePluginPoll();
-        return;
-      }
-      plugCount.textContent = rows.length + " 个";
-      for (const p of rows) {
-        const item = document.createElement("div");
-        item.className = "item" + (p.id === selectedId ? " sel" : "");
-        item.addEventListener("click", () => {
-          selectedId = p.id;
-          renderPlugins(rows);
-        });
-
-        const d = document.createElement("span");
-        d.className = "dot";
-        if (p.status === "运行中") d.classList.add("on");
-
-        const box = document.createElement("div");
-        box.className = "grow";
-        const name = document.createElement("div");
-        name.className = "name";
-        name.textContent = p.name || "(未命名)";
-        const meta = document.createElement("div");
-        meta.className = "meta";
-        const bits = [];
-        if (p.version) bits.push("v" + p.version);
-        if (p.status) bits.push(p.status);
-        if (p.port) bits.push("端口 " + p.port);
-        if (p.dir) bits.push(p.dir);
-        meta.textContent = bits.join(" · ");
-        box.appendChild(name);
-        box.appendChild(meta);
-
-        item.appendChild(d);
-        item.appendChild(box);
-        plugList.appendChild(item);
-      }
-      schedulePluginPoll();
-    }
-
-    // 插件处于过渡状态（启动中/重启中/已发现）时自动轮询，直到稳定。
-    // 否则网关重启后若恰好抓到过渡态，列表会一直停在“启动中”，需手动点「重扫」才更新。
-    const TRANSIENT_STATUS = new Set(["启动中", "重启中", "停止中", "已发现"]);
-    let pluginPoll = null;
-    function schedulePluginPoll() {
-      if (pluginPoll) { clearTimeout(pluginPoll); pluginPoll = null; }
-      if (!rows.some((p) => TRANSIENT_STATUS.has(p.status))) return;
-      pluginPoll = setTimeout(async () => {
-        try { renderPlugins(await GatewayService.Plugins()); } catch (_) { /* 单次失败忽略，下次继续 */ }
-        schedulePluginPoll();
-      }, 1200);
-    }
-
     async function refresh() {
       try {
         applyStatus(await GatewayService.Status());
-        renderPlugins(await GatewayService.Plugins());
       } catch (err) {
-        appendLog("读取状态失败：" + err);
+        hint("读取状态失败：" + err, true);
       }
     }
 
@@ -507,9 +333,9 @@
       if (btn) btn.disabled = true;
       try {
         const res = await fn();
-        if (res && res.message) toast(res.message);
+        if (res && res.message) hint(res.message, res.ok === false);
       } catch (err) {
-        appendLog("操作失败：" + err);
+        hint("操作失败：" + err, true);
       } finally {
         if (btn) btn.disabled = false;
         await refresh();
@@ -520,7 +346,7 @@
     btnStart.addEventListener("click", () => {
       const port = parseInt(portEl.value.trim(), 10);
       if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-        appendLog("端口不合法，请填 1-65535 之间的数字");
+        hint("端口不合法，请填 1-65535 之间的数字", true);
         portEl.focus();
         return;
       }
@@ -566,42 +392,15 @@
       if (ok) setTimeout(() => btnCopy.classList.remove("copied"), 1200);
     });
 
-    // ---- 插件 ----
-    $("btnAdd").addEventListener("click", () => run(() => GatewayService.AddPlugin(), $("btnAdd")));
-    $("btnRescan").addEventListener("click", () => run(() => GatewayService.Rescan(), $("btnRescan")));
-    $("btnDir").addEventListener("click", () => GatewayService.OpenPluginsDir());
-
-    btnRemove.addEventListener("click", () => {
-      const p = rows.find((r) => r.id === selectedId);
-      if (!p) return;
-      sheetBody.textContent = "确定删除插件「" + (p.name || p.id) + "」吗？会连同目录与它注册的渠道一起删除。\n" + (p.dir || "");
-      openSheet(() => run(() => GatewayService.RemovePlugin(p.id), null));
-    });
-
-    // ---- 确认弹层 ----
-    function openSheet(action) { confirmAction = action; overlay.classList.add("show"); }
-    function closeSheet() { overlay.classList.remove("show"); confirmAction = null; }
-    $("sheetCancel").addEventListener("click", closeSheet);
-    $("sheetOk").addEventListener("click", () => {
-      const action = confirmAction;
-      closeSheet();
-      if (action) action();
-    });
-
     // ---- 窗口按钮 ----
     $("btnMin").addEventListener("click", () => GatewayService.Minimise());
     $("btnClose").addEventListener("click", () => GatewayService.CloseWindow());
 
     // ---- 事件与初始化 ----
-    Events.On("gw:log", (event) => appendLog(String(event.data)));
+    // 内核日志仍在后台采集（管理面板「设置」里可看），窗口内不再展示
     Events.On("gw:status", (event) => applyStatus(event.data));
 
-    (async () => {
-      try {
-        for (const line of await GatewayService.Logs()) appendLog(line);
-      } catch (_) { /* 忽略 */ }
-      await refresh();
-    })();
+    refresh();
   </script>
 </body>
 </html>

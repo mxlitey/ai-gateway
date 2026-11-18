@@ -48,10 +48,21 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	raw, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody))
+	// 先按 Content-Length 拦截超大请求：直接截断会导致 JSON 解析失败，
+	// 客户端只会看到「不是合法的 JSON-RPC」，完全猜不到是请求体过大
+	if r.ContentLength > maxRequestBody {
+		writeRPCError(w, nil, CodeInvalidRequest, requestTooLargeMsg(r.ContentLength))
+		return
+	}
+	// 多读 1 字节用于判断是否超限，避免 Content-Length 缺失时被静默截断
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBody+1))
 	_ = r.Body.Close()
 	if err != nil {
 		writeRPCError(w, nil, CodeParseError, "读取请求体失败")
+		return
+	}
+	if len(raw) > maxRequestBody {
+		writeRPCError(w, nil, CodeInvalidRequest, requestTooLargeMsg(int64(len(raw))))
 		return
 	}
 
@@ -443,6 +454,13 @@ func writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
 		return
 	}
 	_, _ = w.Write(out)
+}
+
+func requestTooLargeMsg(size int64) string {
+	return fmt.Sprintf(
+		"请求体过大（%d 字节，上限 %d MB）。参考图请改用 image_host_info 取图床直传端点，"+
+			"把图片原始字节 POST 上传换取 url，再作为 image_url 传入，不要内联到 MCP 请求体里",
+		size, maxRequestBody>>20)
 }
 
 func writeRPCError(w http.ResponseWriter, id json.RawMessage, code int, message string) {

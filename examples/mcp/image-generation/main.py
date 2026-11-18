@@ -96,8 +96,10 @@ _BLOCKED_NETS = [
     for n in ("169.254.0.0/16", "224.0.0.0/4", "0.0.0.0/8", "ff00::/8", "fe80::/10", "::/128")
 ]
 REFERENCE_HINT = (
-    "参考图只接受公网 http(s) 图片地址；本机文件请用 image_path 传路径。"
-    "对话里粘贴的图片不会自动进入 MCP 工具参数。"
+    "参考图支持三种来源：公网 http(s) 图片地址（image_url 直接传）；"
+    "本机文件（image_path 传路径，仅本服务与文件同机时可用）；"
+    "对话里粘贴的图片或本机读不到的图片，先用 image_host_info 拿到图床直传端点，"
+    "把图片原始字节 POST 上去换取 url，再作为 image_url 传入。"
 )
 
 IMAGE_TOOLS = [
@@ -113,7 +115,9 @@ IMAGE_TOOLS = [
             "成功结果的 url 是网关自身地址（/v1/images/files/...），"
             + LINK_TTL_HINT + "，可直接下载或给用户；重要结果建议在 get_image_job 里传 download=true 落本地。"
             "参考图用公网 http(s) URL（image_url）或本机文件路径（image_path）；"
-            "内网 URL 由本服务下载后转发。对话里粘贴的图片不会自动变成工具参数。"
+            "内网 URL 由本服务下载后转发。"
+            "对话里粘贴的图片、或本机读不到的文件，先调 image_host_info 拿图床直传端点，"
+            "把图片原始字节 POST 上去换成 url，再作为 image_url 传入。"
         ),
         "inputSchema": {
             "type": "object",
@@ -130,10 +134,11 @@ IMAGE_TOOLS = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "参考图数组，只接受公网 http(s) 地址；传单个字符串也可以。"
-                        "内网地址由本服务下载后转成 base64，或在上传图床后传链接，不经过客户端上下文。"
+                        "参考图数组，传单个字符串也可以。"
+                        "公网 http(s) 地址直接传；内网地址由本服务下载后转 base64。"
+                        "对话里粘贴的图片、或本机读不到的文件，先调 image_host_info 拿直传端点，"
+                        "把图片原始字节 POST 上去换取 url，再传到这里。"
                         "建议最多 4 张。"
-                        "对话里粘贴的图片不会被 MCP 工具自动读取，需要链接或改用 image_path。"
                     ),
                 },
                 "image_path": {
@@ -142,8 +147,8 @@ IMAGE_TOOLS = [
                     "description": (
                         "参考图的本机文件路径数组（传单个字符串也可以）。"
                         "服务会读取文件转成 base64 再发给网关，适合对话附件已落盘成本地文件的场景。"
-                        "仅当本服务与文件在同一台机器上时可用；服务部署在远端时路径读不到，"
-                        "请改用 image_url 传内网或公网链接。"
+                        "仅当本服务与文件在同一台机器上时可用；服务部署在远端时路径读不到。"
+                        "读不到时不要反复试其它路径，直接用 image_host_info 上传图床换 url。"
                         "支持 PNG/JPEG/WebP/GIF；"
                         f"超过 {MAX_REFERENCE_MB} MB 时，若网关图床公网可达会自动上传换链接，否则报错。"
                     ),
@@ -209,10 +214,13 @@ IMAGE_TOOLS = [
     {
         "name": "image_host_info",
         "description": (
-            "查询网关内置图床：是否开启、是否公网可达，以及直传端点、单张上限、URL 前缀与保留时长。"
-            "上传图片请用 HTTP 直接 POST 到 endpoint（Authorization 带调用 MCP 时同一把 sk- 密钥），"
-            "请求体是图片原始字节，不经过 MCP，因此不受 8 MB 请求体限制；"
+            "查询网关内置图床：是否开启、是否公网可达，以及直传端点、单张上限、URL 前缀、保留时长，"
+            "并返回可直接执行的 curl 示例。"
+            "用途：把本地图片换成可作为 image_url 的短链接。"
+            "上传是普通 HTTP POST（请求体为图片原始字节，不经过 MCP，不受 8 MB 请求体限制），"
+            "Authorization 用配置本 MCP 时的同一把 sk- 密钥；"
             "返回的 url 可直接作为 generate_image 的 image_url。"
+            "参考图在本机读不到、或超过单张 base64 上限时，优先走这里。"
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
@@ -234,8 +242,10 @@ INSTRUCTIONS = (
     "6) 超时重试请带上同一个 request_id，网关会复用已有作业，不会重复生图；"
     "7) 需要放弃时调用 cancel_image_job(job_id)：只停止网关侧等待与轮询，"
     "不保证终止上游任务，异步渠道可能继续执行并已产生费用；"
-    "8) 需要上传参考图时先调用 image_host_info 拿直传端点：用 HTTP POST 图片原始字节，"
-    "不经过 MCP，所以不受 8 MB 请求体限制，返回的 url 可直接作为 image_url。"
+    "8) 参考图三种来源：公网 http(s) 链接直接作为 image_url；本机文件用 image_path（仅同机可用）；"
+    "对话里粘贴的图片、或本机读不到的文件，先调用 image_host_info 拿图床直传端点，"
+    "把图片原始字节 POST 上去换取 url，再作为 image_url 传入——该请求不经过 MCP，不受 8 MB 请求体限制。"
+    "image_path 报文件不存在时不要换路径反复试，直接改走图床。"
 )
 
 
@@ -812,7 +822,7 @@ def _image_host_info(key=""):
         "endpoint": (cap.get("public_base") or base) + "/v1/images/uploads",
         "method": "POST",
         "content_type": "image/png / image/jpeg / image/webp / image/gif",
-        "auth_header": "Authorization: Bearer <调用 MCP 时使用的同一把 sk- 密钥>",
+        "auth_header": "Authorization: Bearer <调用本 MCP 时配置的同一把 sk- 密钥>",
         "max_mb": int(cap.get("max_mb") or 0),
         "url_prefix": cap.get("url_prefix") or "",
         "ttl_seconds": int(cap.get("ttl_seconds") or 0),
@@ -820,6 +830,12 @@ def _image_host_info(key=""):
     hint = (
         "请求体是图片原始字节；响应里的 url 可直接作为 generate_image 的 image_url。"
         "该请求是普通 HTTP，不经过 MCP，因此不受 8 MB 请求体限制。"
+        "用你本地的命令执行工具（如 shell）发一次即可，示例："
+        "curl -sS -X POST '" + out["endpoint"] + "' "
+        "-H 'Authorization: Bearer $AIGW_IMAGE_API_KEY' "
+        "-H 'Content-Type: image/png' --data-binary @/本地/图片.png。"
+        "这里的密钥就是你配置本 MCP 时填的那把 sk-，不需要再向用户索取；"
+        "只有确实拿不到时才让用户提供。"
     )
     if not out["public"]:
         hint += "当前图床未声明公网可达，上传得到的链接可能无法被上游下载。"
@@ -870,7 +886,8 @@ def _reference_from_bytes(raw, mime, index, key):
             "第 %d 张参考图 %s，超过单张上限 %d MB；网关图床未开启，无法换成公网链接"
             % (index, size, MAX_REFERENCE_MB),
             code="reference_exceeds_base64_limit",
-            hint="请压缩图片后重试，或改用公网图片地址。",
+            hint="请压缩图片后重试，或改用公网图片地址。"
+                 "也可先调 image_host_info 确认图床是否开启（AIGW_IMAGE_HOST）。",
         )
     if not cap.get("public"):
         raise ToolError(
@@ -878,7 +895,8 @@ def _reference_from_bytes(raw, mime, index, key):
             "网关图床不可公网访问，上传后的链接上游取不到"
             % (index, size, MAX_REFERENCE_MB),
             code="reference_exceeds_base64_limit",
-            hint="请压缩图片后重试，或改用公网图片地址。",
+            hint="请压缩图片后重试，或改用公网图片地址。"
+                 "也可先调 image_host_info 确认图床是否开启（AIGW_IMAGE_HOST）。",
         )
     return _upload_reference(raw, mime, index, key)
 
@@ -890,7 +908,8 @@ def _normalize_reference(value, index, key):
         raise ToolError("第 %d 张参考图为空" % index, code="invalid_reference")
     if not text.lower().startswith(("http://", "https://")):
         raise ToolError("第 %d 张参考图无法识别。%s" % (index, REFERENCE_HINT),
-                        code="invalid_reference")
+                        code="invalid_reference",
+                        hint="先用 image_host_info 拿图床直传端点，把图片字节 POST 上去换 url。")
     if _is_public_url(text):
         return text
     raw, mime = _fetch_reference(text, index)
@@ -909,6 +928,8 @@ def _reference_from_path(value, index, key):
             "第 %d 张参考图文件不存在：%s（请确认路径；本服务若部署在远端，本机路径一定读不到）"
             % (index, _clip(path, 200)),
             code="invalid_reference",
+            hint="不要继续尝试其它本机路径。改用 image_host_info 拿图床直传端点，"
+                 "把图片原始字节 POST 上去换取 url，再作为 image_url 传入。",
         )
     try:
         with open(path, "rb") as fh:
@@ -1167,7 +1188,7 @@ def call_tool(name, arguments, key=""):
         else:
             return _error_result("未知工具: %s" % name, code="unknown_tool")
     except ToolError as exc:
-        return _error_result(exc.message, exc.code, exc.retryable, exc.upstream_status)
+        return _error_result(exc.message, exc.code, exc.retryable, exc.upstream_status, exc.hint)
     except Exception as exc:
         return _error_result("内部错误: %s" % exc, code="internal_error")
 
@@ -1178,11 +1199,15 @@ def call_tool(name, arguments, key=""):
     }
 
 
-def _error_result(message, code="internal_error", retryable=False, upstream_status=0):
+def _error_result(message, code="internal_error", retryable=False, upstream_status=0, hint=""):
     error = {"code": code, "message": message, "retryable": bool(retryable)}
     if upstream_status:
         error["upstream_status"] = int(upstream_status)
+    if hint:
+        error["hint"] = hint
     text = "[%s] %s" % (code, message)
+    if hint:
+        text += "：" + hint
     if retryable:
         text += "（可以重试）"
     return {

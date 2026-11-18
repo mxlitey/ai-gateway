@@ -414,7 +414,7 @@ export default function V2Settings() {
               </Field>
             </div>
 
-            <Field label="上游密钥失败冷却" hint="失败后暂停使用该密钥，连续失败逐次延长，成功即重置">
+            <Field label="上游密钥失败熔断" hint="失败后暂停使用该密钥，连续失败逐次延长，成功即解除">
               <Segmented
                 value={draft.key_cooldown_enabled ? 'on' : 'off'}
                 onChange={(v) => setDraft({ ...draft, key_cooldown_enabled: v === 'on' })}
@@ -427,8 +427,8 @@ export default function V2Settings() {
 
             <div className="v2grid g2">
               <Field
-                label="初始冷却（秒）"
-                hint={`首次失败的冷却时长，默认 ${defaults?.key_cooldown_base_seconds ?? 60}`}
+                label="初始熔断时长（秒）"
+                hint={`首次失败的熔断时长，默认 ${defaults?.key_cooldown_base_seconds ?? 60}`}
               >
                 <Input
                   type="number"
@@ -439,8 +439,8 @@ export default function V2Settings() {
                 />
               </Field>
               <Field
-                label="冷却上限（秒）"
-                hint={`单次冷却最长时间，默认 ${defaults?.key_cooldown_max_seconds ?? 1800}`}
+                label="熔断时长上限（秒）"
+                hint={`单次熔断最长时间，默认 ${defaults?.key_cooldown_max_seconds ?? 1800}`}
               >
                 <Input
                   type="number"

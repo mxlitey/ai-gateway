@@ -460,7 +460,7 @@ func TestGenerateImagePersistKeepsBase64(t *testing.T) {
 	}
 }
 
-// TestShouldCoolImageFailure 验证参数类错误不冷却渠道，其余失败仍冷却。
+// TestShouldCoolImageFailure 验证参数类错误不熔断渠道，其余失败仍熔断。
 func TestShouldCoolImageFailure(t *testing.T) {
 	for _, status := range []int{
 		http.StatusBadRequest,
@@ -469,7 +469,7 @@ func TestShouldCoolImageFailure(t *testing.T) {
 		http.StatusUnprocessableEntity,
 	} {
 		if shouldCoolImageFailure(status) {
-			t.Fatalf("status %d 不应冷却渠道", status)
+			t.Fatalf("status %d 不应熔断渠道", status)
 		}
 	}
 	for _, status := range []int{
@@ -485,7 +485,7 @@ func TestShouldCoolImageFailure(t *testing.T) {
 		http.StatusGatewayTimeout,
 	} {
 		if !shouldCoolImageFailure(status) {
-			t.Fatalf("status %d 应冷却渠道", status)
+			t.Fatalf("status %d 应熔断渠道", status)
 		}
 	}
 }

@@ -65,6 +65,8 @@ func NewRouter(d Deps) http.Handler {
 	// /v1/* 代理
 	mux.HandleFunc("GET /v1/images/jobs/{id}", d.Proxy.HandleImageJob)
 	mux.HandleFunc("DELETE /v1/images/jobs/{id}", d.Proxy.CancelImageJob)
+	// 标准 OpenAI 图片编辑入口（multipart 参考图）；必须比 /v1/ 更具体
+	mux.HandleFunc("POST /v1/images/edits", d.Proxy.HandleImageEdit)
 	mux.HandleFunc("/v1/", d.Proxy.Handle)
 	mux.HandleFunc("GET /v1", d.Proxy.Handle)
 

@@ -639,7 +639,7 @@ function BucketTable({ buckets }: { buckets: UsageBucket[] }) {
   )
 }
 
-/* ---------- 临时禁用（熔断） ---------- */
+/* ---------- 密钥熔断 ---------- */
 
 function CooldownList() {
   const queryClient = useQueryClient()
@@ -651,7 +651,7 @@ function CooldownList() {
   const reset = useMutation({
     mutationFn: (c: KeyCooldown) => api.resetKeyCooldown(c.channel_id, c.key_hint),
     onSuccess: () => {
-      toast('ok', '已重置该密钥冷却')
+      toast('ok', '已解除该密钥熔断')
       void queryClient.invalidateQueries({ queryKey: ['key-cooldowns'] })
     },
     onError: (err: Error) => toast('err', err.message),
@@ -663,13 +663,13 @@ function CooldownList() {
   if (items.length === 0) {
     return (
       <div style={{ padding: '6px 14px 11px' }} className="faint tiny">
-        当前没有被临时禁用的密钥
+        当前没有处于熔断状态的密钥
       </div>
     )
   }
   return (
     <>
-      <div className="ab-sec">临时禁用</div>
+      <div className="ab-sec">密钥熔断</div>
       {items.map((c) => {
         const remain = Math.max(0, Math.ceil((c.cooldown_until - now) / 1000))
         return (
@@ -688,9 +688,9 @@ function CooldownList() {
                 size="sm"
                 disabled={reset.isPending}
                 onClick={() => reset.mutate(c)}
-                title="立即恢复"
+                title="解除熔断"
               >
-                恢复
+                解除熔断
               </Button>
             </span>
           </div>

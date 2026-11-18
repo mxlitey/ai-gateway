@@ -270,13 +270,20 @@ type fwdSpec struct {
 }
 
 // forward 依次尝试目标，遇到 404/429/5xx/网络错误/无效响应则切换下一个。
+// 调用方主动断开时立即停止，不再重试，也不熔断密钥。
 func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwdSpec) (*http.Response, *Recorder) {
 	var lastErr, last429 string
 	cdCfg := h.coolerConfig()
 	rec := spec.rec
 	attempt := 0
+	canceled := false
 
 	for _, t := range spec.targets {
+		// 调用方已断开：后续目标必然同样取消，不必再打上游，更不能熔断密钥
+		if ctx.Err() != nil {
+			canceled = true
+			break
+		}
 		if attempt > 0 {
 			rec = rec.nextAttempt(t)
 		}
@@ -318,6 +325,14 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 
 		resp, err := h.client.Do(req)
 		if err != nil {
+			// 调用方主动断开导致的取消不是上游故障，熔断密钥会让整条渠道被误摘除
+			if ctx.Err() != nil {
+				lastErr = "调用方已断开，请求取消"
+				h.logError(t, spec.publicModel, 0, lastErr+" ("+targetURL+")")
+				rec.Finish(0, lastErr)
+				canceled = true
+				break
+			}
 			lastErr = "network error: " + err.Error()
 			h.cooler.Fail(t.Channel.ID, t.Key, cdCfg, 0)
 			h.logError(t, spec.publicModel, 0, lastErr+" ("+targetURL+")")
@@ -374,6 +389,16 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 			closeBody(resp)
 			continue
 		}
+	}
+
+	// 调用方已断开：连接不再可写，不必生成错误响应，也不要把取消记成 502
+	if canceled {
+		return jsonResponse(499, map[string]any{
+			"error": map[string]any{
+				"message": lastErr,
+				"type":    "request_canceled",
+			},
+		}), rec
 	}
 
 	// 全部目标失败：把最后一次尝试记为失败，并把最后错误带进明细
@@ -445,8 +470,8 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 	if len(targets) == 0 {
 		msg := "模型 " + modelName + " 没有被标记为生图模型，或没有支持生图的可用渠道"
 		if h.balancer.HasImageTarget(modelName, allowed) {
-			// 渠道与生图配置都在，只是密钥都在冷却中——不要把冷却误报成模型未配置
-			msg = "模型 " + modelName + " 的生图渠道密钥均在冷却中，请稍后重试"
+			// 渠道与生图配置都在，只是密钥都在熔断中——不要把熔断误报成模型未配置
+			msg = "模型 " + modelName + " 的生图渠道密钥均在熔断中，请稍后重试"
 		} else if chatTargets, _ := h.balancer.SelectTarget(modelName, allowed); len(chatTargets) > 0 {
 			// 模型只在聊天渠道里注册时，明确告诉调用方走错了端点，避免把上游 400 当成根因
 			msg = "模型 " + modelName + " 是对话模型，当前渠道未将其标记为生图模型；请在渠道配置中添加生图模型并设置生图模式"
@@ -466,6 +491,13 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 
 	var lastErr string
 	for i, t := range targets {
+		// 调用方已断开：同步生图无法再交付结果，继续重试只会再取消一轮
+		if r.Context().Err() != nil {
+			lastErr = "调用方已断开，生图请求取消"
+			h.logError(t, modelName, 0, lastErr)
+			rec.Finish(0, lastErr)
+			break
+		}
 		if i > 0 {
 			// 每次故障转移都是一次真实的上游请求，单独记一条
 			rec = rec.nextAttempt(t)
@@ -483,6 +515,13 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 			return
 		}
 
+		// 作业被取消不等于上游故障，冷却密钥会让一条坏连接把整个渠道误熔断
+		if res.Canceled {
+			rec.Finish(0, "调用方已断开，生图请求取消")
+			rec.Commit()
+			return
+		}
+
 		lastErr = res.Error
 		failStatus := res.UpstreamStatus
 		if failStatus == 0 {
@@ -496,15 +535,21 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 		rec.Finish(failStatus, "生图请求失败: "+res.Error)
 	}
 
+	// 调用方已断开时连接不再可写，不必再返回错误体
+	if r.Context().Err() != nil {
+		rec.Commit()
+		return
+	}
+
 	rec.Finish(http.StatusBadGateway, lastErr)
 	rec.Commit()
 	jsonError(w, http.StatusBadGateway,
 		"所有生图渠道均失败。最后错误: "+lastErr, "server_error")
 }
 
-// shouldCoolImageFailure 判断生图失败是否应冷却上游密钥。
+// shouldCoolImageFailure 判断生图失败是否应熔断上游密钥。
 // 400/413/415/422 属于请求本身的问题（参考图超限、格式不支持等），
-// 换密钥重试不可能成功，因此不冷却；网络错误与 5xx、429、401/403 等仍冷却。
+// 换密钥重试不可能成功，因此不熔断；网络错误与 5xx、429、401/403 等仍熔断。
 func shouldCoolImageFailure(status int) bool {
 	switch status {
 	case http.StatusBadRequest, http.StatusRequestEntityTooLarge,

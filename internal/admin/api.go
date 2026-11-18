@@ -842,8 +842,8 @@ func (a *API) normalizeRuntimeSettings(in store.RuntimeSettings) (store.RuntimeS
 		{"不健康阈值", out.PluginUnhealthyThreshold, 1, 1000},
 		{"最大失败次数", out.PluginMaxFailures, 1, 1000},
 		{"自动签到间隔", out.PluginAutoCheckinMinutes, 1, 24 * 60},
-		{"密钥初始冷却", out.KeyCooldownBaseSeconds, 1, 86400},
-		{"密钥冷却上限", out.KeyCooldownMaxSeconds, 1, 7 * 24 * 60 * 60},
+		{"密钥初始熔断时长", out.KeyCooldownBaseSeconds, 1, 86400},
+		{"密钥熔断时长上限", out.KeyCooldownMaxSeconds, 1, 7 * 24 * 60 * 60},
 	}
 	for _, b := range bounds {
 		if b.val < b.min || b.val > b.max {
@@ -851,7 +851,7 @@ func (a *API) normalizeRuntimeSettings(in store.RuntimeSettings) (store.RuntimeS
 		}
 	}
 	if out.KeyCooldownMaxSeconds < out.KeyCooldownBaseSeconds {
-		return out, fmt.Errorf("密钥冷却上限不能小于初始冷却")
+		return out, fmt.Errorf("密钥熔断时长上限不能小于初始熔断时长")
 	}
 	return out, nil
 }

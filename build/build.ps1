@@ -284,7 +284,9 @@ if ($Docker) {
                        # 漏传会把 arm64 镜像里的 Go 二进制编成 amd64（启动即 exec format error）
                        "--build-arg", "TARGETARCH=$arch",
                        "--build-arg", "APT_MIRROR=$AptMirror", "--load", ".")
-        & docker @buildArgs
+        # docker 的构建进度写在 stderr，PowerShell 5 在 ErrorActionPreference=Stop 下
+        # 会把原生命令的 stderr 当异常抛出，这里合流到 stdout，只按退出码判断成败
+        & docker @buildArgs 2>&1 | ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) {
             Write-Host "[错误] Docker 镜像构建失败（$platform）" -ForegroundColor Red
             if ($platform -match "arm64|arm/") {

@@ -24,6 +24,8 @@ var (
 	errReferenceTooLarge = errors.New("参考图超过上游 base64 上限")
 	// errUploadedRefMissing 客户端引用的图床文件已过期或不存在。
 	errUploadedRefMissing = errors.New("参考图已过期或不存在")
+	// errInvalidReference 客户端提交的参考图本身不可用（缺失、格式不支持、内容为空等）。
+	errInvalidReference = errors.New("参考图不可用")
 )
 
 // rewriteImageRefs 在网关非公网可达时，把指向自家图床的参考图链接转成 base64。

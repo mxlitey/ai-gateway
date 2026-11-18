@@ -298,7 +298,7 @@ func (h *Handler) runImageJob(ctx context.Context, jobID string) {
 		return
 	}
 	if len(targets) == 0 {
-		msg := "模型 " + job.Model + " 没有可用的生图渠道（未标记生图、渠道停用或密钥都在冷却中）"
+		msg := "模型 " + job.Model + " 没有可用的生图渠道（未标记生图、渠道停用或密钥都在熔断中）"
 		h.recordJobFailure(job.ID, "", "", 0, msg)
 		h.finishJob(job.ID, store.ImageJobFailed, nil, msg, "no_channel")
 		return

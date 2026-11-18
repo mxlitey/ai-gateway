@@ -307,11 +307,11 @@ func registerChannelsTool(s *Server, d ReadDeps) {
 		})
 }
 
-// ---------- 6. 密钥冷却 ----------
+// ---------- 6. 密钥熔断 ----------
 
 func registerCooldownsTool(s *Server, d ReadDeps) {
 	s.Tools("list_key_cooldowns",
-		"列出当前处于失败冷却中的上游密钥：所属渠道、脱敏密钥、连续失败次数、剩余冷却秒数。用于回答「为什么某个模型突然不用某条密钥了」。",
+		"列出当前处于熔断中的上游密钥：所属渠道、脱敏密钥、连续失败次数、剩余熔断秒数。用于回答「为什么某个模型突然不用某条密钥了」。",
 		map[string]any{"type": "object", "properties": map[string]any{}},
 		false, func(args map[string]any) (any, error) {
 			items, err := d.Store.ListActiveKeyCooldowns(time.Now().UnixMilli())
@@ -322,11 +322,11 @@ func registerCooldownsTool(s *Server, d ReadDeps) {
 		})
 }
 
-// ---------- 7. 重置冷却 ----------
+// ---------- 7. 解除熔断 ----------
 
 func registerResetCooldownTool(s *Server, d ReadDeps) {
 	s.Tools("reset_key_cooldown",
-		"手动解除某条上游密钥的冷却，使其立即重新参与选路。参数为渠道 ID 与脱敏密钥（可从 list_key_cooldowns 获取）。",
+		"手动解除某条上游密钥的熔断，使其立即重新参与选路。参数为渠道 ID 与脱敏密钥（可从 list_key_cooldowns 获取）。",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{

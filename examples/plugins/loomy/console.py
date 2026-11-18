@@ -8,7 +8,7 @@ Loomy 的登录是**两步短信**，故声明两个带 `fields` 的登录方法
 
 from chat import account_for_request, ensure_token, models_payload
 from upstream import UpstreamError, as_upstream_error
-from util import clamp_bytes, console_status, now_millis, sanitize_error, truncate_runes
+from util import clamp_bytes, console_status, now_millis, sanitize_error, today_str, truncate_runes
 
 LOGIN_METHODS = [
     {
@@ -39,7 +39,7 @@ def account_view(account):
         "enabled": account.usable(),
         "plan": account.plan or "Loomy",
         "credits": account.credits,
-        "checked_in_today": account.checked_in_today,
+        "checked_in_today": account.checked_in(),
         "expires_at": int(account.expires_at or 0),
         "last_error": sanitize_error(account.last_error),
     }
@@ -89,6 +89,7 @@ def handle_checkin(plugin, account_id):
 
     def mutate(st):
         st.checked_in_today = True
+        st.checked_in_on = today_str()
         if points is not None:
             st.credits = points["total"]
             st.credits_at = now_millis()

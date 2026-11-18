@@ -3,7 +3,7 @@
 
 from chat import account_for_request, ensure_token, models_payload
 from upstream import UpstreamError, as_upstream_error
-from util import clamp_bytes, console_status, now_millis, sanitize_error, truncate_runes
+from util import clamp_bytes, console_status, now_millis, sanitize_error, today_str, truncate_runes
 
 LOGIN_METHODS = [
     {
@@ -22,7 +22,7 @@ def account_view(account):
         "enabled": account.usable(),
         "plan": account.plan or "MiniMax Code",
         "credits": account.credits,
-        "checked_in_today": account.checked_in_today,
+        "checked_in_today": account.checked_in(),
         "streak_days": account.streak_days,
         "expires_at": int(account.expires_at or 0),
         "last_error": sanitize_error(account.last_error),
@@ -80,6 +80,7 @@ def handle_checkin(plugin, account_id):
     if state.get("checked_in_today"):
         def mutate_skip(st):
             st.checked_in_today = True
+            st.checked_in_on = today_str()
             st.streak_days = int(state.get("streak_days") or st.streak_days)
             st.last_error = ""
 
@@ -103,6 +104,7 @@ def handle_checkin(plugin, account_id):
 
     def mutate(st):
         st.checked_in_today = True
+        st.checked_in_on = today_str()
         if streak:
             st.streak_days = streak
         if credit:
@@ -133,7 +135,7 @@ def handle_quota(plugin, account_id):
     except UpstreamError as err:
         notes.append("积分查询失败：" + truncate_runes(err.msg, 60))
 
-    checked_in, streak = account.checked_in_today, account.streak_days
+    checked_in, streak = account.checked_in(), account.streak_days
     try:
         state = plugin.upstream.fetch_checkin(account.token)
         checked_in = bool(state.get("checked_in_today"))
@@ -145,6 +147,7 @@ def handle_quota(plugin, account_id):
         st.credits = credits
         st.credits_at = now_millis()
         st.checked_in_today = checked_in
+        st.checked_in_on = today_str() if checked_in else ""
         st.streak_days = streak
         st.plan = "MiniMax Code"
         st.last_error = "；".join(notes)[:100] if notes else ""

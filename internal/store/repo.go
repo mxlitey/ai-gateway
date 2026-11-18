@@ -385,6 +385,35 @@ func (s *Store) InsertErrorLog(e *model.ErrorLog) error {
 	return err
 }
 
+// ListErrorLogs 查询时间区间内的全部错误日志（倒序）。
+//
+// 不按渠道过滤：渠道被删除后，它产生的历史错误仍需可查。
+func (s *Store) ListErrorLogs(fromMs, toMs int64) ([]model.ErrorLog, error) {
+	rows, err := s.db.Query(
+		`SELECT id, channel_id, channel_name, base_url, model, upstream_model, status, key_hint, message, created_at
+		 FROM error_logs WHERE created_at >= ? AND created_at < ?
+		 ORDER BY created_at DESC LIMIT 2000`,
+		fromMs, toMs,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []model.ErrorLog{}
+	for rows.Next() {
+		var e model.ErrorLog
+		if err := rows.Scan(
+			&e.ID, &e.ChannelID, &e.ChannelName, &e.BaseURL, &e.Model,
+			&e.UpstreamModel, &e.Status, &e.KeyHint, &e.Message, &e.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // ListErrorLogsByChannel 查询某渠道在时间区间内的错误日志（倒序）。
 func (s *Store) ListErrorLogsByChannel(channelID string, fromMs, toMs int64) ([]model.ErrorLog, error) {
 	rows, err := s.db.Query(

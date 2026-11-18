@@ -11,7 +11,7 @@ import json
 import os
 import threading
 
-from util import as_str, atomic_write, first_non_empty, now_millis
+from util import as_str, atomic_write, first_non_empty, now_millis, today_str
 
 STATE_SCHEMA = 1
 AUTH_PREFIX = "mm-"
@@ -21,7 +21,7 @@ class Account:
     __slots__ = (
         "uid", "nickname", "token", "refresh_token", "expires_at", "scope", "source",
         "enabled", "hard_disabled", "credits", "credits_at", "plan",
-        "checked_in_today", "streak_days", "last_error",
+        "checked_in_today", "checked_in_on", "streak_days", "last_error",
     )
 
     def __init__(self, **kwargs):
@@ -38,6 +38,7 @@ class Account:
         self.credits_at = int(kwargs.get("credits_at", 0) or 0)
         self.plan = kwargs.get("plan", "")
         self.checked_in_today = bool(kwargs.get("checked_in_today", False))
+        self.checked_in_on = kwargs.get("checked_in_on", "")
         self.streak_days = int(kwargs.get("streak_days", 0) or 0)
         self.last_error = kwargs.get("last_error", "")
 
@@ -57,6 +58,10 @@ class Account:
         if not (self.token or "").strip():
             return False
         return self.expires_at == 0 or self.expires_at > now_millis()
+
+    def checked_in(self):
+        """今天是否已签：快照必须落在今天，否则一律算未签（跨天自动失效）。"""
+        return self.checked_in_today and self.checked_in_on == today_str()
 
     def refreshable(self):
         return bool((self.refresh_token or "").strip())
@@ -99,7 +104,7 @@ class Credential:
 
 class AccountState:
     __slots__ = ("enabled", "hard_disabled", "credits", "credits_at", "plan",
-                 "checked_in_today", "streak_days", "last_error")
+                 "checked_in_today", "checked_in_on", "streak_days", "last_error")
 
     def __init__(self, enabled=True):
         self.enabled = enabled
@@ -108,6 +113,7 @@ class AccountState:
         self.credits_at = 0
         self.plan = ""
         self.checked_in_today = False
+        self.checked_in_on = ""
         self.streak_days = 0
         self.last_error = ""
 
@@ -120,6 +126,8 @@ class AccountState:
             doc["credits_at"] = self.credits_at
         if self.plan:
             doc["plan"] = self.plan
+        if self.checked_in_on:
+            doc["checked_in_on"] = self.checked_in_on
         if self.streak_days:
             doc["streak_days"] = self.streak_days
         if self.last_error:
@@ -134,6 +142,7 @@ class AccountState:
         state.credits_at = int(doc.get("credits_at", 0) or 0)
         state.plan = as_str(doc.get("plan"))
         state.checked_in_today = bool(doc.get("checked_in_today", False))
+        state.checked_in_on = as_str(doc.get("checked_in_on"))
         state.streak_days = int(doc.get("streak_days", 0) or 0)
         state.last_error = as_str(doc.get("last_error"))
         return state
@@ -223,6 +232,7 @@ class AccountStore:
             acc.credits_at = state.credits_at
             acc.plan = state.plan
             acc.checked_in_today = state.checked_in_today
+            acc.checked_in_on = state.checked_in_on
             acc.streak_days = state.streak_days
             acc.last_error = state.last_error
         return acc

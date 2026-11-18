@@ -1031,6 +1031,8 @@ type pluginAccount struct {
 	Name      string `json:"name"`
 	Enabled   bool   `json:"enabled"`
 	ExpiresAt int64  `json:"expires_at"`
+	// CheckedInToday 插件按天派生的「今天是否已签」（插件返回 checked_in_today 时必须落在当天）。
+	CheckedInToday bool `json:"checked_in_today"`
 }
 
 // alive 判断账号登录态是否仍有效（0 表示不过期）。
@@ -1163,7 +1165,9 @@ func (h *Host) runAutoCheckin() {
 }
 
 // checkinPlugin 对单个插件的「启用且登录有效」账号逐个签到。
-// 依赖插件端 checkin 接口的幂等语义（今日已签返回成功），重复调用是安全的。
+//
+// 插件按天派生的 checked_in_today 为真时直接跳过：每小时复查只需覆盖跨天场景，
+// 当日已签再打一遍纯属浪费上游配额。旧插件不返回该字段时一律按未签处理。
 func (h *Host) checkinPlugin(inst *instance) {
 	accounts, ok := h.fetchAccounts(inst)
 	if !ok {
@@ -1171,6 +1175,9 @@ func (h *Host) checkinPlugin(inst *instance) {
 	}
 	for _, a := range accounts {
 		if !a.Enabled || !a.alive() {
+			continue
+		}
+		if a.CheckedInToday {
 			continue
 		}
 		msg, err := h.checkinAccount(inst, a.ID)

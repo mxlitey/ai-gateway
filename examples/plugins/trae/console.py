@@ -12,18 +12,27 @@
     GET    /console/login/web?state=xxx   轮询登录结果
 """
 
+import time
+
 from chat import STATIC_MODELS, account_for_request
 from upstream import (
-    _CODE_ALREADY_CHECKED_IN, _CODE_TOKEN_DEAD, CheckinState, UpstreamError,
+    _CODE_ALREADY_CHECKED_IN, _CODE_BUSY, _CODE_TOKEN_DEAD, CheckinState, UpstreamError,
     as_upstream_error,
 )
-from util import clamp_bytes, console_status, new_checkin_device_id, now_millis, sanitize_error, truncate_runes
+from util import (
+    clamp_bytes, console_status, now_millis, sanitize_error, today_str, truncate_runes,
+)
 
 LOGIN_METHODS = [{
     "id": "web",
     "label": "登录 TRAE 账号",
     "hint": "在浏览器完成授权，回调自动捕获",
 }]
+
+# 9074 是设备维度限流：换一套设备指纹并退避后重试，仍失败才如实上报。
+# 总退避控制在 11 秒内（网关的单次签到超时是 30 秒）。
+_CHECKIN_BUSY_RETRIES = 2
+_CHECKIN_BUSY_BACKOFF = (3, 8)
 
 
 def account_view(account):
@@ -36,7 +45,7 @@ def account_view(account):
         "enabled": account.usable(),
         "plan": account.plan or "免费版",
         "credits": account.credits,
-        "checked_in_today": account.checked_in_today,
+        "checked_in_today": account.checked_in(),
         "expires_at": expires,
         "last_error": sanitize_error(account.last_error),
     }
@@ -98,8 +107,9 @@ def perform_checkin(plugin, account_id):
 
         status 1 发 → （未签时）claim 1 发 → 同设备号回查 1 发 = 常态 3 发
 
-    **device_id 每轮新生成、三发之间保持不变**：复用上一轮的号是风控画像里的
-    可疑项；而回查必须用同一个号问「今天这个设备签过没有」，换号回查等于自证失败。
+    **device_id 按 uid 确定性派生、三发之间保持不变**：设备维度记账要稳定，
+    每轮换号会让每次签到都像一台新机器，正是 9074 的成因。撞 9074 时才整组
+    换指纹重试（见 `_checkin_round`）。
 
     两个判定都不能省：
 
@@ -133,6 +143,8 @@ def perform_checkin(plugin, account_id):
 
     def mutate(st):
         st.checked_in_today = checked_in
+        # 只有真签上了才盖日期戳；未签时清空，避免旧日期被当成「今天签过」
+        st.checked_in_on = today_str() if checked_in else ""
         st.streak_days = state.streak_days
         st.last_error = ""
 
@@ -156,11 +168,24 @@ def perform_checkin(plugin, account_id):
 def _checkin_round(plugin, account):
     """跑一轮 status → claim → 回查，返回 (最终状态, 文案, 是否需要换发令牌)。
 
-    「需要换发令牌重放」用第三个返回值往上传（不抛错，因为它是可恢复的）；
-    其余失败照常抛 UpstreamError，由 handle_checkin 映射成面板上的错误 toast。
+    撞 9074（设备维度限流）时换一套设备指纹、退避后重跑整轮；其余错误直接
+    上抛。「需要换发令牌重放」用第三个返回值往上传（不抛错，因为它是可恢复的），
+    由 handle_checkin 映射成面板上的错误 toast。
     """
-    device_id = new_checkin_device_id()
-    state, err = plugin.upstream.checkin_status(account, device_id)
+    attempt = 0
+    while True:
+        try:
+            return _checkin_attempt(plugin, account, attempt)
+        except UpstreamError as err:
+            if err.code != _CODE_BUSY or attempt >= _CHECKIN_BUSY_RETRIES:
+                raise
+            time.sleep(_CHECKIN_BUSY_BACKOFF[attempt])
+            attempt += 1
+
+
+def _checkin_attempt(plugin, account, identity_seed):
+    """单轮签到（identity_seed 决定设备指纹组：0 为账号默认身份）。"""
+    state, err = plugin.upstream.checkin_status(account, identity_seed)
     if err is not None:
         raise err
     if state.code == _CODE_TOKEN_DEAD:
@@ -175,7 +200,7 @@ def _checkin_round(plugin, account):
     if not state.enable:
         raise UpstreamError(403, "该账号当前没有可领取的签到活动（上游未开放这一档）")
 
-    claim, cerr = plugin.upstream.checkin_claim(account, device_id)
+    claim, cerr = plugin.upstream.checkin_claim(account, identity_seed)
     if cerr is not None:
         raise cerr
     if claim.needs_reauth:
@@ -187,7 +212,7 @@ def _checkin_round(plugin, account):
                             code=claim.code)
 
     # 同设备号回查：claim 的 code:0 不能当成功，必须看到状态翻转
-    after, aerr = plugin.upstream.checkin_status(account, device_id)
+    after, aerr = plugin.upstream.checkin_status(account, identity_seed)
     if aerr is not None or not after.done_today():
         raise UpstreamError(
             502, "签到接口返回成功但同设备号回查未确认（服务端静默拒签），"
@@ -235,13 +260,12 @@ def refresh_quota_snapshot(plugin, account_id):
     """刷新一个账号的额度与签到状态快照。返回 (Account, note)。
 
     签到状态只是面板上的读数，因此这里**不换号、不重放**：换发令牌重放留给
-    显式签到。回查用的设备号在这里无所谓（只读 checked_in 这类账号维度字段），
-    但仍按规范发一个一次性的 16 位数字号，避免复用旧号落进风控画像。
+    显式签到。设备身份仍用该账号的派生值，保持与签到同一台「设备」。
     """
     account = plugin.store.get(account_id)
     if account is None:
         return None, "账号不存在"
-    state, err = plugin.upstream.checkin_status(account, new_checkin_device_id())
+    state, err = plugin.upstream.checkin_status(account)
     if err is not None:
         plugin.note_upstream_error(account, as_upstream_error(err))
         return plugin.store.get(account_id), ""
@@ -252,6 +276,7 @@ def refresh_quota_snapshot(plugin, account_id):
         # 额度查询失败：保留既有快照，只更新签到状态，并如实说明
         def mutate(st):
             st.checked_in_today = state.done_today()
+            st.checked_in_on = today_str() if st.checked_in_today else ""
             st.streak_days = state.streak_days
 
         updated = plugin.store.update_state(account_id, mutate)
@@ -259,6 +284,7 @@ def refresh_quota_snapshot(plugin, account_id):
 
     def mutate(st):
         st.checked_in_today = state.done_today()
+        st.checked_in_on = today_str() if st.checked_in_today else ""
         st.streak_days = state.streak_days
         st.credits = credits
         if plan:

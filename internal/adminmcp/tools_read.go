@@ -364,19 +364,12 @@ func registerErrorLogsTool(s *Server, d ReadDeps) {
 			from := to - int64(days)*86400000
 			channelID := argString(args, "channel_id")
 			if channelID == "" {
-				channels, err := d.Store.ListChannels()
+				// 不按现存渠道遍历：渠道删除后，它产生的历史错误仍需可查
+				logs, err := d.Store.ListErrorLogs(from, to)
 				if err != nil {
 					return nil, err
 				}
-				all := []model.ErrorLog{}
-				for i := range channels {
-					logs, err := d.Store.ListErrorLogsByChannel(channels[i].ID, from, to)
-					if err != nil {
-						return nil, err
-					}
-					all = append(all, logs...)
-				}
-				return map[string]any{"from": from, "to": to, "count": len(all), "items": all}, nil
+				return map[string]any{"from": from, "to": to, "count": len(logs), "items": logs}, nil
 			}
 			logs, err := d.Store.ListErrorLogsByChannel(channelID, from, to)
 			if err != nil {

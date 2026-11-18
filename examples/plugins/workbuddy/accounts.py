@@ -10,6 +10,8 @@ import os
 import threading
 import time
 
+from util import today_str
+
 
 class Account:
     """插件管理的账号。"""
@@ -17,7 +19,7 @@ class Account:
     __slots__ = (
         "id", "name", "site", "uid", "domain", "access_token", "refresh_token",
         "token_expires_at", "refresh_expires_at", "plan", "credits", "credits_at",
-        "checked_in_today", "streak_days", "today_credit", "last_error",
+        "checked_in_today", "checked_in_on", "streak_days", "today_credit", "last_error",
         "source", "added_at", "enabled", "enterprise_id", "device_token",
     )
 
@@ -35,6 +37,7 @@ class Account:
         self.credits = float(kwargs.get("credits", 0) or 0)
         self.credits_at = int(kwargs.get("credits_at", 0) or 0)
         self.checked_in_today = bool(kwargs.get("checked_in_today", False))
+        self.checked_in_on = kwargs.get("checked_in_on", "")
         self.streak_days = int(kwargs.get("streak_days", 0) or 0)
         self.today_credit = float(kwargs.get("today_credit", 0) or 0)
         self.last_error = kwargs.get("last_error", "")
@@ -55,6 +58,10 @@ class Account:
         if not (self.access_token or "").strip():
             return False
         return self.token_expires_at == 0 or self.token_expires_at > int(time.time() * 1000)
+
+    def checked_in(self):
+        """今天是否已签：快照必须落在今天，否则一律算未签（跨天自动失效）。"""
+        return self.checked_in_today and self.checked_in_on == today_str()
 
     # ---------- 落盘形态 ----------
 
@@ -79,6 +86,8 @@ class Account:
         }
         if self.refresh_token:
             doc["refresh_token"] = self.refresh_token
+        if self.checked_in_on:
+            doc["checked_in_on"] = self.checked_in_on
         if self.refresh_expires_at:
             doc["refresh_expires_at"] = self.refresh_expires_at
         if self.source:
@@ -107,6 +116,7 @@ class Account:
             credits=_float(doc.get("credits")),
             credits_at=_int(doc.get("credits_updated_at")),
             checked_in_today=bool(doc.get("checked_in_today", False)),
+            checked_in_on=_text(doc.get("checked_in_on")),
             streak_days=_int(doc.get("streak_days")),
             today_credit=_float(doc.get("today_credit")),
             last_error=_text(doc.get("last_error")),
@@ -207,6 +217,7 @@ class AccountStore:
                 account.credits = cur.credits
                 account.credits_at = cur.credits_at
                 account.checked_in_today = cur.checked_in_today
+                account.checked_in_on = cur.checked_in_on
                 account.streak_days = cur.streak_days
                 account.today_credit = cur.today_credit
                 account.plan = cur.plan

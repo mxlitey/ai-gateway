@@ -23,7 +23,7 @@ from upstream import (
     realm_config, refresh_token,
 )
 from util import (
-    as_str, clamp_bytes, first_non_empty, now_millis, sanitize_error, short_uid,
+    as_str, clamp_bytes, first_non_empty, now_millis, sanitize_error, short_uid, today_str,
 )
 
 # 面板只按方式 id 调用，所以「国内站 / 国际站」用两个方法 id 来表达。
@@ -42,7 +42,7 @@ def account_view(acc):
         "enabled": acc.enabled,
         "plan": acc.plan,
         "credits": acc.credits,
-        "checked_in_today": acc.checked_in_today,
+        "checked_in_today": acc.checked_in(),
         "streak_days": acc.streak_days,
         "expires_at": acc.token_expires_at,
         "last_error": sanitize_error(acc.last_error),
@@ -140,6 +140,7 @@ def handle_checkin(plugin, account_id):
 
     def mutate(a):
         a.checked_in_today = result.checked_in_today
+        a.checked_in_on = today_str() if result.checked_in_today else ""
         a.last_error = ""
         if result.streak_days > 0:
             a.streak_days = result.streak_days
@@ -166,10 +167,24 @@ def handle_quota(plugin, account_id):
         plugin.store.update(account_id, lambda a: setattr(a, "last_error", str(exc)))
         return 502, {"error": str(exc)}
 
+    # 顺带回查签到状态：面板与仪表盘读的是 checked_in_today，
+    # 只在签到成功后更新会让「已签」滞留到次日或多端签到后失真。
+    checked_in, streak = acc.checked_in(), acc.streak_days
+    try:
+        status = fetch_checkin_status(plugin.eps, acc)
+        checked_in = status.checked_in_today
+        if status.streak_days > 0:
+            streak = status.streak_days
+    except Exception:
+        pass
+
     def mutate(a):
         a.credits = updated.credits
         a.credits_at = updated.credits_at
         a.plan = updated.plan
+        a.checked_in_today = checked_in
+        a.checked_in_on = today_str() if checked_in else ""
+        a.streak_days = streak
         a.last_error = ""
 
     saved = plugin.store.update(account_id, mutate)
@@ -245,6 +260,7 @@ def refresh_account(plugin, acc):
         a.credits_at = updated.credits_at
         a.plan = updated.plan
         a.checked_in_today = checked_in
+        a.checked_in_on = today_str() if checked_in else ""
         a.streak_days = streak
         a.today_credit = today_credit
         a.last_error = ""

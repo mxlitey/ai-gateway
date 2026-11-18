@@ -107,6 +107,11 @@ def now_millis():
     return int(time.time() * 1000)
 
 
+def today_str():
+    """本地日期 YYYY-MM-DD：签到状态按天判定的日界。"""
+    return time.strftime("%Y-%m-%d")
+
+
 # ---------- 展示 ----------
 
 

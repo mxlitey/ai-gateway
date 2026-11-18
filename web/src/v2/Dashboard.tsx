@@ -399,6 +399,7 @@ export default function V2Dashboard() {
                     </span>
                     <span className="r">
                       <span>{countChannelModels(c)} 模型</span>
+                      {isPluginChannel(c) ? <CheckinBadge pluginID={c.source.slice('plugin:'.length)} /> : null}
                       <Badge tone={tone}>{!c.enabled ? '停用' : keysOk ? '正常' : '无钥'}</Badge>
                     </span>
                   </div>
@@ -573,6 +574,33 @@ function Sparkline({
         ) : null}
       </svg>
     </div>
+  )
+}
+
+/* ---------- 渠道健康里的签到读数 ---------- */
+
+/**
+ * 插件渠道的今日签到情况：已签 / 账号总数。
+ * 数据来自插件控制台（checked_in_today 已由插件按天派生），60 秒刷新一次；
+ * 读不到账号时整块不渲染，避免在渠道行里塞一条误导性的 0/0。
+ */
+function CheckinBadge({ pluginID }: { pluginID: string }) {
+  const accounts = useQuery({
+    queryKey: ['plugin-accounts', pluginID],
+    queryFn: () => api.pluginAccounts(pluginID),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+    retry: false,
+  })
+  const list = accounts.data?.accounts ?? []
+  if (list.length === 0) return null
+
+  const checked = list.filter((a) => a.checked_in_today).length
+  const tone: Tone = checked === list.length ? 'ok' : checked > 0 ? 'warn' : 'off'
+  return (
+    <Badge tone={tone}>
+      签到 {checked}/{list.length}
+    </Badge>
   )
 }
 

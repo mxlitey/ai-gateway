@@ -102,6 +102,21 @@ export default function V2Prices() {
     onError: (err: Error) => toast('err', err.message),
   })
 
+  // 删除是幂等的：条目不存在也回成功，因此这里不需要额外的存在性判断
+  const removePrice = useMutation({
+    mutationFn: (model: string) => api.deletePrice(model),
+    onSuccess: async () => {
+      toast('ok', '价格已删除')
+      await prices.refetch()
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  function onDelete(model: string) {
+    if (!window.confirm(`删除「${model}」的价格？删除后该模型回到「未定价」。`)) return
+    removePrice.mutate(model)
+  }
+
   return (
     <div className="stack">
       <PageHead title="价格表" />
@@ -110,6 +125,7 @@ export default function V2Prices() {
         loading={prices.isLoading}
         saving={savePrice.isPending}
         onSave={(body) => savePrice.mutate(body)}
+        onDelete={onDelete}
       />
     </div>
   )
@@ -120,11 +136,13 @@ function PriceSection({
   loading,
   saving,
   onSave,
+  onDelete,
 }: {
   data?: PricesResponse
   loading: boolean
   saving: boolean
   onSave: (body: PriceInput) => void
+  onDelete: (model: string) => void
 }) {
   const [query, setQuery] = useState('')
   const [onlyUnpriced, setOnlyUnpriced] = useState(false)
@@ -240,6 +258,11 @@ function PriceSection({
                     <Badge tone={r.priced ? 'ok' : 'warn'}>{r.priced ? '已定价' : '未定价'}</Badge>
                   </button>
                   <span className="mono tiny faint">{r.price ? summaryOf(r.price) : '—'}</span>
+                  {r.priced ? (
+                    <Button size="sm" variant="ghost" onClick={() => onDelete(r.normalized)}>
+                      删除
+                    </Button>
+                  ) : null}
                   <Button
                     size="sm"
                     variant={isOpen ? 'default' : 'primary'}
@@ -253,11 +276,13 @@ function PriceSection({
                   <PriceForm
                     model={r.model}
                     perRequest={r.image}
+                    priced={r.priced}
                     draft={draft}
                     saving={saving}
                     onChange={setDraft}
                     onSubmit={() => onSave(payloadOf(r.normalized, draft))}
                     onCancel={close}
+                    onDelete={() => onDelete(r.normalized)}
                   />
                 ) : null}
               </div>
@@ -272,19 +297,24 @@ function PriceSection({
 function PriceForm({
   model,
   perRequest,
+  priced,
   draft,
   saving,
   onChange,
   onSubmit,
   onCancel,
+  onDelete,
 }: {
   model: string
   perRequest: boolean
+  /** 该模型是否已有价格：只有已定价时才显示「删除此价格」 */
+  priced: boolean
   draft: Draft
   saving: boolean
   onChange: (d: Draft) => void
   onSubmit: () => void
   onCancel: () => void
+  onDelete: () => void
 }) {
   function setTier(i: number, key: keyof Draft['tiers'][number], value: string) {
     const tiers = draft.tiers.slice()
@@ -487,6 +517,11 @@ function PriceForm({
         <Button variant="ghost" onClick={onCancel}>
           取消
         </Button>
+        {priced ? (
+          <Button variant="ghost" style={{ marginLeft: 'auto' }} onClick={onDelete}>
+            删除此价格
+          </Button>
+        ) : null}
       </div>
     </div>
   )

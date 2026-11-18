@@ -266,8 +266,17 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- 模型 -------------------------------------------------------------
     def _handle_models(self):
+        # 优先按 X-Plugin-Account 选号；宿主拉模型时不带账号也要能出列表，
+        # 所以回退到第一个可用账号（只有它才拿得到上游的最新清单）。
         acc_id = (self.headers.get("X-Plugin-Account") or "").strip()
-        acc = find_account(acc_id) if acc_id else None
+        acc = pick_account(acc_id)
+        if acc is not None:
+            # 登录态可能已过期：模型清单同样是带 COSY 签名的上游请求。
+            # 这里只尝试续期，失败就交给 list_models 降级到快照，不阻断列表。
+            try:
+                acc.ready()
+            except Exception:
+                pass
         models = upstream.list_models(acc)
         return self._send_json(200, {"object": "list", "data": models})
 

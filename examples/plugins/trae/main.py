@@ -38,9 +38,11 @@ from upstream import Upstream, UpstreamError, as_upstream_error  # noqa: E402
 
 PLUGIN_VERSION = "1.0.0"
 
-# 后台任务参数：token 到期前 24 小时预刷新，每 30 分钟复查一次。
+# 后台任务参数：每 30 分钟扫一次，每个账号每天无条件换发一次令牌。
 BG_INTERVAL = 30 * 60
-REFRESH_SKEW = 24 * 60 * 60
+# 保活周期：只在临期时续期会让 refreshToken 链条长期不动而冷掉（上游会把
+# 长期未用的 refreshToken 作废，作废后只能重新登录），因此改成每日无条件换发。
+KEEPALIVE_INTERVAL = 24 * 60 * 60
 
 _STOP = threading.Event()
 
@@ -101,31 +103,44 @@ class Plugin:
         thread.start()
 
     def _background_loop(self):
-        # 启动时先补一次临期 token 的预刷新
+        # 启动时先补一次当日保活（重启不改变「每天一次」的节奏，靠落盘的 refreshed_at 判定）
         self.run_token_pre_refresh()
         while not _STOP.wait(BG_INTERVAL):
             self.run_token_pre_refresh()
 
     def run_token_pre_refresh(self):
-        """对 24 小时内即将过期的账号做 token 预刷新并原子落盘。"""
+        """对「今天还没换发过」的账号做一次 token 保活换发并原子落盘。
+
+        与本地 expires_at 无关：refreshToken 链条长期不动就会被上游作废，
+        临期才续期等于放任链条冷掉。换发失败也记下时间戳，避免每 30 分钟
+        重试一次去撞上游风控（真过期时对话链路的 ensure_token 还会按需换发）。
+        """
         now = int(time.time())
         for account in self.store.list():
             if not (account.refresh_token or "").strip():
                 continue
-            if account.expires_at <= 0 or account.expires_at - now > REFRESH_SKEW:
+            if account.refreshed_at > 0 and now - account.refreshed_at < KEEPALIVE_INTERVAL:
                 continue
             work = account.copy()
             try:
                 self.upstream.refresh_token(work)
             except Exception as exc:
-                self.log("[token 预刷新] %s 失败：%s" % (account.name(), exc))
+                self.log("[token 保活] %s 失败：%s" % (account.name(), exc))
+                self._mark_refreshed(account.uid, now)
                 continue
             try:
                 self.store.save_auth(work.to_auth())
             except Exception as exc:
-                self.log("[token 预刷新] %s 落盘失败：%s" % (account.name(), exc))
+                self.log("[token 保活] %s 落盘失败：%s" % (account.name(), exc))
                 continue
-            self.log("[token 预刷新] %s 完成" % account.name())
+            self._mark_refreshed(account.uid, now)
+            self.log("[token 保活] %s 完成" % account.name())
+
+    def _mark_refreshed(self, uid, when):
+        def mutate(st):
+            st.refreshed_at = when
+
+        self.store.update_state(uid, mutate)
 
 
 # ---------- 对话转发 ----------

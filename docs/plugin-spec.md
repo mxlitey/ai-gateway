@@ -369,10 +369,11 @@ def account_for_request(handler):
 
 - 插件每次进入 `running`，宿主会立刻补签一轮（覆盖网关 / 插件重启场景）；
 - 之后宿主每小时复查一次（覆盖跨天场景）；
-- 宿主只对 `GET /accounts` 里 `enabled=true` 且**未过期**（`expires_at` 为 `0` 或晚于当前时间）的账号调用 `POST /accounts/{id}/checkin`。
+- 宿主只对 `GET /accounts` 里 `enabled=true`、**未过期**（`expires_at` 为 `0` 或晚于当前时间）、
+  且 `checked_in_today` 为 `false`（或未返回该字段）的账号调用 `POST /accounts/{id}/checkin`。
 
 因此该接口必须**幂等友好**：今天已签到时返回成功语义（并附说明），而不是当成硬错误——
-宿主会重复调用，靠幂等语义保证不产生副作用。
+旧插件不返回 `checked_in_today` 时宿主无法跳过，仍会每小时调用一次，靠幂等语义保证不产生副作用。
 
 ### 6.2 宿主如何转发
 
@@ -455,14 +456,15 @@ def account_for_request(handler):
 | `last_error` | string | 账号行下方的红色小字，**需脱敏**（不要带 token 片段） |
 | `plan` | string | 套餐列（仅声明 `quota` 能力时显示） |
 | `credits` | number | 额度列，带千分位；**允许小数**（如 `1280.5`，面板按原值格式化）（仅声明 `quota` 能力时显示） |
-| `checked_in_today` | bool | 已签（显示连签天数）/ 未签（仅声明 `checkin` 能力时显示） |
+| `checked_in_today` | bool | 已签（显示连签天数）/ 未签（仅声明 `checkin` 能力时显示）。**必须是「今天」的判定结果**，不是「上次签到是否成功」的残留值 |
 | `streak_days` | number | 连签天数（仅声明 `checkin` 能力时显示） |
 
 未知字段会被忽略；字段缺失显示 `—`（注意 `credits: 0` 显示 `0`，字段缺失才显示 `—`）。
 **凭据（token 等）不要出现在响应里**。
 
-> `checked_in_today` / `streak_days` 只用于面板展示。宿主自动签到不做跨天判断，
-> 而是对 `enabled=true` 且未过期的账号直接调用签到端点，靠签到的幂等语义兜底。
+> `checked_in_today` 用于面板展示，同时是宿主「今天还需不需要再签」的判据。
+> 插件应把签到结果连同日期一起落盘（如 `checked_in_on: "YYYY-MM-DD"`），读取时与当天比较，
+> 跨天自然回落为未签——否则面板会一直显示「已签」，宿主也会一直跳过，第二天就漏签了。
 
 ### 6.5 各接口的响应约定
 

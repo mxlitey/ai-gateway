@@ -40,6 +40,8 @@ class Endpoints:
     ug_user_agent: str = "VSCode 1.107.1 (TRAE CN)"
     ug_market_client_id: str = "VSCode 1.107.1"
     ug_package_type: str = "stable_cn"
+    # ug 族的 App-Version 与 ide_version 不是一套：客户端在 api.trae.cn 上发的是 3.4.11。
+    ug_app_version: str = "3.4.11"
 
     # 接口路径
     ep_chat: str = "/api/agent/v3/llm_utils_chat"

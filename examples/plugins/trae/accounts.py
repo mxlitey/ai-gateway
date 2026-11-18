@@ -12,7 +12,7 @@ import os
 import threading
 import time
 
-from util import as_str, first_non_empty
+from util import as_str, first_non_empty, today_str
 
 STATE_SCHEMA = 1
 
@@ -24,7 +24,7 @@ class Account:
         "uid", "nickname", "enterprise_id", "access_token", "refresh_token",
         "expires_at", "domain", "api_host", "machine_id", "device_id",
         "enabled", "hard_disabled", "credits", "credits_at", "plan",
-        "checked_in_today", "streak_days", "last_error",
+        "checked_in_today", "checked_in_on", "streak_days", "last_error", "refreshed_at",
     )
 
     def __init__(self, **kwargs):
@@ -44,8 +44,12 @@ class Account:
         self.credits_at = int(kwargs.get("credits_at", 0) or 0)
         self.plan = kwargs.get("plan", "")  # 套餐名（额度接口按 product_type 识别）
         self.checked_in_today = bool(kwargs.get("checked_in_today", False))
+        # 签到快照对应的本地日期（YYYY-MM-DD）：跨天后 checked_in_today 自动失效
+        self.checked_in_on = kwargs.get("checked_in_on", "")
         self.streak_days = int(kwargs.get("streak_days", 0) or 0)
         self.last_error = kwargs.get("last_error", "")
+        # 上次 token 换发时间（Unix 秒）：每日保活据此判断今天换过没有
+        self.refreshed_at = int(kwargs.get("refreshed_at", 0) or 0)
 
     def copy(self):
         clone = Account()
@@ -66,6 +70,10 @@ class Account:
         if not (self.access_token or "").strip():
             return False
         return self.expires_at == 0 or self.expires_at > int(time.time())
+
+    def checked_in(self):
+        """今天是否已签：快照必须落在今天，否则一律算未签（跨天自动失效）。"""
+        return self.checked_in_today and self.checked_in_on == today_str()
 
     def to_auth(self):
         return Auth(
@@ -101,7 +109,8 @@ class AccountState:
     """state.json 里单个账号的可持久化状态（不含任何凭据）。"""
 
     __slots__ = ("enabled", "hard_disabled", "credits", "credits_at", "plan",
-                 "checked_in_today", "streak_days", "last_error")
+                 "checked_in_today", "checked_in_on", "streak_days", "last_error",
+                 "refreshed_at")
 
     def __init__(self, enabled=True):
         self.enabled = enabled
@@ -110,8 +119,10 @@ class AccountState:
         self.credits_at = 0
         self.plan = ""
         self.checked_in_today = False
+        self.checked_in_on = ""
         self.streak_days = 0
         self.last_error = ""
+        self.refreshed_at = 0
 
     def to_json(self):
         doc = {
@@ -125,10 +136,14 @@ class AccountState:
             doc["credits_at"] = self.credits_at
         if self.plan:
             doc["plan"] = self.plan
+        if self.checked_in_on:
+            doc["checked_in_on"] = self.checked_in_on
         if self.streak_days:
             doc["streak_days"] = self.streak_days
         if self.last_error:
             doc["last_error"] = self.last_error
+        if self.refreshed_at:
+            doc["refreshed_at"] = self.refreshed_at
         return doc
 
     @staticmethod
@@ -139,8 +154,10 @@ class AccountState:
         state.credits_at = int(doc.get("credits_at", 0) or 0)
         state.plan = doc.get("plan", "") or ""
         state.checked_in_today = bool(doc.get("checked_in_today", False))
+        state.checked_in_on = as_str(doc.get("checked_in_on"))
         state.streak_days = int(doc.get("streak_days", 0) or 0)
         state.last_error = doc.get("last_error", "") or ""
+        state.refreshed_at = int(doc.get("refreshed_at", 0) or 0)
         return state
 
 
@@ -242,8 +259,10 @@ class AccountStore:
             acc.credits_at = state.credits_at
             acc.plan = state.plan
             acc.checked_in_today = state.checked_in_today
+            acc.checked_in_on = state.checked_in_on
             acc.streak_days = state.streak_days
             acc.last_error = state.last_error
+            acc.refreshed_at = state.refreshed_at
         return acc
 
     # ---------- 写 ----------

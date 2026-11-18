@@ -664,10 +664,22 @@ func (a *API) listErrors(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logs, err := a.store.ListErrorLogs(from, to)
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 以日志为准分组：渠道删除后其历史错误仍需展示。
+	// 渠道仍在配置里时用它的当前名字（改名后不至于显示旧名），否则用日志里记录的那一份。
 	channels, err := a.store.ListChannels()
 	if err != nil {
 		jsonErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	nameOf := make(map[string]string, len(channels))
+	for i := range channels {
+		nameOf[channels[i].ID] = channels[i].Name
 	}
 
 	type channelErrors struct {
@@ -676,20 +688,23 @@ func (a *API) listErrors(w http.ResponseWriter, r *http.Request) {
 		Errors      []model.ErrorLog `json:"errors"`
 	}
 	result := []channelErrors{}
-	for i := range channels {
-		ch := &channels[i]
-		logs, err := a.store.ListErrorLogsByChannel(ch.ID, from, to)
-		if err != nil {
-			jsonErr(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if len(logs) > 0 {
+	index := map[string]int{}
+	for _, e := range logs {
+		i, ok := index[e.ChannelID]
+		if !ok {
+			name := nameOf[e.ChannelID]
+			if name == "" {
+				name = e.ChannelName
+			}
+			i = len(result)
+			index[e.ChannelID] = i
 			result = append(result, channelErrors{
-				ChannelID:   ch.ID,
-				ChannelName: ch.Name,
-				Errors:      logs,
+				ChannelID:   e.ChannelID,
+				ChannelName: name,
+				Errors:      []model.ErrorLog{},
 			})
 		}
+		result[i].Errors = append(result[i].Errors, e)
 	}
 	jsonOK(w, map[string]any{"date": date, "channels": result})
 }

@@ -22,16 +22,22 @@ thinking_config 思考档位、is_free/is_new/icon、strategies 等）。
                         discount_factor,before_promotion_price_factor,timezone}
   original_price_factor / is_free / is_new / icon / is_vl / is_reasoning ...
 
-运行时优先级：网关动态 /algo/api/v2/model/list > 本机官方目录缓存 > 本快照。
+运行时来源：「有账号」时 `/v1/models` **每次**实时请求上游
+/algo/api/v2/model/list（桌面版选择器同源，见 upstream.fetch_live_catalog），
+不落缓存、不读本机缓存、不解密 catalog-v6；本模块的快照只在该请求无法完成
+（无可用账号 / 网络失败 / 上游报错）时兜底，保证模型名仍能给出。
 双区清单**不同**（intl 独占 {'efficient', 'cmodel', 'smodel', 'ultimate', 'performance'}，cn 独占 {'q37fmodel', 'gm51model'}）。
 
 三源差异（实测 · **这不是 bug，是数据源不同**）：
   同一台机器上可能同时存在三套"官方数据"，它们的抓取时刻不同，字段取值因此
-  互不相同；网关按「动态接口 > 本机缓存 > 本快照」降级，降级到哪一级就换一套口径：
-    1) 动态接口 /algo/api/v2/model/list —— 官方"此刻"（桌面版选择器同源）
+  互不相同：
+    1) 动态接口 /algo/api/v2/model/list —— 官方"此刻"（桌面版选择器同源），
+       本模块的 /v1/models 实时走这一路
     2) 本机缓存 ~/.qoder[.cn]/.models/<uid>/catalog-v6 —— 客户端上次联网同步时刻
+       （本模块**不解密**，仅作说明）
     3) 本模块 qoder_catalog_intl.json / qoder_catalog_cn.json（外部双区 JSON）；
        文件缺失/不可读时回退本文件内嵌的**冻结副本**（更旧）并打印 WARNING
+  注意：走 1) 时看到的是官方此刻的取值；只有降级到 3) 才会看到下面的旧值。
   实测样例（2026-09-29 快照 vs 2026-10-02 客户端缓存）：
     qmodel_38max   price_factor 内嵌 0.2 / 外部 JSON 0.5 / 本机缓存 0.2，
                    且内嵌 promotion.active=true 而外部 JSON 为 false

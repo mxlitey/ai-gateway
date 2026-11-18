@@ -103,6 +103,11 @@ def now_seconds():
     return int(time.time())
 
 
+def today_str():
+    """本地日期 YYYY-MM-DD：签到状态按天判定的日界。"""
+    return time.strftime("%Y-%m-%d")
+
+
 # ---------- JSON 取值 ----------
 
 
@@ -282,6 +287,26 @@ def stable_uuid(seed):
     """从种子确定性派生 8-4-4-4-12 形态的标识（同种子恒等）。"""
     h = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
     return "%s-%s-%s-%s-%s" % (h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+
+
+def stable_hex(seed, nchars=64):
+    """从种子确定性派生 nchars 位 hex 串（同种子恒等）。"""
+    material = seed.encode("utf-8")
+    out = ""
+    counter = 0
+    while len(out) < nchars:
+        out += hashlib.sha256(material + b"#%d" % counter).hexdigest()
+        counter += 1
+    return out[:nchars]
+
+
+def stable_digits(seed, count=16):
+    """从种子确定性派生 count 位纯数字串（首位非 0，同种子恒等）。"""
+    digits = "".join(str(b % 10) for b in stable_hex(seed, count).encode("ascii"))
+    digits = digits[:count]
+    if digits[:1] == "0":
+        digits = "1" + digits[1:]
+    return digits
 
 
 def random_state():

@@ -28,6 +28,11 @@ with open(os.path.join(BASE_DIR, "baseprompt.json"), encoding="utf-8") as _fh:
 CHAT_PATH = ("/algo/api/v2/service/pro/sse/agent_chat_generation"
              "?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1")
 
+# 模型清单：官方桌面版选择器同源。响应是明文 JSON（不是 qoder_encode 的自定义编码），
+# 结构为 {"chat":[...], "app":[...]}，条目字段与本地快照的 catalog 完全同构。
+MODEL_LIST_PATH = "/algo/api/v2/model/list?Encode=1"
+MODEL_LIST_TIMEOUT = 15
+
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 
 NOISE_KEYS = ("extra_fields", "refusal", "reasoning_content")
@@ -67,29 +72,112 @@ def catalog_meta(model_key, realm):
     return {}
 
 
+def fetch_live_catalog(account):
+    """实时拉取上游模型清单，返回原始 {chat, app} 字典。
+
+    每次都真实请求 gateway 上的 /algo/api/v2/model/list：不写缓存、不读快照、
+    不解密本机 catalog-v6。签名走与对话同一套 COSY（签名只覆盖 path，
+    因此换推理主机后依旧有效）。GET 无请求体，签名用空串。
+
+    任何失败都抛异常，由调用方决定降级策略——这里绝不悄悄返回旧数据。
+    """
+    cfg = qoder_accounts.account_realm_config(account)
+    hosts = qoder_accounts.gateway_candidates(account.realm, cfg)
+    sess = qoder_sign.SESSIONS.get(account)
+    last_exc = None
+    for host in hosts[:3]:
+        raw_url = host.rstrip("/") + MODEL_LIST_PATH
+        headers = sess.headers("", raw_url, model_key="", sse=False,
+                               accept="application/json")
+        try:
+            url = qoder_accounts.validate_public_http_url(raw_url)
+            req = urllib.request.Request(url, method="GET", headers=headers)
+            with urllib.request.urlopen(req, timeout=MODEL_LIST_TIMEOUT) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read(300).decode("utf-8", "replace")
+            except Exception:
+                pass
+            last_exc = UpstreamError(exc.code, "模型清单请求失败：HTTP %d %s"
+                                     % (exc.code, detail))
+            if 500 <= int(exc.code) < 600:
+                continue          # 主机级故障：换下一个候选网关
+            raise last_exc        # 4xx 是业务拒绝，换主机也一样
+        except Exception as exc:
+            last_exc = UpstreamError(503, "连接上游失败：%s" % exc)
+            continue
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception:
+            raise UpstreamError(502, "模型清单不是合法 JSON")
+        if not isinstance(payload, dict):
+            raise UpstreamError(502, "模型清单结构异常")
+        # 动态显示名要与解析表对齐：官方改名后客户端拿新名字来请求也能命中
+        pairs = []
+        for scene in ("chat", "app"):
+            entries = payload.get(scene)
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("key"):
+                    pairs.append((entry.get("display_name") or "", entry["key"]))
+        if pairs:
+            qoder_catalog.register_live_display_names(pairs)
+        return payload
+    raise last_exc or UpstreamError(503, "无法连接 Qoder 上游")
+
+
 def list_models(account):
+    """返回 /v1/models 的 data 列表。
+
+    有账号就实时拉上游清单（每次调用都请求，不缓存）；没有可用账号时才退到
+    本地快照，否则连模型的「名字」都给不出来。
+    """
+    if account is not None:
+        try:
+            entries = qoder_catalog.dialogue_models(fetch_live_catalog(account))
+            if entries:
+                return _models_payload(entries, account.realm)
+        except Exception:
+            pass  # 落到下面的快照兜底
     realms = [account.realm] if account and account.realm else ["cn", "intl"]
-    seen = set()
     out = []
     for realm in realms:
-        for entry in qoder_catalog.models_for_realm(realm):
-            if not isinstance(entry, dict):
-                continue
-            key = entry.get("key") or ""
-            if not key:
-                continue
-            display = entry.get("display_name") or key
-            if display in seen:
-                continue
-            seen.add(display)
-            out.append({
-                "id": display,
-                "object": "model",
-                "owned_by": "qoder",
-                "name": display,
-                "upstream_key": key,
-                "realm": realm,
-            })
+        out.extend(_models_payload(qoder_catalog.models_for_realm(realm), realm))
+    return _dedupe_models(out)
+
+
+def _models_payload(entries, realm):
+    """把目录条目转成 OpenAI 模型对象（id 用官方显示名）。"""
+    out = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        key = entry.get("key") or ""
+        if not key:
+            continue
+        display = entry.get("display_name") or key
+        out.append({
+            "id": display,
+            "object": "model",
+            "owned_by": "qoder",
+            "name": display,
+            "upstream_key": key,
+            "realm": realm,
+        })
+    return out
+
+
+def _dedupe_models(items):
+    seen = set()
+    out = []
+    for item in items:
+        if item["id"] in seen:
+            continue
+        seen.add(item["id"])
+        out.append(item)
     return out
 
 

@@ -96,8 +96,8 @@ def classify_code(code):
     if code == 4011:
         return UpstreamError(429, "触发上游限流，请稍后重试", disable=False, code=4011)
     if code == 9074:
-        # 签到高峰的容量限制：上游临时拒绝，直接如实返回，不自动重试
-        return UpstreamError(502, "上游繁忙（当前参与用户太多），请稍后手动重试", disable=False, code=9074)
+        # 设备维度容量限制：由签到驱动换指纹退避重试；重试仍失败就如实上报
+        return UpstreamError(502, "上游繁忙（当前参与用户太多），请稍后再试", disable=False, code=9074)
     if code == 4001:
         # 参数无效：模型不存在 / 版本不匹配 —— 换谁都一样，不切号
         return UpstreamError(400, "模型不可用，请更换模型", disable=False, code=4001)
@@ -175,13 +175,36 @@ def _is_unauth_payload(payload):
     return "not able to authenticate" in message or "unable to authenticate" in message
 
 
+def _uuid_v4_from(raw):
+    """把 16 字节原始材料拼成 uuid-v4 形状（置版本位与变体位）。"""
+    b = bytearray(raw[:16])
+    b[6] = (b[6] & 0x0F) | 0x40
+    b[8] = (b[8] & 0x3F) | 0x80
+    h = bytes(b).hex()
+    return "%s-%s-%s-%s-%s" % (h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+
+
 def _uuid_v4():
     """uuid-v4 形状的请求标识（8-4-4-4-12，含版本位与变体位）。"""
-    raw = bytearray(secrets.token_bytes(16))
-    raw[6] = (raw[6] & 0x0F) | 0x40
-    raw[8] = (raw[8] & 0x3F) | 0x80
-    h = raw.hex()
-    return "%s-%s-%s-%s-%s" % (h[0:8], h[8:12], h[12:16], h[16:20], h[20:32])
+    return _uuid_v4_from(secrets.token_bytes(16))
+
+
+def checkin_identity(account, seed=0):
+    """签到用的设备身份三件套：(device_id, market_user_id, session_id)。
+
+    按 uid 确定性派生：同一账号永远同一台「设备」，上游按设备维度记账才稳定；
+    每轮换号会让每次签到都像一台新机器，正是 9074（设备维度限流）的成因。
+
+    seed 非 0 时整组换新 —— 专供 9074 之后「换指纹重试」用。
+    """
+    base = (account.uid or "").strip() or (account.access_token or "").strip()[:16]
+    if seed:
+        base = "%s#%d" % (base, seed)
+    device_id = util.stable_digits("devid:" + base, 16)
+    market_user_id = _uuid_v4_from(bytes.fromhex(util.stable_hex("market:" + base, 32)))
+    session_id = util.stable_hex("sess:" + base, 64)
+    return device_id, market_user_id, session_id
+
 
 
 def _tt_trace_id(request_id):
@@ -266,7 +289,7 @@ class Upstream:
             "X-Request-Id": "req_" + random_hex(16),
         }
 
-    def ug_headers(self, account, device_id="", scheme="jwt"):
+    def ug_headers(self, account, device_id="", scheme="jwt", identity_seed=0):
         """签到 / 积分（api.trae.cn）所需的头。
 
         ug 族走的是**另一套画像**（对齐官方 VSCode 插件进程）：VSCode UA、
@@ -275,10 +298,16 @@ class Upstream:
         404，而是回 401 + code 1001「not able to authenticate you」—— 看起来
         像登录态失效，实际是画像不匹配。
 
-        device_id 由调用方给出（签到要求 16 位纯数字、每轮新生成、三发不变）。
+        market / session 两个身份头由 uid 确定性派生（同账号恒等），
+        identity_seed 非 0 时整组换新（9074 换指纹重试用）。
+
         scheme 只影响 Authorization 一个头：Cloud-IDE-JWT 优先，Bearer 兜底。
+
+        刻意不发 Accept-Encoding：Python 的 http.client 不会自动解压，
+        声明 gzip/br 只会让响应体变成压缩字节、JSON 解析失败。
         """
         request_id = _uuid_v4()
+        _device_default, market_user_id, session_id = checkin_identity(account, identity_seed)
         headers = {
             "Content-Type": "application/json",
             "Accept": "*/*",
@@ -288,10 +317,14 @@ class Upstream:
             "Package-Type": self.eps.ug_package_type,
             "X-Lgw-Req-Sdk-Type": "3",
             "X-Market-Client-Id": self.eps.ug_market_client_id,
+            "X-Market-User-Id": market_user_id,
+            "Vscode-Sessionid": session_id,
             "X-Device-Brand": self.eps.device_brand,
             "X-Device-Type": "windows",
             "X-OS-Version": self.eps.os_version,
-            "App-Version": self.eps.ide_version,
+            "App-Version": self.eps.ug_app_version,
+            "X-Lscbd-Aid": "787976",
+            "X-Lscbd-Platform": "windows",
             "X-Request-Id": request_id,
             "X-TT-Trace-Id": _tt_trace_id(request_id),
             "Sec-Fetch-Dest": "empty",
@@ -441,7 +474,7 @@ class Upstream:
 
     # ---------- 签到 ----------
 
-    def checkin_status(self, account, device_id):
+    def checkin_status(self, account, identity_seed=0):
         """查询签到状态（一轮签到的第一发与回查都用它）。
 
         要点（都是实测踩出来的）：
@@ -450,22 +483,25 @@ class Upstream:
             也不多打一发去撞风控）；
           - `did_checked_in` 是**设备维度**、`checked_in` 是**账号维度**，任一为真
             即「今天这个账号算签过」。
+          - 设备身份按 uid 确定性派生，回查自然落在同一台「设备」上。
         """
         state = CheckinState()
-        payload, err = self._checkin_round_trip(account, self.eps.ep_checkin_status, device_id)
+        payload, err = self._checkin_round_trip(account, self.eps.ep_checkin_status,
+                                                identity_seed)
         if err is not None:
             return state, err
         _fill_checkin_state(state, payload)
         return state, None
 
-    def checkin_claim(self, account, device_id):
+    def checkin_claim(self, account, identity_seed=0):
         """执行签到。只回报业务码与文案，**是否真到账必须靠同设备号回查**。
 
         当日已签过的账号对任何 device_id 的 claim 都回 code:0（上游的假成功），
         所以这里不把 code:0 当成功，判定交给调用方用回查结果做。
         """
         out = CheckinClaimResult()
-        payload, err = self._checkin_round_trip(account, self.eps.ep_checkin_claim, device_id)
+        payload, err = self._checkin_round_trip(account, self.eps.ep_checkin_claim,
+                                                identity_seed)
         if err is not None:
             return out, err
         out.code = number_field(payload, "code")
@@ -486,7 +522,7 @@ class Upstream:
         return out, UpstreamError(502, util.truncate_runes(out.message or "签到失败", 100),
                                   code=out.code)
 
-    def _checkin_round_trip(self, account, endpoint, device_id):
+    def _checkin_round_trip(self, account, endpoint, identity_seed=0):
         """一发「鉴权方案」的往返，返回 (响应体, 错误)。
 
         方案顺序 Cloud-IDE-JWT → Bearer，但只在**可能是方案不匹配**的非零码上
@@ -498,9 +534,10 @@ class Upstream:
         账号会被硬禁用，而换发往往就能救回来。
         """
         url = self.eps.ug_host + endpoint
+        device_id, _market, _sess = checkin_identity(account, identity_seed)
         last = {}
         for scheme in ("jwt", "bearer"):
-            headers = self.ug_headers(account, device_id, scheme)
+            headers = self.ug_headers(account, device_id, scheme, identity_seed)
             try:
                 status, raw = util_http_request("POST", url, headers, _CHECKIN_BODY,
                                                 timeout=_CHECKIN_TIMEOUT)

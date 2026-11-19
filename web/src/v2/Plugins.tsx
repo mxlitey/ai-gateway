@@ -567,7 +567,7 @@ function PluginConsoleModal({ plugin, onClose }: { plugin: Plugin; onClose: () =
                 <Input
                   value={callbackURL}
                   onChange={(e) => setCallbackURL(e.target.value)}
-                  placeholder="http://127.0.0.1:xxxxx/..."
+                  placeholder="127.0.0.1:xxxxx/...（可省略 http://）"
                 />
                 <Button
                   size="sm"

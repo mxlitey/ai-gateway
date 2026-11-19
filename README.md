@@ -234,11 +234,41 @@ mcp/
 网关默认开启图片托管能力（`AIGW_IMAGE_HOST=on`），用于把图片变成网关自己的 URL：
 
 - `POST /v1/images/uploads`：原始图片字节（`Content-Type: image/png|jpeg|webp|gif`），需要 API Key；返回 `{id, url, bytes, content_type, expires_at}`。
-- `GET /v1/images/host`：图床能力声明，需要 API Key；返回 `{enabled, public, public_base, url_prefix, max_mb, ttl_seconds}`。
+- `GET /v1/images/host`：图床能力声明，需要 API Key；返回 `{enabled, public, public_base, url_prefix, max_mb, ttl_seconds, supports_upload_token}`。
 - `GET /v1/uploads/<id>`：公开只读，知道链接即可访问，支持 HEAD 与 Range。
 - `DELETE /v1/uploads/<id>`、`DELETE /v1/images/files/<id>`：需要 API Key，成功返回 204。
 - 单张上限默认 100 MB（`AIGW_IMAGE_HOST_MAX_MB`），按文件头判断类型，不接受 SVG；保留期默认 3600 秒（`AIGW_UPLOAD_TTL_SECONDS`）。
 - 链接用 `AIGW_PUBLIC_BASE_URL` 拼接。
+
+#### 签名路径（把上传能力交给第三方而不暴露密钥）
+
+`POST /v1/images/upload-tokens` 用 API Key 签一个**短有效期、只读路径自带凭据**的上传令牌：
+
+```bash
+curl -sS -X POST https://gw.example.com/v1/images/upload-tokens \
+  -H 'Authorization: Bearer sk-...' -H 'Content-Type: application/json' \
+  -d '{"ttl_seconds":600,"max_mb":5}'
+# → {"token":"...","upload_url":"https://gw.example.com/v1/uploads/...","expires_at":...,"max_mb":5}
+```
+
+拿到 `upload_url` 后，第三方（例如 agent）直接 POST 图片字节即可，**不需要任何请求头或密钥**：
+
+| 请求 | 行为 |
+|---|---|
+| `POST /v1/uploads/<token>` | 上传；文件名为 `<sid>-<随机名>.png`，`sid` 绑定该令牌 |
+| `DELETE /v1/uploads/<token>/<name>` | 删该令牌上传的**一张**；还剩文件时令牌继续有效，删的是最后一张则自动吊销 |
+| `DELETE /v1/uploads/<token>` | 删该令牌上传的**全部**，成功后立即吊销令牌 |
+
+约束：
+
+- TTL 由签发者指定，上限 24 小时；`max_mb` 只能收紧，不能超过全局上限；
+- 令牌只能操作**自己上传**的文件（按 `sid` 前缀校验），动别人的文件返回 403；
+- 令牌不具备任何 `sk-` 权限，不能签发新令牌、不能调用对话接口；
+- 整批删除中途失败时**不吊销**，令牌仍可重试，避免剩余文件无法清理；
+- **逐张单删到最后一张也会自动吊销**：删完即失效，不会留下「只能继续上传」的空令牌；
+- 令牌不绑 API Key：禁用某把 `sk-` 不会让已签发的令牌失效，靠短 TTL 与吊销控制；
+- 令牌在 URL 里会进入反向代理日志与浏览器历史，这是路径形态的固有代价，因此默认 TTL 只有 10 分钟。
+
 
 图床是否公网可达无法自动探测，只能由 `AIGW_IMAGE_HOST_PUBLIC` 声明：`auto`（默认）按 `AIGW_PUBLIC_BASE_URL` 的字面量判断，`on` 表示上游能访问，`off` 表示不能。声明为非公网时，网关会把请求里指向自己 `/v1/uploads/` 的参考图链接读成本地文件并转成 base64 再转发；单张超过 3 MB 或合计超过 7 M 字符时返回 `reference_exceeds_base64_limit`。网关不会抓取任意外部 URL。
 

@@ -660,6 +660,13 @@ redirect_uri = base.rstrip("/") + "/oauth/" + state     # 也可以是 /authoriz
 （`POST /admin/api/plugins/<id>/callback`；只接受回环地址、只放行 `callback_paths` 里的路径）。
 这条路径不经过任何额外端口或监听器。
 
+粘贴时的容错（浏览器地址栏会隐藏协议，复制出来通常没有 `http://`）：
+
+- 省略协议 → 自动按 `http://` 补全；
+- 以 `//` 开头 → 自动补 `http:`；
+- 首尾空白会被裁剪；
+- 仍不接受非回环地址（`127.0.0.1` / `localhost` / `::1` 之外一律拒绝）。
+
 #### 网关计时（90 秒；有 `state` 的会话插件不用自己实现 TTL）
 
 `link` 类登录从 `POST /console/login/{method}` 返回 `url` + `state` 那一刻起，**网关开始计时**，

@@ -89,3 +89,64 @@ func TestPathClean(t *testing.T) {
 		}
 	}
 }
+
+// TestNormalizeCallbackURL 浏览器地址栏会隐藏协议，粘贴出来的链接常没有 http://。
+func TestNormalizeCallbackURL(t *testing.T) {
+	cases := []struct {
+		in       string
+		host     string
+		path     string
+		rawQuery string
+		wantErr  bool
+	}{
+		{
+			in:       "127.0.0.1:52341/authorize?code=abc&state=xyz",
+			host:     "127.0.0.1:52341",
+			path:     "/authorize",
+			rawQuery: "code=abc&state=xyz",
+		},
+		{
+			in:       "http://127.0.0.1:52341/authorize?code=abc",
+			host:     "127.0.0.1:52341",
+			path:     "/authorize",
+			rawQuery: "code=abc",
+		},
+		{
+			in:       "https://localhost:8788/auth/callback?code=1",
+			host:     "localhost:8788",
+			path:     "/auth/callback",
+			rawQuery: "code=1",
+		},
+		{
+			in:       "//127.0.0.1:52341/authorize",
+			host:     "127.0.0.1:52341",
+			path:     "/authorize",
+		},
+		{
+			in:       "  127.0.0.1:52341/authorize  ",
+			host:     "127.0.0.1:52341",
+			path:     "/authorize",
+		},
+		{in: "", wantErr: true},
+		{in: "   ", wantErr: true},
+	}
+	for _, c := range cases {
+		u, err := normalizeCallbackURL(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Fatalf("normalizeCallbackURL(%q) 应报错，实际得到 %v", c.in, u)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("normalizeCallbackURL(%q) 报错: %v", c.in, err)
+		}
+		if u.Scheme != "http" && u.Scheme != "https" {
+			t.Fatalf("normalizeCallbackURL(%q) scheme = %q", c.in, u.Scheme)
+		}
+		if u.Host != c.host || u.Path != c.path || u.RawQuery != c.rawQuery {
+			t.Fatalf("normalizeCallbackURL(%q) = host %q path %q query %q，期望 %q %q %q",
+				c.in, u.Host, u.Path, u.RawQuery, c.host, c.path, c.rawQuery)
+		}
+	}
+}

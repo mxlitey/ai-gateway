@@ -151,6 +151,11 @@ const (
 	SettingAdminPasswordHash = "admin.password_hash"  // PBKDF2 摘要
 	SettingAdminSessionKey   = "admin.session_secret" // 会话签名密钥（hex）
 	SettingInitialized       = "gateway.initialized"  // "1" 表示已完成首次向导
+	// SettingImageUploadSecret 上传令牌的 HMAC 签名密钥（hex）。
+	// 与会话密钥分开，轮换管理员会话不会让已签发的上传令牌全部失效。
+	SettingImageUploadSecret = "image.upload_secret"
+	// SettingImageUploadRevoked 已吊销的上传令牌名单：{"<sid>": <过期时间 unix>}。
+	SettingImageUploadRevoked = "image.upload_revoked"
 )
 
 // Python 插件运行时相关设置。

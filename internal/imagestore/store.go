@@ -45,7 +45,11 @@ var (
 )
 
 // namePattern 只接受本包生成的文件名，杜绝路径穿越与任意文件读取。
-var namePattern = regexp.MustCompile(`^[0-9a-f]{32}\.(png|jpg|webp|gif|bin)$`)
+// 可选前缀为上传令牌的归属标识（见 httpapi 的签名路径），生图结果没有前缀。
+var namePattern = regexp.MustCompile(`^([0-9a-f]{16}-)?[0-9a-f]{32}\.(png|jpg|webp|gif|bin)$`)
+
+// sidPattern 上传令牌的归属标识：16 个十六进制字符，拼进文件名前必须先校验。
+var sidPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 var extByType = map[string]string{
 	"image/png":  ".png",
@@ -128,7 +132,7 @@ func (s *Store) Save(data []byte, contentType string) (string, error) {
 		return "", fmt.Errorf("%w（上限 %d MB）", ErrTooLarge, s.maxBytes>>20)
 	}
 	ext := extFor(contentType, data)
-	name, err := randomName(ext)
+	name, err := randomName("", ext)
 	if err != nil {
 		return "", err
 	}
@@ -159,8 +163,23 @@ func (s *Store) Save(data []byte, contentType string) (string, error) {
 // maxBytes <= 0 时使用 Store 配置的上限；requireImage 为 true 时只接受
 // PNG/JPEG/WebP/GIF，并按文件头判断（忽略调用方声明的 Content-Type）。
 func (s *Store) SaveReader(r io.Reader, maxBytes int64, requireImage bool) (Saved, error) {
+	return s.SaveReaderAs(r, maxBytes, requireImage, "")
+}
+
+// SaveReaderAs 与 SaveReader 相同，但文件名带上归属标识 sid（16 位十六进制）。
+//
+// 上传令牌用它把「某次签发上传的文件」圈在一起，便于整批删除与越权校验；
+// sid 为空表示没有归属（生图结果、sk- 直传）。
+func (s *Store) SaveReaderAs(r io.Reader, maxBytes int64, requireImage bool, sid string) (Saved, error) {
 	if maxBytes <= 0 {
 		maxBytes = s.maxBytes
+	}
+	prefix := ""
+	if sid != "" {
+		if !sidPattern.MatchString(sid) {
+			return Saved{}, fmt.Errorf("归属标识非法: %q", sid)
+		}
+		prefix = sid + "-"
 	}
 
 	head := make([]byte, 512)
@@ -180,7 +199,7 @@ func (s *Store) SaveReader(r io.Reader, maxBytes int64, requireImage bool) (Save
 	if requireImage && ext == ".bin" {
 		return Saved{}, ErrUnsupportedType
 	}
-	name, err := randomName(ext)
+	name, err := randomName(prefix, ext)
 	if err != nil {
 		return Saved{}, err
 	}
@@ -384,11 +403,64 @@ func extFor(contentType string, data []byte) string {
 	return ".bin"
 }
 
-// randomName 生成 128 位随机文件名。
-func randomName(ext string) (string, error) {
+// randomName 生成 128 位随机文件名，prefix 为可选归属前缀（含结尾的 "-"）。
+func randomName(prefix, ext string) (string, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("生成文件名失败: %w", err)
 	}
-	return hex.EncodeToString(buf) + ext, nil
+	return prefix + hex.EncodeToString(buf) + ext, nil
+}
+
+// ListBySID 列出归属于某个上传令牌的全部文件名。
+//
+// sid 非法时返回空列表：宁可什么都不删，也不能用构造出来的前缀误删别人的文件。
+func (s *Store) ListBySID(sid string) ([]string, error) {
+	if !sidPattern.MatchString(sid) {
+		return nil, nil
+	}
+	prefix := sid + "-"
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, fmt.Errorf("读取图片目录失败: %w", err)
+	}
+	out := make([]string, 0, 8)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) || !namePattern.MatchString(name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out, nil
+}
+
+// DeleteBySID 删除归属于某个上传令牌的全部文件，返回删除数量。
+//
+// 任一张删除失败即返回错误，调用方据此决定是否吊销令牌（部分失败时不吊销，
+// 否则剩下的文件将再也无法通过该令牌清理）。
+func (s *Store) DeleteBySID(sid string) (int, error) {
+	names, err := s.ListBySID(sid)
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	for _, name := range names {
+		if err := s.Delete(name); err != nil && !os.IsNotExist(err) {
+			return deleted, fmt.Errorf("删除 %s 失败: %w", name, err)
+		}
+		deleted++
+	}
+	return deleted, nil
+}
+
+// BelongsTo 判断文件名是否归属于某个上传令牌。
+func BelongsTo(name, sid string) bool {
+	if !sidPattern.MatchString(sid) {
+		return false
+	}
+	return strings.HasPrefix(name, sid+"-") && namePattern.MatchString(name)
 }

@@ -54,11 +54,16 @@ func NewRouter(d Deps) http.Handler {
 	if d.ImageHost != nil {
 		mux.HandleFunc("GET /v1/images/host", d.ImageHost.Capabilities)
 		mux.HandleFunc("POST /v1/images/uploads", d.ImageHost.Upload)
+		// 签发签名路径令牌（需要 sk-）
+		mux.HandleFunc("POST /v1/images/upload-tokens", d.ImageHost.MintUploadToken)
 		if d.Images != nil {
 			mux.HandleFunc("DELETE "+imagestore.URLPrefix, d.ImageHost.Delete)
 		}
 		if d.Uploads != nil {
-			mux.HandleFunc("DELETE "+imagestore.UploadURLPrefix, d.ImageHost.Delete)
+			// 签名路径：上传 / 删除（删除同时兼容原有的 sk- 单文件删除，见 DeleteByPath）
+			mux.HandleFunc("POST "+imagestore.UploadURLPrefix+"{token}", d.ImageHost.UploadByToken)
+			mux.HandleFunc("DELETE "+imagestore.UploadURLPrefix+"{token}/{name}", d.ImageHost.DeleteByPath)
+			mux.HandleFunc("DELETE "+imagestore.UploadURLPrefix+"{token}", d.ImageHost.DeleteByPath)
 		}
 	}
 

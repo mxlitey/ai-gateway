@@ -112,6 +112,29 @@ func matchCallbackPath(path, pattern string) bool {
 	return strings.HasPrefix(path, pattern+"/")
 }
 
+// normalizeCallbackURL 解析用户粘贴的回调链接，容忍省略协议的形式。
+//
+// 浏览器地址栏在显示与复制时都会隐藏 http:// / https://，用户粘出来的往往是
+// `127.0.0.1:52341/authorize?code=...`。此时 url.Parse 会把 "127.0.0.1" 当成 scheme，
+// 导致 Host 为空，所以先补全协议再解析。
+func normalizeCallbackURL(raw string) (*url.URL, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return nil, fmt.Errorf("请粘贴浏览器地址栏中的回调链接")
+	}
+	if !strings.Contains(s, "://") {
+		s = "http://" + strings.TrimPrefix(s, "//")
+	}
+	u, err := url.Parse(s)
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("链接格式不正确，请粘贴浏览器地址栏中的回调链接")
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("回调链接只支持 http/https")
+	}
+	return u, nil
+}
+
 // SubmitCallback 用用户粘贴的回调链接完成登录。
 //
 // 适用场景：网关在 Docker / 远端运行时，浏览器停在宿主机或用户自己的电脑上，
@@ -120,12 +143,9 @@ func matchCallbackPath(path, pattern string) bool {
 //
 // 安全边界：只接受回环地址、只允许插件在 plugin.json 的 callback_paths 里声明的路径。
 func (h *Host) SubmitCallback(pluginID, raw string) error {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Host == "" {
-		return fmt.Errorf("链接格式不正确，请粘贴浏览器地址栏中的完整回调地址")
-	}
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("回调链接只支持 http/https")
+	u, err := normalizeCallbackURL(raw)
+	if err != nil {
+		return err
 	}
 	host := strings.ToLower(u.Hostname())
 	if host != "127.0.0.1" && host != "localhost" && host != "::1" {

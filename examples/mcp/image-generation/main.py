@@ -108,8 +108,8 @@ _BLOCKED_NETS = [
 REFERENCE_HINT = (
     "参考图支持三种来源：公网 http(s) 图片地址（image_url 直接传）；"
     "本机文件（image_path 传路径，仅本服务与文件同机时可用）；"
-    "对话里粘贴的图片或本机读不到的图片，先用 image_host_info 拿到图床直传端点，"
-    "把图片原始字节 POST 上去换取 url，再作为 image_url 传入。"
+    "对话里粘贴的图片或本机读不到的图片，先用 image_host_info 拿到带凭据的 upload_url，"
+    "把图片原始字节 POST 上去换取 url（不需要任何请求头），再作为 image_url 传入。"
 )
 
 IMAGE_TOOLS = [
@@ -233,12 +233,12 @@ IMAGE_TOOLS = [
     {
         "name": "image_host_info",
         "description": (
-            "查询网关内置图床：是否开启、是否公网可达，以及直传端点、单张上限、URL 前缀、保留时长，"
-            "并返回可直接执行的 curl 示例。"
+            "查询网关内置图床并签发一个「签名路径」上传地址：是否开启、是否公网可达、单张上限、保留时长。"
             "用途：把本地图片换成可作为 image_url 的短链接。"
-            "上传是普通 HTTP POST（请求体为图片原始字节，不经过 MCP，不受 8 MB 请求体限制），"
-            "Authorization 用配置本 MCP 时的同一把 sk- 密钥；"
-            "返回的 url 可直接作为 generate_image 的 image_url。"
+            "返回的 upload_url 里已自带凭据（mode=signed_path），"
+            "直接把图片原始字节 POST 上去即可，不需要任何请求头或密钥；"
+            "上传是普通 HTTP（不经过 MCP，不受 8 MB 请求体限制），响应里的 url 可直接作为 image_url。"
+            "该地址只具备上传与删除自己上传文件的能力，不涉及 sk- 密钥权限。"
             "参考图在本机读不到、或超过单张 base64 上限时，优先走这里。"
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": []},
@@ -263,8 +263,9 @@ INSTRUCTIONS = (
     "7) 需要放弃时调用 cancel_image_job(job_id)：只停止网关侧等待与轮询，"
     "不保证终止上游任务，异步渠道可能继续执行并已产生费用；"
     "8) 参考图三种来源：公网 http(s) 链接直接作为 image_url；本机文件用 image_path（仅同机可用）；"
-    "对话里粘贴的图片、或本机读不到的文件，先调用 image_host_info 拿图床直传端点，"
-    "把图片原始字节 POST 上去换取 url，再作为 image_url 传入——该请求不经过 MCP，不受 8 MB 请求体限制。"
+    "对话里粘贴的图片、或本机读不到的文件，先调用 image_host_info 拿带凭据的 upload_url，"
+    "把图片原始字节 POST 上去换取 url（不需要任何请求头），再作为 image_url 传入——"
+    "该请求不经过 MCP，不受 8 MB 请求体限制。"
     "image_path 报文件不存在时不要换路径反复试，直接改走图床。"
 )
 
@@ -851,6 +852,33 @@ def _image_host_info(key=""):
         "url_prefix": cap.get("url_prefix") or "",
         "ttl_seconds": int(cap.get("ttl_seconds") or 0),
     })
+
+    # 优先签发签名路径令牌：路径里直接带凭据，调用方拿不到也不用接触 sk- 密钥
+    minted = _mint_upload_token(key)
+    if minted:
+        base_url = (cap.get("public_base") or base).rstrip("/")
+        upload_url = base_url + "/v1/uploads/" + str(minted.get("token", ""))
+        out.update({
+            "mode": "signed_path",
+            "upload_url": upload_url,
+            "delete_url": upload_url,
+            "expires_at": int(minted.get("expires_at") or 0),
+            "token_max_mb": int(minted.get("max_mb") or 0),
+            "hint": (
+                "把图片原始字节 POST 到 upload_url 即可，不需要任何请求头或密钥 —— "
+                "凭据在 URL 里。示例："
+                "curl -sS -X POST '" + upload_url + "' "
+                "-H 'Content-Type: image/png' --data-binary @/本地/图片.png。"
+                "响应里的 url 可直接作为 generate_image 的 image_url。"
+                "该请求是普通 HTTP，不经过 MCP，因此不受 8 MB 请求体限制。"
+                "用完想清理：DELETE upload_url 会删掉该令牌上传的所有图片并立即吊销令牌；"
+                "DELETE upload_url/<文件名> 只删一张，删的是最后一张时令牌也会自动吊销。"
+                "令牌有有效期（expires_at），过期后需重新调用本工具签发。"
+            ) + ("当前图床未声明公网可达，上传得到的链接可能无法被上游下载。" if not out["public"] else ""),
+        })
+        return out
+
+    # 网关注不支持签发令牌（旧版本）时，退回 sk- 直传的说明
     hint = (
         "请求体是图片原始字节；响应里的 url 可直接作为 generate_image 的 image_url。"
         "该请求是普通 HTTP，不经过 MCP，因此不受 8 MB 请求体限制。"
@@ -861,21 +889,58 @@ def _image_host_info(key=""):
         "这里的密钥就是你配置本 MCP 时填的那把 sk-，不需要再向用户索取；"
         "只有确实拿不到时才让用户提供。"
     )
+    out["mode"] = "bearer"
     if not out["public"]:
         hint += "当前图床未声明公网可达，上传得到的链接可能无法被上游下载。"
     out["hint"] = hint
     return out
 
 
-def _upload_reference(raw, mime, index, key):
+def _mint_upload_token(key, ttl_seconds=600):
+    """签发一个签名路径上传令牌，返回 {token, upload_url, expires_at, max_mb}。
+
+    令牌只具备「上传」与「删除自己上传的文件」两项能力，不含任何 sk- 权限，
+    因此可以放心交给 agent 使用；同时它直接可作 URL，不需要额外的请求头。
+    """
     key = (key or "").strip() or _api_key()
     if not key:
-        raise ToolError("第 %d 张参考图超过 base64 上限，上传图床需要 AIGW_IMAGE_API_KEY" % index,
-                        code="auth_missing")
-    req = urllib.request.Request(_base_url() + "/v1/images/uploads", data=raw, method="POST")
-    req.add_header("Content-Type", mime)
+        return None
+    body = json.dumps({"ttl_seconds": ttl_seconds}).encode("utf-8")
+    req = urllib.request.Request(_base_url() + "/v1/images/upload-tokens", data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
     req.add_header("Authorization", "Bearer " + key)
     req.add_header("User-Agent", "ai-gateway-image-mcp")
+    try:
+        with _LOCAL_OPENER.open(req, timeout=15) as resp:
+            data = json.loads(resp.read(1 << 20).decode("utf-8", "replace"))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not data.get("token"):
+        return None
+    return data
+
+
+def _upload_reference(raw, mime, index, key):
+    """超预算参考图上传图床，返回可直接交给上游的公网链接。
+
+    优先用签名路径令牌（不需要把 sk- 交给任何一方）；网关版本较旧、
+    不支持签发时回落到 sk- 直传。
+    """
+    minted = _mint_upload_token(key)
+    if minted:
+        endpoint = _base_url() + "/v1/uploads/" + str(minted["token"])
+        req = urllib.request.Request(endpoint, data=raw, method="POST")
+        req.add_header("Content-Type", mime)
+        req.add_header("User-Agent", "ai-gateway-image-mcp")
+    else:
+        key = (key or "").strip() or _api_key()
+        if not key:
+            raise ToolError("第 %d 张参考图超过 base64 上限，上传图床需要 AIGW_IMAGE_API_KEY" % index,
+                            code="auth_missing")
+        req = urllib.request.Request(_base_url() + "/v1/images/uploads", data=raw, method="POST")
+        req.add_header("Content-Type", mime)
+        req.add_header("Authorization", "Bearer " + key)
+        req.add_header("User-Agent", "ai-gateway-image-mcp")
     try:
         with _LOCAL_OPENER.open(req, timeout=60) as resp:
             data = json.loads(resp.read(1 << 20).decode("utf-8", "replace"))
@@ -933,7 +998,7 @@ def _normalize_reference(value, index, key):
     if not text.lower().startswith(("http://", "https://")):
         raise ToolError("第 %d 张参考图无法识别。%s" % (index, REFERENCE_HINT),
                         code="invalid_reference",
-                        hint="先用 image_host_info 拿图床直传端点，把图片字节 POST 上去换 url。")
+                        hint="先用 image_host_info 拿带凭据的 upload_url，把图片字节 POST 上去换 url。")
     if _is_public_url(text):
         return text
     raw, mime = _fetch_reference(text, index)
@@ -952,7 +1017,7 @@ def _reference_from_path(value, index, key):
             "第 %d 张参考图文件不存在：%s（请确认路径；本服务若部署在远端，本机路径一定读不到）"
             % (index, _clip(path, 200)),
             code="invalid_reference",
-            hint="不要继续尝试其它本机路径。改用 image_host_info 拿图床直传端点，"
+            hint="不要继续尝试其它本机路径。改用 image_host_info 拿带凭据的 upload_url，"
                  "把图片原始字节 POST 上去换取 url，再作为 image_url 传入。",
         )
     try:

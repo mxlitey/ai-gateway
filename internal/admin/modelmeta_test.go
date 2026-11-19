@@ -87,13 +87,13 @@ func TestNormalizeSizeToken(t *testing.T) {
 	}
 	bad := []string{"", "abc", "1x1", "1024", "1024x", "20480x1024", "1024x1024x3"}
 	for in, want := range ok {
-		got, valid := normalizeSizeToken(in)
+		got, valid := model.NormalizeSizeToken(in)
 		if !valid || got != want {
 			t.Fatalf("%q 应归一化为 %q，实际 %q（valid=%v）", in, want, got, valid)
 		}
 	}
 	for _, s := range bad {
-		if _, valid := normalizeSizeToken(s); valid {
+		if _, valid := model.NormalizeSizeToken(s); valid {
 			t.Fatalf("%q 应被拒绝", s)
 		}
 	}

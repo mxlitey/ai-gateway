@@ -17,7 +17,7 @@ type ReadDeps struct {
 	Pricer *pricing.Resolver
 }
 
-// RegisterReadTools 注册第一梯队：9 个只读工具。
+// RegisterReadTools 注册第一梯队：10 个只读工具。
 //
 // 全部无副作用、不改状态，用于让 AI 自查「花了多少」「哪些模型可用」
 // 「哪条密钥在冷却」「最近报了什么错」这类问题。
@@ -31,6 +31,7 @@ func RegisterReadTools(s *Server, d ReadDeps) {
 	registerResetCooldownTool(s, d)
 	registerErrorLogsTool(s, d)
 	registerPriceTool(s, d)
+	registerModelMetaTool(s, d)
 }
 
 // ---------- 1. 用量汇总 ----------
@@ -380,7 +381,6 @@ func registerErrorLogsTool(s *Server, d ReadDeps) {
 }
 
 // ---------- 9. 模型价格 ----------
-
 func registerPriceTool(s *Server, d ReadDeps) {
 	s.Tools("get_price",
 		"查询某个模型在价格表里的计费规则：按 token 计费时给出各输入档位的输入/输出单价、缓存价与峰谷时段，生图模型给出每张单价。价格由用户手工维护，只按公开模型名匹配。",
@@ -416,6 +416,94 @@ func registerPriceTool(s *Server, d ReadDeps) {
 				"prices": all,
 			}, nil
 		})
+}
+
+// ---------- 10. 生图模型元数据 ----------
+
+func registerModelMetaTool(s *Server, d ReadDeps) {
+	s.Tools("get_model_meta",
+		"查询生图模型的能力与约束声明：支持的尺寸、参考图上限（张数/长边像素/单张 MB）、出图张数上限、能否写中文等。这些是面板里手工填写的约束，未声明的字段按「不限制」处理。用于在调用生图接口前确定该传什么参数。",
+		map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"model": map[string]any{"type": "string", "description": "公开模型名；留空返回全部"},
+				"view": map[string]any{
+					"type":        "string",
+					"enum":        []string{"all", "live", "orphans"},
+					"description": "all（默认）按「有渠道 / 无渠道」分开返回；live 只看仍有渠道的；orphans 只看无渠道的",
+				},
+			},
+		}, false, func(args map[string]any) (any, error) {
+			all, err := d.Store.ListModelMetas()
+			if err != nil {
+				return nil, err
+			}
+			live, err := liveModelNames(d.Store)
+			if err != nil {
+				return nil, err
+			}
+			view := argString(args, "view")
+			name := argString(args, "model")
+
+			items := make([]model.ModelMeta, 0, len(all))
+			orphans := make([]model.ModelMeta, 0)
+			for _, m := range all {
+				m.HasChannel = live[m.Model]
+				if name != "" && m.Model != name {
+					continue
+				}
+				if m.HasChannel {
+					items = append(items, m)
+				} else {
+					orphans = append(orphans, m)
+				}
+			}
+			out := map[string]any{"count": len(items) + len(orphans)}
+			switch view {
+			case "orphans":
+				out["items"] = orphans
+				out["count"] = len(orphans)
+			case "live":
+				out["items"] = items
+				out["count"] = len(items)
+			default:
+				out["items"] = items
+				out["orphans"] = orphans
+			}
+			if len(items)+len(orphans) == 0 {
+				out["hint"] = "该模型尚未声明元数据；可在面板「模型路由 → 生图模型 → 元数据」补填，或调用 set_model_meta"
+			}
+			return out, nil
+		})
+}
+
+// liveModelNames 收集当前所有渠道里出现过的公开模型名（含被单独停用的）。
+//
+// 与 admin 包的口径一致：只看名字是否被引用，不看渠道启用状态与密钥可用性——
+// 那些是运行态问题，不该让配置被判成孤儿。
+func liveModelNames(st *store.Store) (map[string]bool, error) {
+	channels, err := st.ListChannels()
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]bool, 32)
+	for i := range channels {
+		ch := &channels[i]
+		for pub := range ch.ModelMap {
+			if _, ok := ch.ResolveUpstreamModel(pub); ok {
+				names[strings.TrimSpace(pub)] = true
+			}
+		}
+		for _, m := range ch.Models {
+			if _, ok := ch.ResolveUpstreamModel(m); ok {
+				names[strings.TrimSpace(m)] = true
+			}
+		}
+		for _, m := range ch.ImageModels {
+			names[strings.TrimSpace(m)] = true
+		}
+	}
+	return names, nil
 }
 
 // ---------- 参数取值辅助 ----------

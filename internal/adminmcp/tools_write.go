@@ -13,6 +13,7 @@ import (
 	"github.com/czg95/ai-gateway-v2/internal/mcp"
 	"github.com/czg95/ai-gateway-v2/internal/model"
 	"github.com/czg95/ai-gateway-v2/internal/plugin"
+	"github.com/czg95/ai-gateway-v2/internal/pricing"
 	"github.com/czg95/ai-gateway-v2/internal/store"
 )
 
@@ -23,12 +24,15 @@ type WriteDeps struct {
 	MCP   *mcp.Service
 	// HTTP 用于上游诊断，超时比普通请求宽松。
 	HTTP *http.Client
+	// Pricer 改价格后需要重建索引，否则新价格要等下次重启才生效。
+	Pricer *pricing.Resolver
 }
 
-// RegisterWriteTools 注册第二梯队：3 个只读 + 5 个会触达外部的工具。
+// RegisterWriteTools 注册第二梯队：3 个只读 + 9 个会触达或改动网关的工具。
 //
-// 其中 reset_key_cooldown / issue_api_key / create_channel / update_channel / restart_plugin
-// 属于写操作，只在读写令牌下可见可调用；只读令牌调用会直接报错。
+// 其中 reset_key_cooldown / issue_api_key / create_channel / update_channel / restart_plugin /
+// set_model_meta / delete_model_meta / set_price / delete_price 属于写操作，
+// 只在读写令牌下可见可调用；只读令牌调用会直接报错。
 func RegisterWriteTools(s *Server, d WriteDeps) {
 	registerListPluginsTool(s, d)
 	registerListMCPServersTool(s, d)
@@ -39,6 +43,10 @@ func RegisterWriteTools(s *Server, d WriteDeps) {
 	registerCreateChannelTool(s, d)
 	registerUpdateChannelTool(s, d)
 	registerRestartPluginTool(s, d)
+	registerSetModelMetaTool(s, d)
+	registerDeleteModelMetaTool(s, d)
+	registerUpsertPriceTool(s, d)
+	registerDeletePriceTool(s, d)
 }
 
 // ---------- 只读：插件 ----------
@@ -610,6 +618,198 @@ func registerRestartPluginTool(s *Server, d WriteDeps) {
 		})
 }
 
+// ---------- 写：保存生图模型元数据 ----------
+
+func registerSetModelMetaTool(s *Server, d WriteDeps) {
+	s.Tools("set_model_meta",
+		"保存某个生图模型的能力与约束声明（整体覆盖，未传的字段会被清空）。这些声明只用于对外说明能力，网关不会据此拒绝请求。想删除某条声明请用 delete_model_meta。",
+		map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"model":                map[string]any{"type": "string", "description": "公开模型名，必须与客户端请求里的 model 完全一致"},
+				"description":          map[string]any{"type": "string", "description": "一句话说明，会展示给 AI 客户端"},
+				"reference":            map[string]any{"type": "boolean", "description": "支持参考图（图生图/改图）"},
+				"negative_prompt":      map[string]any{"type": "boolean", "description": "支持反向提示词 negative_prompt"},
+				"seed":                 map[string]any{"type": "boolean", "description": "支持随机种子 seed"},
+				"chinese_prompt":       map[string]any{"type": "boolean", "description": "能理解中文提示词"},
+				"chinese_text":         map[string]any{"type": "boolean", "description": "能把中文文字正确画进图里"},
+				"max_ref_count":        map[string]any{"type": "integer", "description": "参考图最多几张，0 表示不限"},
+				"max_ref_side_px":      map[string]any{"type": "integer", "description": "参考图长边像素上限，0 表示不限"},
+				"max_ref_mb":           map[string]any{"type": "integer", "description": "参考图单张体积上限（MB），0 表示不限"},
+				"ref_formats":          map[string]any{"type": "array", "items": map[string]any{"type": "string", "enum": []string{"png", "jpeg", "webp"}}, "description": "允许的参考图格式，空表示不限制"},
+				"max_n":                map[string]any{"type": "integer", "description": "不带参考图时 n 的上限，0 表示不限"},
+				"max_n_ref":            map[string]any{"type": "integer", "description": "带参考图时 n 的上限，0 表示沿用 max_n"},
+				"default_n":            map[string]any{"type": "integer", "description": "客户端未传 n 时的默认张数，0 表示由上游决定"},
+				"sizes":                map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "支持的尺寸枚举，如 1024x1024"},
+				"custom_size":          map[string]any{"type": "boolean", "description": "允许自定义尺寸"},
+				"ignore_size_with_ref": map[string]any{"type": "boolean", "description": "带参考图时上游忽略 size"},
+			},
+			"required": []string{"model"},
+		}, true, func(args map[string]any) (any, error) {
+			name := argString(args, "model")
+			if name == "" {
+				return nil, fmt.Errorf("model 不能为空")
+			}
+			in := model.ModelMeta{
+				Description:       argString(args, "description"),
+				Reference:         argBool(args, "reference"),
+				NegativePrompt:    argBool(args, "negative_prompt"),
+				Seed:              argBool(args, "seed"),
+				ChinesePrompt:     argBool(args, "chinese_prompt"),
+				ChineseText:       argBool(args, "chinese_text"),
+				MaxRefCount:       argInt(args, "max_ref_count", 0),
+				MaxRefSidePx:      argInt(args, "max_ref_side_px", 0),
+				MaxRefMB:          argInt(args, "max_ref_mb", 0),
+				RefFormats:        argStrings(args, "ref_formats"),
+				MaxN:              argInt(args, "max_n", 0),
+				MaxNRef:           argInt(args, "max_n_ref", 0),
+				DefaultN:          argInt(args, "default_n", 0),
+				Sizes:             argStrings(args, "sizes"),
+				CustomSize:        argBool(args, "custom_size"),
+				IgnoreSizeWithRef: argBool(args, "ignore_size_with_ref"),
+			}
+			meta := model.SanitizeModelMeta(name, in)
+			if err := d.Store.UpsertModelMeta(&meta); err != nil {
+				return nil, err
+			}
+			if live, err := liveModelNames(d.Store); err == nil {
+				meta.HasChannel = live[meta.Model]
+			}
+			return meta, nil
+		})
+}
+
+// ---------- 写：删除生图模型元数据 ----------
+
+func registerDeleteModelMetaTool(s *Server, d WriteDeps) {
+	s.Tools("delete_model_meta",
+		"删除某个生图模型的元数据声明。只删声明，不影响任何渠道、密钥或已上传的文件。",
+		map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"model": map[string]any{"type": "string", "description": "公开模型名"},
+			},
+			"required": []string{"model"},
+		}, true, func(args map[string]any) (any, error) {
+			name := argString(args, "model")
+			if name == "" {
+				return nil, fmt.Errorf("model 不能为空")
+			}
+			if err := d.Store.DeleteModelMeta(name); err != nil {
+				return nil, err
+			}
+			return map[string]any{"success": true, "model": name}, nil
+		})
+}
+
+// ---------- 写：保存价格 ----------
+
+func registerUpsertPriceTool(s *Server, d WriteDeps) {
+	s.Tools("set_price",
+		"新增或覆盖某个公开模型的计费规则。按 token 计费时必须给出各输入档位，且最后一档不设上限（up_to=0）；生图等按次计费的模型用 unit=per_request 并给 request_price。改完即时生效，只影响之后的请求。",
+		map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"model": map[string]any{"type": "string", "description": "公开模型名"},
+				"unit":  map[string]any{"type": "string", "enum": []string{"per_token", "per_request"}, "description": "计费单位，默认 per_token"},
+				"tiers": map[string]any{
+					"type":        "array",
+					"description": "按 token 计费时的输入档位；最后一档 up_to 必须为 0",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"up_to":            map[string]any{"type": "integer", "description": "输入 token 不超过该值时适用此档，0 表示不限（只能出现在最后一档）"},
+							"prompt_price":     map[string]any{"type": "number", "description": "输入单价（每百万 token）"},
+							"completion_price": map[string]any{"type": "number", "description": "输出单价（每百万 token）"},
+						},
+					},
+				},
+				"cache_read_price": map[string]any{"type": "number", "description": "缓存命中输入的单价（每百万 token）"},
+				"request_price":    map[string]any{"type": "number", "description": "每次请求单价，unit=per_request 时生效"},
+				"time_windows": map[string]any{
+					"type":        "array",
+					"description": "峰谷时段系数，留空表示全天同价",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"start":  map[string]any{"type": "string", "description": "开始时间 HH:MM"},
+							"end":    map[string]any{"type": "string", "description": "结束时间 HH:MM"},
+							"factor": map[string]any{"type": "number", "description": "系数，小于 1 折扣、大于 1 加价"},
+							"days":   map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "适用星期 0-6（0=周日），空表示每天"},
+						},
+					},
+				},
+				"note": map[string]any{"type": "string", "description": "备注"},
+			},
+			"required": []string{"model"},
+		}, true, func(args map[string]any) (any, error) {
+			name := argString(args, "model")
+			if name == "" {
+				return nil, fmt.Errorf("model 不能为空")
+			}
+			unit := argString(args, "unit")
+			tiers := argPriceTiers(args, "tiers")
+			windows := argPriceWindows(args, "time_windows")
+			cachePrice := argFloat(args, "cache_read_price")
+			requestPrice := argFloat(args, "request_price")
+			if err := model.ValidatePrice(unit, tiers, cachePrice, requestPrice, windows); err != nil {
+				return nil, err
+			}
+
+			key := pricing.Normalize(name)
+			if key == "" {
+				return nil, fmt.Errorf("model 不能为空")
+			}
+			p := &model.ModelPrice{
+				Model:          key,
+				Unit:           unit,
+				Tiers:          tiers,
+				CacheReadPrice: cachePrice,
+				RequestPrice:   requestPrice,
+				TimeWindows:    windows,
+				Note:           argString(args, "note"),
+			}
+			if err := d.Store.UpsertModelPrice(p); err != nil {
+				return nil, err
+			}
+			if d.Pricer != nil {
+				if err := d.Pricer.Reload(); err != nil {
+					return nil, fmt.Errorf("价格已保存，但重建价格索引失败: %w", err)
+				}
+			}
+			return p, nil
+		})
+}
+
+// ---------- 写：删除价格 ----------
+
+func registerDeletePriceTool(s *Server, d WriteDeps) {
+	s.Tools("delete_price",
+		"删除某个公开模型的价格条目，删除后该模型回到「未定价」状态（不再估算费用，但调用不受影响）。",
+		map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"model": map[string]any{"type": "string", "description": "公开模型名"},
+			},
+			"required": []string{"model"},
+		}, true, func(args map[string]any) (any, error) {
+			name := argString(args, "model")
+			if name == "" {
+				return nil, fmt.Errorf("model 不能为空")
+			}
+			key := pricing.Normalize(name)
+			if err := d.Store.DeleteModelPrice(key); err != nil {
+				return nil, err
+			}
+			if d.Pricer != nil {
+				if err := d.Pricer.Reload(); err != nil {
+					return nil, fmt.Errorf("价格已删除，但重建价格索引失败: %w", err)
+				}
+			}
+			return map[string]any{"success": true, "model": key}, nil
+		})
+}
+
 // ---------- 参数辅助 ----------
 
 func argStrings(args map[string]any, key string) []string {
@@ -671,4 +871,72 @@ func normalizeScope(scope string, ids []string) (string, []string) {
 	default:
 		return model.ScopeAll, []string{}
 	}
+}
+
+// argFloat 读取浮点参数（JSON 数字统一解成 float64）。
+func argFloat(args map[string]any, key string) float64 {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return 0
+	}
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	}
+	return 0
+}
+
+// argPriceTiers 解析价格档位数组。
+func argPriceTiers(args map[string]any, key string) []model.PriceTier {
+	raw, ok := args[key].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]model.PriceTier, 0, len(raw))
+	for _, item := range raw {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		out = append(out, model.PriceTier{
+			UpTo:            argInt(obj, "up_to", 0),
+			PromptPrice:     argFloat(obj, "prompt_price"),
+			CompletionPrice: argFloat(obj, "completion_price"),
+		})
+	}
+	return out
+}
+
+// argPriceWindows 解析峰谷时段数组。
+func argPriceWindows(args map[string]any, key string) []model.TimeWindow {
+	raw, ok := args[key].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]model.TimeWindow, 0, len(raw))
+	for _, item := range raw {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		days := make([]int, 0, 7)
+		if list, ok := obj["days"].([]any); ok {
+			for _, d := range list {
+				days = append(days, argInt(map[string]any{"v": d}, "v", 0))
+			}
+		}
+		out = append(out, model.TimeWindow{
+			Start:  argString(obj, "start"),
+			End:    argString(obj, "end"),
+			Factor: argFloat(obj, "factor"),
+			Days:   days,
+		})
+	}
+	return out
 }

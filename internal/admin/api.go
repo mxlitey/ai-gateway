@@ -1994,71 +1994,9 @@ func (a *API) upsertPrice(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, p)
 }
 
-// validatePriceInput 校验价格表单：单价非负、按 token 计费必须有一档兜底、
-// 时段必须能解析且系数为正。
+// validatePriceInput 校验价格表单。实现放在 model 包，管理 MCP 与面板共用同一套规则。
 func validatePriceInput(unit string, tiers []model.PriceTier, cachePrice, requestPrice float64, windows []model.TimeWindow) error {
-	if unit != "" && unit != model.PriceUnitToken && unit != model.PriceUnitRequest {
-		return fmt.Errorf("unit 只能是 per_token 或 per_request")
-	}
-	if cachePrice < 0 || requestPrice < 0 {
-		return fmt.Errorf("价格不能为负数")
-	}
-	if unit == model.PriceUnitRequest {
-		return nil
-	}
-	if len(tiers) == 0 {
-		return fmt.Errorf("按 token 计费至少要有一档价格")
-	}
-	for i, t := range tiers {
-		if t.PromptPrice < 0 || t.CompletionPrice < 0 {
-			return fmt.Errorf("第 %d 档价格不能为负数", i+1)
-		}
-		if t.UpTo < 0 {
-			return fmt.Errorf("第 %d 档的输入上限不能为负数", i+1)
-		}
-		if t.UpTo == 0 && i != len(tiers)-1 {
-			return fmt.Errorf("只有最后一档可以不限输入长度")
-		}
-	}
-	if last := tiers[len(tiers)-1]; last.UpTo != 0 {
-		return fmt.Errorf("最后一档需要不限输入长度（上限留空）")
-	}
-	for i, w := range windows {
-		if !validClock(w.Start) || !validClock(w.End) {
-			return fmt.Errorf("第 %d 条时段的起止时间需为 HH:MM", i+1)
-		}
-		if w.Start == w.End {
-			return fmt.Errorf("第 %d 条时段的起止时间不能相同", i+1)
-		}
-		if w.Factor <= 0 {
-			return fmt.Errorf("第 %d 条时段的系数需大于 0", i+1)
-		}
-		for _, d := range w.Days {
-			if d < 0 || d > 6 {
-				return fmt.Errorf("第 %d 条时段的星期需为 0-6（0=周日）", i+1)
-			}
-		}
-	}
-	return nil
-}
-
-// validClock 判断是否为合法的 HH:MM（00:00-24:00）。
-func validClock(s string) bool {
-	parts := strings.Split(strings.TrimSpace(s), ":")
-	if len(parts) != 2 {
-		return false
-	}
-	var h, m int
-	if _, err := fmt.Sscanf(parts[0], "%d", &h); err != nil {
-		return false
-	}
-	if _, err := fmt.Sscanf(parts[1], "%d", &m); err != nil {
-		return false
-	}
-	if h < 0 || h > 24 || m < 0 || m > 59 {
-		return false
-	}
-	return !(h == 24 && m != 0)
+	return model.ValidatePrice(unit, tiers, cachePrice, requestPrice, windows)
 }
 
 func (a *API) deletePrice(w http.ResponseWriter, r *http.Request) {
@@ -2178,78 +2116,9 @@ func (a *API) deleteModelMeta(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]any{"success": true, "model": name})
 }
 
-// sanitizeModelMeta 规整表单输入：去空白、过滤非法值、给数值加上合理上界。
-// 这些字段只是声明，不做业务校验，因此宽松处理即可——但脏数据会原样传播到客户端，
-// 所以明显无意义的值（负数、超长文本）在这里拦掉。
+// sanitizeModelMeta 规整表单输入。实现放在 model 包，管理 MCP 与面板共用同一套规则。
 func sanitizeModelMeta(name string, in model.ModelMeta) model.ModelMeta {
-	out := in
-	out.Model = name
-	out.Description = strings.TrimSpace(out.Description)
-	if utf8.RuneCountInString(out.Description) > 200 {
-		out.Description = string([]rune(out.Description)[:200])
-	}
-	out.MaxRefCount = clampInt(out.MaxRefCount, 0, 32)
-	out.MaxRefSidePx = clampInt(out.MaxRefSidePx, 0, 16384)
-	out.MaxRefMB = clampInt(out.MaxRefMB, 0, 1024)
-	out.MaxN = clampInt(out.MaxN, 0, 16)
-	out.MaxNRef = clampInt(out.MaxNRef, 0, 16)
-	out.DefaultN = clampInt(out.DefaultN, 0, 16)
-
-	// 格式只保留受支持的三类，统一小写
-	formats := make([]string, 0, len(in.RefFormats))
-	seenFmt := map[string]bool{}
-	for _, f := range in.RefFormats {
-		f = strings.ToLower(strings.TrimSpace(f))
-		switch f {
-		case "png", "jpeg", "webp":
-			if !seenFmt[f] {
-				seenFmt[f] = true
-				formats = append(formats, f)
-			}
-		}
-	}
-	out.RefFormats = formats
-
-	// 尺寸只保留「数字x数字」形态，统一成小写 x 并去重
-	sizes := make([]string, 0, len(in.Sizes))
-	seenSize := map[string]bool{}
-	for _, s := range in.Sizes {
-		norm, ok := normalizeSizeToken(s)
-		if !ok || seenSize[norm] {
-			continue
-		}
-		seenSize[norm] = true
-		sizes = append(sizes, norm)
-	}
-	out.Sizes = sizes
-	return out
-}
-
-func clampInt(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
-// normalizeSizeToken 把 "1024x1024" / "1024*1024" / "1024X1024" 统一成小写 x 形态。
-// 宽高各自限制在 64..16384：太小没有意义，太大超出任何上游的接受范围。
-func normalizeSizeToken(s string) (string, bool) {
-	s = strings.ToLower(strings.TrimSpace(s))
-	parts := strings.FieldsFunc(s, func(r rune) bool { return r == 'x' || r == '*' })
-	if len(parts) != 2 {
-		return "", false
-	}
-	for _, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 64 || n > 16384 {
-			return "", false
-		}
-	}
-	return parts[0] + "x" + parts[1], true
+	return model.SanitizeModelMeta(name, in)
 }
 
 // ---------- 输入模型与工具 ----------

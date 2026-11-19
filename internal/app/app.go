@@ -206,7 +206,8 @@ func (a *App) Start() error {
 	adminmcp.RegisterReadTools(adminSrv, adminmcp.ReadDeps{Store: st, Pricer: pricer})
 	adminmcp.RegisterWriteTools(adminSrv, adminmcp.WriteDeps{
 		Store: st, Host: host, MCP: mcpSvc,
-		HTTP: &http.Client{Timeout: 60 * time.Second},
+		HTTP:   &http.Client{Timeout: 60 * time.Second},
+		Pricer: pricer,
 	})
 	adminMCPHandler := adminmcp.NewHandler(adminSrv)
 	api.SetAdminMCP(adminSrv)

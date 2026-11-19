@@ -61,13 +61,14 @@ func TestSetModelMetaTool(t *testing.T) {
 	srv, st := newTestServer(t)
 
 	res := srv.CallTool("set_model_meta", map[string]any{
-		"model":           "img-a",
-		"description":     "  通用文生图  ",
-		"reference":       true,
-		"chinese_text":    true,
-		"max_ref_side_px": float64(2048),
-		"sizes":           []any{"1024*1024", "abc", "1024x1024"},
-		"ref_formats":     []any{"PNG", "gif"},
+		"model":          "img-a",
+		"description":    "  通用文生图  ",
+		"reference":      true,
+		"chinese_text":   true,
+		"max_ref_count":  float64(5),
+		"min_side_px":    float64(512),
+		"max_side_px":    float64(4096),
+		"output_formats": []any{"PNG", "gif"},
 	}, true)
 	if res["isError"] == true {
 		t.Fatalf("保存失败: %v", res)
@@ -80,14 +81,14 @@ func TestSetModelMetaTool(t *testing.T) {
 	if got.Description != "通用文生图" {
 		t.Fatalf("说明应去掉首尾空白，实际 %q", got.Description)
 	}
-	if !got.Reference || !got.ChineseText || got.MaxRefSidePx != 2048 {
+	if !got.Reference || !got.ChineseText || got.MaxRefCount != 5 {
 		t.Fatalf("能力与约束不符: %+v", got)
 	}
-	if len(got.Sizes) != 1 || got.Sizes[0] != "1024x1024" {
-		t.Fatalf("尺寸应归一化并去重，实际 %v", got.Sizes)
+	if got.MinSidePx != 512 || got.MaxSidePx != 4096 {
+		t.Fatalf("分辨率区间不符: %+v", got)
 	}
-	if len(got.RefFormats) != 1 || got.RefFormats[0] != "png" {
-		t.Fatalf("格式应只留 png，实际 %v", got.RefFormats)
+	if len(got.OutputFormats) != 1 || got.OutputFormats[0] != "png" {
+		t.Fatalf("格式应只留 png，实际 %v", got.OutputFormats)
 	}
 }
 

@@ -451,20 +451,16 @@ export type ModelMeta = {
   chinese_text: boolean
   /** 参考图最多几张，0 表示不限 */
   max_ref_count: number
-  /** 参考图长边像素上限，0 表示不限 */
-  max_ref_side_px: number
-  /** 参考图单张体积上限（MB），0 表示不限 */
-  max_ref_mb: number
-  ref_formats: string[]
   /** 不带参考图时 n 的上限，0 表示不限 */
   max_n: number
   /** 带参考图时 n 的上限，0 表示沿用 max_n */
   max_n_ref: number
-  default_n: number
-  sizes: string[]
-  custom_size: boolean
-  /** 带参考图时上游忽略 size */
-  ignore_size_with_ref: boolean
+  /** 可返回的图片格式，空表示不声明 */
+  output_formats: string[]
+  /** 输出图片边长下限（像素），0 表示不声明 */
+  min_side_px: number
+  /** 输出图片边长上限（像素），0 表示不声明 */
+  max_side_px: number
   updated_at: number
   /** 当前是否仍有渠道承载该模型名（服务端计算） */
   has_channel: boolean

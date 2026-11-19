@@ -11,23 +11,19 @@ func TestModelMetaRoundTrip(t *testing.T) {
 	s := openTestStore(t)
 
 	in := &model.ModelMeta{
-		Model:             "Qwen-Image-2.1-Turbo",
-		Description:       "通用文生图",
-		Reference:         true,
-		NegativePrompt:    true,
-		Seed:              true,
-		ChinesePrompt:     true,
-		ChineseText:       false,
-		MaxRefCount:       4,
-		MaxRefSidePx:      2048,
-		MaxRefMB:          100,
-		RefFormats:        []string{"png", "jpeg"},
-		MaxN:              4,
-		MaxNRef:           1,
-		DefaultN:          1,
-		Sizes:             []string{"1024x1024", "1536x1024"},
-		CustomSize:        true,
-		IgnoreSizeWithRef: true,
+		Model:          "Qwen-Image-2.1-Turbo",
+		Description:    "通用文生图",
+		Reference:      true,
+		NegativePrompt: true,
+		Seed:           true,
+		ChinesePrompt:  true,
+		ChineseText:    false,
+		MaxRefCount:    4,
+		MaxN:           4,
+		MaxNRef:        1,
+		OutputFormats:  []string{"png", "jpeg"},
+		MinSidePx:      768,
+		MaxSidePx:      4096,
 	}
 	if err := s.UpsertModelMeta(in); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -46,20 +42,17 @@ func TestModelMetaRoundTrip(t *testing.T) {
 	if !got.Reference || !got.Seed || got.ChineseText {
 		t.Fatalf("能力开关不符: %+v", got)
 	}
-	if got.MaxRefCount != 4 || got.MaxRefSidePx != 2048 || got.MaxRefMB != 100 {
-		t.Fatalf("参考图约束不符: %+v", got)
+	if got.MaxRefCount != 4 {
+		t.Fatalf("参考图张数不符: %+v", got)
 	}
-	if len(got.RefFormats) != 2 || got.RefFormats[0] != "png" {
-		t.Fatalf("格式不符: %v", got.RefFormats)
+	if len(got.OutputFormats) != 2 || got.OutputFormats[0] != "png" {
+		t.Fatalf("输出格式不符: %v", got.OutputFormats)
 	}
-	if got.MaxN != 4 || got.MaxNRef != 1 || got.DefaultN != 1 {
+	if got.MaxN != 4 || got.MaxNRef != 1 {
 		t.Fatalf("张数不符: %+v", got)
 	}
-	if len(got.Sizes) != 2 || got.Sizes[1] != "1536x1024" {
-		t.Fatalf("尺寸不符: %v", got.Sizes)
-	}
-	if !got.CustomSize || !got.IgnoreSizeWithRef {
-		t.Fatalf("尺寸开关不符: %+v", got)
+	if got.MinSidePx != 768 || got.MaxSidePx != 4096 {
+		t.Fatalf("分辨率区间不符: %+v", got)
 	}
 	if got.UpdatedAt == 0 {
 		t.Fatal("应写入保存时间")
@@ -70,7 +63,7 @@ func TestModelMetaRoundTrip(t *testing.T) {
 func TestModelMetaUpsertOverwrites(t *testing.T) {
 	s := openTestStore(t)
 	if err := s.UpsertModelMeta(&model.ModelMeta{
-		Model: "m", Description: "旧", MaxN: 4, RefFormats: []string{"png"},
+		Model: "m", Description: "旧", MaxN: 4, OutputFormats: []string{"png"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +79,7 @@ func TestModelMetaUpsertOverwrites(t *testing.T) {
 	if got.Description != "新" {
 		t.Fatalf("说明应被覆盖，实际 %q", got.Description)
 	}
-	if got.MaxN != 0 || len(got.RefFormats) != 0 {
+	if got.MaxN != 0 || len(got.OutputFormats) != 0 {
 		t.Fatalf("未提交的字段应被清空（整体覆盖），实际 %+v", got)
 	}
 }

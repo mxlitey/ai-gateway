@@ -20,7 +20,6 @@ import {
   PageHead,
   Segmented,
   Switch,
-  Textarea,
 } from './ui'
 
 /** 元数据表单草稿：数字全部用字符串，留空即「不限制」。 */
@@ -32,15 +31,11 @@ type MetaDraft = {
   chinese_prompt: boolean
   chinese_text: boolean
   max_ref_count: string
-  max_ref_side_px: string
-  max_ref_mb: string
-  ref_formats: string[]
   max_n: string
   max_n_ref: string
-  default_n: string
-  sizes: string
-  custom_size: boolean
-  ignore_size_with_ref: boolean
+  output_formats: string[]
+  min_side_px: string
+  max_side_px: string
 }
 
 const META_FORMATS: { value: string; label: string }[] = [
@@ -58,15 +53,11 @@ function emptyMetaDraft(): MetaDraft {
     chinese_prompt: false,
     chinese_text: false,
     max_ref_count: '',
-    max_ref_side_px: '',
-    max_ref_mb: '',
-    ref_formats: [],
     max_n: '',
     max_n_ref: '',
-    default_n: '',
-    sizes: '',
-    custom_size: false,
-    ignore_size_with_ref: false,
+    output_formats: [],
+    min_side_px: '',
+    max_side_px: '',
   }
 }
 
@@ -81,15 +72,11 @@ function metaDraftOf(m?: ModelMeta): MetaDraft {
     chinese_prompt: m.chinese_prompt,
     chinese_text: m.chinese_text,
     max_ref_count: str(m.max_ref_count),
-    max_ref_side_px: str(m.max_ref_side_px),
-    max_ref_mb: str(m.max_ref_mb),
-    ref_formats: m.ref_formats ?? [],
     max_n: str(m.max_n),
     max_n_ref: str(m.max_n_ref),
-    default_n: str(m.default_n),
-    sizes: (m.sizes ?? []).join('\n'),
-    custom_size: m.custom_size,
-    ignore_size_with_ref: m.ignore_size_with_ref,
+    output_formats: m.output_formats ?? [],
+    min_side_px: str(m.min_side_px),
+    max_side_px: str(m.max_side_px),
   }
 }
 
@@ -104,18 +91,11 @@ function metaPayloadOf(model: string, d: MetaDraft) {
     chinese_prompt: d.chinese_prompt,
     chinese_text: d.chinese_text,
     max_ref_count: num(d.max_ref_count),
-    max_ref_side_px: num(d.max_ref_side_px),
-    max_ref_mb: num(d.max_ref_mb),
-    ref_formats: d.ref_formats,
     max_n: num(d.max_n),
     max_n_ref: num(d.max_n_ref),
-    default_n: num(d.default_n),
-    sizes: d.sizes
-      .split('\n')
-      .map((s) => s.trim())
-      .filter(Boolean),
-    custom_size: d.custom_size,
-    ignore_size_with_ref: d.ignore_size_with_ref,
+    output_formats: d.output_formats,
+    min_side_px: num(d.min_side_px),
+    max_side_px: num(d.max_side_px),
   }
 }
 
@@ -730,14 +710,17 @@ function MetaEditor({
               约束
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-              {numField('最多张数', '参考图最多几张，留空不限', 'max_ref_count', refOff)}
-              {numField('长边上限', '参考图长边像素，如 2048', 'max_ref_side_px', refOff)}
-              {numField('单张上限', '参考图体积，单位 MB', 'max_ref_mb', refOff)}
+              {numField('参考图数', '参考图最多几张，留空不限', 'max_ref_count', refOff)}
             </div>
 
-            <div style={{ marginTop: 6, opacity: refOff ? 0.45 : 1 }} title="允许的参考图格式">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
+              {numField('文生图张数', '不带参考图时 n 的上限', 'max_n')}
+              {numField('参考图张数', '带参考图时 n 的上限', 'max_n_ref', refOff)}
+            </div>
+
+            <div style={{ marginTop: 6 }} title="生图结果可返回的图片格式">
               <div className="tiny muted" style={{ marginBottom: 4 }}>
-                格式
+                输出格式
               </div>
               <div style={{ display: 'flex', gap: 12 }}>
                 {META_FORMATS.map((f) => (
@@ -748,14 +731,13 @@ function MetaEditor({
                   >
                     <input
                       type="checkbox"
-                      disabled={refOff}
-                      checked={draft.ref_formats.includes(f.value)}
+                      checked={draft.output_formats.includes(f.value)}
                       onChange={(e) =>
                         set(
-                          'ref_formats',
+                          'output_formats',
                           e.target.checked
-                            ? [...draft.ref_formats, f.value]
-                            : draft.ref_formats.filter((x) => x !== f.value),
+                            ? [...draft.output_formats, f.value]
+                            : draft.output_formats.filter((x) => x !== f.value),
                         )
                       }
                     />
@@ -766,33 +748,9 @@ function MetaEditor({
             </div>
 
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
-              {numField('文生图张数', '不带参考图时 n 的上限', 'max_n')}
-              {numField('参考图张数', '带参考图时 n 的上限', 'max_n_ref', refOff)}
-              {numField('默认张数', '客户端未传 n 时使用', 'default_n')}
+              {numField('最小分辨率', '输出图片边长下限，如 512', 'min_side_px')}
+              {numField('最大分辨率', '输出图片边长上限，如 4096', 'max_side_px')}
             </div>
-
-            <div style={{ marginTop: 8 }} title="每行一个，如 1024x1024">
-              <div className="tiny muted" style={{ marginBottom: 4 }}>
-                尺寸
-              </div>
-              <Textarea
-                rows={3}
-                placeholder={'1024x1024\n1536x1024'}
-                value={draft.sizes}
-                onChange={(e) => set('sizes', e.target.value)}
-              />
-            </div>
-
-            {row('自定义尺寸', '关闭则只能用上面列出的', draft.custom_size, (v) =>
-              set('custom_size', v),
-            )}
-            {row(
-              '忽略尺寸',
-              '带参考图时上游不认 size',
-              draft.ignore_size_with_ref,
-              (v) => set('ignore_size_with_ref', v),
-              refOff,
-            )}
           </div>
         </div>
 

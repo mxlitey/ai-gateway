@@ -21,16 +21,19 @@ func SanitizeModelMeta(name string, in ModelMeta) ModelMeta {
 		out.Description = string([]rune(out.Description)[:200])
 	}
 	out.MaxRefCount = ClampInt(out.MaxRefCount, 0, 32)
-	out.MaxRefSidePx = ClampInt(out.MaxRefSidePx, 0, 16384)
-	out.MaxRefMB = ClampInt(out.MaxRefMB, 0, 1024)
 	out.MaxN = ClampInt(out.MaxN, 0, 16)
 	out.MaxNRef = ClampInt(out.MaxNRef, 0, 16)
-	out.DefaultN = ClampInt(out.DefaultN, 0, 16)
+	out.MinSidePx = ClampInt(out.MinSidePx, 0, 16384)
+	out.MaxSidePx = ClampInt(out.MaxSidePx, 0, 16384)
+	// 下限大于上限时以上限为准，避免在响应里给出自相矛盾的区间
+	if out.MaxSidePx > 0 && out.MinSidePx > out.MaxSidePx {
+		out.MinSidePx = out.MaxSidePx
+	}
 
-	// 格式只保留受支持的三类，统一小写
-	formats := make([]string, 0, len(in.RefFormats))
+	// 输出格式只保留受支持的三类，统一小写
+	formats := make([]string, 0, len(in.OutputFormats))
 	seenFmt := map[string]bool{}
-	for _, f := range in.RefFormats {
+	for _, f := range in.OutputFormats {
 		f = strings.ToLower(strings.TrimSpace(f))
 		switch f {
 		case "png", "jpeg", "webp":
@@ -40,38 +43,8 @@ func SanitizeModelMeta(name string, in ModelMeta) ModelMeta {
 			}
 		}
 	}
-	out.RefFormats = formats
-
-	// 尺寸只保留「数字x数字」形态，统一成小写 x 并去重
-	sizes := make([]string, 0, len(in.Sizes))
-	seenSize := map[string]bool{}
-	for _, s := range in.Sizes {
-		norm, ok := NormalizeSizeToken(s)
-		if !ok || seenSize[norm] {
-			continue
-		}
-		seenSize[norm] = true
-		sizes = append(sizes, norm)
-	}
-	out.Sizes = sizes
+	out.OutputFormats = formats
 	return out
-}
-
-// NormalizeSizeToken 把 "1024x1024" / "1024*1024" / "1024X1024" 统一成小写 x 形态。
-// 宽高各自限制在 64..16384：太小没有意义，太大超出任何上游的接受范围。
-func NormalizeSizeToken(s string) (string, bool) {
-	s = strings.ToLower(strings.TrimSpace(s))
-	parts := strings.FieldsFunc(s, func(r rune) bool { return r == 'x' || r == '*' })
-	if len(parts) != 2 {
-		return "", false
-	}
-	for _, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 64 || n > 16384 {
-			return "", false
-		}
-	}
-	return parts[0] + "x" + parts[1], true
 }
 
 // ClampInt 把 v 夹到 [lo, hi]。

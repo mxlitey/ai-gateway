@@ -462,28 +462,20 @@ type ModelMeta struct {
 	// ---- 参考图约束 ----
 	// MaxRefCount 参考图最多几张，0 表示不限。
 	MaxRefCount int `json:"max_ref_count"`
-	// MaxRefSidePx 参考图长边像素上限，0 表示不限。
-	MaxRefSidePx int `json:"max_ref_side_px"`
-	// MaxRefMB 参考图单张体积上限（MB），0 表示不限。
-	MaxRefMB int `json:"max_ref_mb"`
-	// RefFormats 允许的参考图格式（png / jpeg / webp），空表示不限制。
-	RefFormats []string `json:"ref_formats"`
 
 	// ---- 出图张数 ----
 	// MaxN 不带参考图时 n 的上限，0 表示不限。
 	MaxN int `json:"max_n"`
 	// MaxNRef 带参考图时 n 的上限，0 表示沿用 MaxN。
 	MaxNRef int `json:"max_n_ref"`
-	// DefaultN 客户端未传 n 时使用的默认张数，0 表示由上游决定。
-	DefaultN int `json:"default_n"`
 
-	// ---- 尺寸 ----
-	// Sizes 支持的尺寸枚举，形如 1024x1024；空表示不声明。
-	Sizes []string `json:"sizes"`
-	// CustomSize 允许在 Sizes 之外自定义尺寸。
-	CustomSize bool `json:"custom_size"`
-	// IgnoreSizeWithRef 带参考图时上游忽略 size 参数。
-	IgnoreSizeWithRef bool `json:"ignore_size_with_ref"`
+	// ---- 输出 ----
+	// OutputFormats 可返回的图片格式（png / jpeg / webp），空表示不声明。
+	OutputFormats []string `json:"output_formats"`
+	// MinSidePx 输出图片边长下限（像素），0 表示不声明。
+	MinSidePx int `json:"min_side_px"`
+	// MaxSidePx 输出图片边长上限（像素），0 表示不声明。
+	MaxSidePx int `json:"max_side_px"`
 
 	// UpdatedAt 最后保存时间（Unix 毫秒）。
 	UpdatedAt int64 `json:"updated_at"`

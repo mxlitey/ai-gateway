@@ -1227,17 +1227,9 @@ def _model_spec(raw):
 
     # 参考图约束
     ref = {}
-    for key, name in (
-        ("max_ref_count", "max_count"),
-        ("max_ref_side_px", "max_side_px"),
-        ("max_ref_mb", "max_mb"),
-    ):
-        n = _as_int(raw.get(key))
-        if n > 0:
-            ref[name] = n
-    formats = raw.get("ref_formats")
-    if isinstance(formats, list) and formats:
-        ref["formats"] = [str(f) for f in formats]
+    n = _as_int(raw.get("max_ref_count"))
+    if n > 0:
+        ref["max_count"] = n
     if ref:
         spec["reference"] = ref
 
@@ -1246,7 +1238,6 @@ def _model_spec(raw):
     for key, name in (
         ("max_n", "max"),
         ("max_n_ref", "max_with_reference"),
-        ("default_n", "default"),
     ):
         n = _as_int(raw.get(key))
         if n > 0:
@@ -1254,17 +1245,19 @@ def _model_spec(raw):
     if counts:
         spec["n"] = counts
 
-    # 尺寸
-    sizes = raw.get("sizes")
-    size_spec = {}
-    if isinstance(sizes, list) and sizes:
-        size_spec["values"] = [str(s) for s in sizes]
-    if raw.get("custom_size"):
-        size_spec["custom"] = True
-    if raw.get("ignore_size_with_ref"):
-        size_spec["ignored_with_reference"] = True
-    if size_spec:
-        spec["size"] = size_spec
+    # 输出规格
+    out = {}
+    formats = raw.get("output_formats")
+    if isinstance(formats, list) and formats:
+        out["formats"] = [str(f) for f in formats]
+    lo = _as_int(raw.get("min_side_px"))
+    hi = _as_int(raw.get("max_side_px"))
+    if lo > 0:
+        out["min_side_px"] = lo
+    if hi > 0:
+        out["max_side_px"] = hi
+    if out:
+        spec["output"] = out
 
     return spec or None
 

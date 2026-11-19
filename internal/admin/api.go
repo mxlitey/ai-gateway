@@ -1578,11 +1578,11 @@ func (a *API) pluginConsole(w http.ResponseWriter, r *http.Request, pluginID, su
 	}
 	req.Header.Set("Accept", "application/json")
 
-	// 登录请求：注入回调入口基址，插件据此拼授权链接的回调地址。
+	// 登录请求：注入回调基址（即插件自己的回环端口），插件据此拼授权链接的回调地址。
 	// 路径完全由插件自己决定（见 docs/plugin-spec.md §6.7）。
 	if strings.HasPrefix(sub, "login/") {
-		if base := a.host.CallbackBase(); base != "" {
-			req.Header.Set(plugin.CallbackHeader, base)
+		if cb := a.host.CallbackBase(pluginID); cb != "" {
+			req.Header.Set(plugin.CallbackHeader, cb)
 		}
 	}
 

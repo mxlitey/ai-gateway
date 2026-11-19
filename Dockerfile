@@ -9,8 +9,8 @@
 #         -v ai-gateway-data:/data \
 #         ai-gateway:v<版本号>
 #
-# 镜像内置 TRAE、WorkBuddy 两个插件（见阶段 3），以及 github-search / image-generation
-# 两个本地 MCP 服务器，开箱即用。
+# 镜像只含网关本体：插件与本地 MCP 由用户自行放进映射目录（/plugins、/mcp），
+# 启动时自动扫描。要预置内容，把对应目录挂进来即可（见 docker-compose.yml 的注释）。
 # 说明：桌面外壳（cmd/gateway-wails，Wails + WebView2）仅面向 Windows，
 # 带 //go:build windows 标签，不会参与本镜像构建。
 
@@ -68,17 +68,8 @@ RUN set -eux; \
     chown -R gateway:gateway /data /plugins /mcp
 COPY --from=go-builder /out/ai-gateway /usr/local/bin/ai-gateway
 
-# 内置 TRAE / WorkBuddy 插件：Python 源码直接拷入，无需编译。
-# /plugins 是卷挂载点，卷首次创建时会带着这些插件一起初始化；用户自己加的插件也放这里。
-COPY --chown=gateway:gateway examples/plugins/trae /plugins/trae
-COPY --chown=gateway:gateway examples/plugins/workbuddy /plugins/workbuddy
-
-# 内置 GitHub 搜索 / 生图两个本地 MCP 服务器：纯标准库 Python 源码，开箱即用。
-# /mcp 是卷挂载点，卷首次创建时会带着它们一起初始化；用户自己加的服务器也放这里。
-COPY --chown=gateway:gateway examples/mcp/github-search /mcp/github-search
-COPY --chown=gateway:gateway examples/mcp/image-generation /mcp/image-generation
-
-# 数据与插件目录固定为卷挂载点：换个容器实例也能保留配置、密钥与插件
+# 数据与插件目录固定为卷挂载点：换个容器实例也能保留配置、密钥与插件。
+# /plugins 与 /mcp 只建空目录，内容由用户挂载（镜像不自带插件与 MCP）。
 ENV AIGW_DATA_DIR=/data \
     AIGW_PLUGINS_DIR=/plugins \
     AIGW_MCP_DIR=/mcp \
@@ -88,8 +79,6 @@ VOLUME ["/data", "/plugins", "/mcp"]
 
 USER gateway
 EXPOSE 8787
-# 8788 = 插件登录回调入口（监听端口 +1），Docker 里需单独映射到宿主机
-EXPOSE 8788
 
 # debian-slim 自带 busybox，没有 wget/curl，用 python3 探活（镜像内已有解释器）
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

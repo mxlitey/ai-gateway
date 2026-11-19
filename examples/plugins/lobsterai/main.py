@@ -4,7 +4,7 @@
 
 能力：
   - OpenAI 兼容上游：GET /health、POST /v1/chat/completions、GET /v1/models
-  - 控制台：授权登录（回调由网关入口透传到本插件 /auth/callback）/ 删除账号 / 额度刷新
+  - 控制台：授权登录（回调落在本插件 /auth/callback）/ 删除账号 / 额度刷新
   - 按 X-Plugin-Account 精确选号（选哪个账号完全由网关决定，插件不做调度）
 
 用法：
@@ -149,7 +149,7 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/v1/models"):
             status, body = console.handle_models(plugin, self.headers_map())
             return self.send_json(status, body)
-        # 上游要求的固定回调路径：网关回调入口按 callback_paths 原样透传到这里
+        # 上游要求的固定回调路径：直接由本插件处理（声明在 callback_paths 里）
         if path == login.CALLBACK_PATH:
             page = console.handle_callback(
                 plugin, (self.query().get("state") or [""])[0], self.query())

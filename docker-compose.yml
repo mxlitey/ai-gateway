@@ -3,15 +3,14 @@
 # 用法：
 #   1) 修改下面 environment 里的 AIGW_ADMIN_PASSWORD
 #   2) docker compose up -d --build
-#   3) 浏览器打开 http://localhost:8787
+#   3) 浏览器打开 http://localhost:8788
 #
-# 说明：/data 存放数据库、日志与插件私有数据；/plugins 存放插件目录。
-# 两者都用命名卷持久化，容器重建不会丢配置与插件。
-#
-# 注意：镜像已内置 TRAE / WorkBuddy 插件与 mcp/github-search 本地 MCP 服务器，
-# 但命名卷只在「首次创建」时从镜像初始化。
-# 如果你跑过旧版镜像（ai-gateway-plugins 卷已存在且里面是空的），内置插件不会自动进去，
-# 需先删掉旧卷再启动：docker volume rm ai-gateway-plugins（或换一个新的卷名）。
+# 说明：/data 存放数据库与日志；/plugins 与 /mcp 是插件与本地 MCP 目录。
+# 镜像**不自带**插件与 MCP，请把内容放进下面对应的宿主机目录：
+#   ./plugins/<插件id>/plugin.json   例如从 ai-gateway-v<版本>-plugins-mcp.zip 解压
+#   ./mcp/<服务名>/mcp.json
+# 首次 up 会自动创建这两个空目录，放好内容后在面板「插件」/「MCP 服务器」页
+# 点「重新扫描」（或重启容器）即可看到。
 
 services:
   ai-gateway:
@@ -26,12 +25,9 @@ services:
       # 宿主机端口:容器端口；容器内固定 8787，如需改宿主机端口只改左侧
       # 默认 8788，避免与本机 Windows 桌面版的 8787 冲突
       - "${AIGW_HOST_PORT:-8788}:8787"
-      # 插件登录回调入口在容器内的「网关端口 +1」= 8788，且回调地址里写死的是
-      # http://127.0.0.1:8788 —— 想让宿主机浏览器直达，宿主机端口也必须恰好是 8788：
-      #   AIGW_HOST_PORT=8787 AIGW_CALLBACK_HOST_PORT=8788 docker compose up -d
-      # 保持默认时（宿主机 8788 已被面板占用）不映射也行：授权后把地址栏里的链接
-      # 粘贴回面板即可完成登录（见 docs/plugin-spec.md §6.7）。
-      # - "8788:8788"
+      # 插件登录回调直接落在插件自己的回环端口上，不需要额外映射。
+      # 容器内的 127.0.0.1 不是宿主机的回环地址，因此授权后浏览器打不开回调页：
+      # 把地址栏里的完整链接粘回面板登录卡片即可（见 docs/plugin-spec.md §6.7）。
     environment:
       # 监听地址与端口由镜像内置（0.0.0.0:8787），一般无需覆盖
       AIGW_HOST: "0.0.0.0"
@@ -56,8 +52,9 @@ services:
       AIGW_UPLOAD_TTL_SECONDS: ${AIGW_UPLOAD_TTL_SECONDS:-3600}
     volumes:
       - ai-gateway-data:/data
-      - ai-gateway-plugins:/plugins
-      - ai-gateway-mcp:/mcp
+      # bind mount：插件与本地 MCP 由用户自己放进来（镜像不自带）
+      - ./plugins:/plugins
+      - ./mcp:/mcp
     healthcheck:
       # debian-slim 没有 wget/curl，用镜像内的 python3 探活
       test: ["CMD", "python3", "-c", "import urllib.request,sys;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/health',timeout=4).status==200 else 1)"]
@@ -68,5 +65,3 @@ services:
 
 volumes:
   ai-gateway-data:
-  ai-gateway-plugins:
-  ai-gateway-mcp:

@@ -1,6 +1,14 @@
 AI Gateway 绿色版
 =================
 
+新版本拆成两个压缩包，可分别升级：
+  ai-gateway-v<版本号>-windows-amd64.zip   网关本体（exe + README）
+  ai-gateway-v<版本号>-plugins-mcp.zip     插件与 MCP 扩展包（plugins/ mcp/ skills/，可能含 Python 安装包）
+
+只想要一个能跑的网关，解压第一个包双击 exe 即可；需要内置插件或本地 MCP，
+再把第二个包解压到**同一个目录**（与 exe 同级），重启网关就会自动扫描到。
+插件与 MCP 都是 Python 程序，需要机器上有 Python 3.10+（扩展包里可能附带离线安装包）。
+
 启动方式
 --------
 双击 ai-gateway-v<版本号>.exe：打开桌面窗口，没有黑窗口
@@ -20,16 +28,17 @@ http://127.0.0.1:8787 （默认端口，可在桌面窗口里修改）
 --------
 - 网关自身：8787（桌面窗口可改）
 - 插件端口：由宿主自动分配 127.0.0.1 空闲端口（清单里不写，重启后可能变化，无需手动处理）
-- 插件登录回调：监听端口 + 1（默认 8788），供浏览器 OAuth 授权后跳回本机
+- 插件登录回调：直接落在该插件自己的回环端口上，不额外占用端口
 
 目录说明
 --------
 data/      数据库与日志（ai-gateway.db、logs/），请勿删除
-plugins/   插件目录；可在桌面窗口里增删，也可手动放目录后点「重新扫描」
-mcp/       本地 MCP 服务器目录；每个子目录一个服务（放 mcp.json 与 Python 入口），
+plugins/   插件目录；来自扩展包，也可在桌面窗口里增删，或手动放目录后点「重新扫描」
+mcp/       本地 MCP 服务器目录；来自扩展包，每个子目录一个服务（放 mcp.json 与 Python 入口），
            网关启动时自动登记到「MCP 服务器」页，删除目录后重启即移除
-           安装包内置 mcp\github-search（GitHub 搜索）与 mcp\image-generation（生图）；
+           扩展包内置 mcp\github-search（GitHub 搜索）与 mcp\image-generation（生图）；
            最小实现可参考仓库 examples/mcp/local-demo
+skills/    扩展包附带的技能文档（可选，不影响网关运行）
 
 本地 MCP 服务器
 ---------------
@@ -46,6 +55,8 @@ mcp\image-generation（别名 image-gen）调用网关的 /v1/images/generations
 内网图片由服务自己下载后转 base64，超过上游预算且网关图床公网可达时自动上传换链接。
 生图约 1-3 分钟，工具提交后立即返回 job_id 与 status（通常 queued），再用 get_image_job
 轮询（作业存在网关 SQLite 里，保留 24 小时，网关重启也不会丢，还可以 cancel_image_job 取消）。
+轮询成功时直链（images[].url）与图片数据（image 内容块）会一起返回，客户端不必再按链接
+下载一次；图片只由网关落盘，MCP 不保存第二份副本。
 需要上传参考图时先调 image_host_info 拿图床直传端点：图片用普通 HTTP 直传，不经过 MCP，
 不受 8 MB 请求体限制。密钥在面板
 「MCP 服务器 → 生图 → 编辑 → 密钥」里填面板签发的 sk- 密钥，无需改 mcp.json。
@@ -62,8 +73,8 @@ mcp\image-generation（别名 image-gen）调用网关的 /v1/images/generations
 
 内置插件
 --------
-plugins\ 下自带两个现成的插件（都是 Python 源码），用法一样：打开控制台接入账号，
-再到「渠道管理」获取模型。examples\ 里还有更多插件源码，需要时复制到 plugins\ 即可。
+扩展包的 plugins\ 下自带两个现成的插件（都是 Python 源码），用法一样：打开控制台接入账号，
+再到「渠道管理」获取模型。仓库 examples\ 里还有更多插件源码，需要时复制到 plugins\ 即可。
 
 WorkBuddy（CodeBuddy）
   1. 管理面板 →「插件」→ 打开它的「控制台」

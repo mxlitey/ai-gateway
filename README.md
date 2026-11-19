@@ -27,7 +27,7 @@ AI Gateway 是一个运行在你自己电脑（或自己的服务器）上的 AP
 - **本地 MCP 服务器** — 把自己的 Python MCP 服务器放进 `mcp/` 目录即自动登记、自动分配回环端口、自动装依赖，卡片带「本地」徽章
 - **管理 MCP** — 可选开启 `POST /admin/mcp`，把网关自身的用量、渠道、插件、MCP 上游、诊断等能力暴露为 MCP 工具，供 AI 客户端查询与操作；独立管理令牌，分只读与读写两档，按令牌控制权限
 - **用量与费用** — 按密钥/模型/渠道/端点/上游密钥记录 token 用量；价格表完全手工维护、只按公开模型计费，支持输入分档、缓存命中价、峰谷时段折扣与生图按次计价，用于与厂商官方价格对比
-- **插件体系** — Python 写的本地 HTTP 服务放进 `plugins/` 目录即自动拉起、探活、注册为渠道；插件自选端口，可声明控制台能力（账号签到、额度查询），登录回调由网关在「监听端口 +1」上按插件的 `callback_paths` 原样透传
+- **插件体系** — Python 写的本地 HTTP 服务放进 `plugins/` 目录即自动拉起、探活、注册为渠道；插件端口由网关分配，可声明控制台能力（账号签到、额度查询），登录回调直接指向插件自己的回环端口（远程部署时在面板粘贴回调链接）
 - **管理面板** — React 19 + Vite + Tailwind 构建，内嵌进单一二进制（仪表盘 · 渠道管理 · 模型路由 · API 密钥 · MCP 服务器 · 插件 · 用量 · 价格表 · 错误日志 · 设置）；管理员密码 PBKDF2 哈希存储，会话 Token 24h 有效
 - **桌面 GUI** — Wails v3 + WebView2 原生窗口（Windows），自绘界面：启停网关、改端口、切换「仅本机 / 局域网」、管理插件、查看实时日志；系统托盘常驻，单实例锁，关窗不退出、托盘退出即停服
 - **无界面部署** — 另有纯命令行入口与 Linux 镜像，适合服务器 / Docker / 反代部署
@@ -39,7 +39,12 @@ AI Gateway 是一个运行在你自己电脑（或自己的服务器）上的 AP
 
 从 [Releases](../../releases) 下载绿色压缩包，解压后**双击 `ai-gateway-v<版本号>.exe`**：
 
-1. 桌面窗口一打开就自动启动网关（默认端口 `8787`）；数据目录 `data/` 与插件目录 `plugins/` 就在 exe 同级
+> 发版分为两个包：`ai-gateway-v<版本号>-windows-amd64.zip` 是网关本体，
+> `ai-gateway-v<版本号>-plugins-mcp.zip` 是插件与本地 MCP 扩展包。
+> 需要内置插件或 MCP 时，把扩展包解压到与 exe 同一目录即可（两者可分别升级）。
+
+1. 桌面窗口一打开就自动启动网关（默认端口 `8787`）；数据目录 `data/` 就在 exe 同级，
+   插件目录 `plugins/` 来自扩展包
 2. 窗口里可改端口后点「启动 / 重启」，用「访问范围」在「仅本机 / 局域网」间切换，还能添加/移除/重扫插件、查看实时日志
 3. 点「管理面板」或在浏览器打开 <http://127.0.0.1:8787>，首次进入设置管理员密码
 4. 「插件」页打开某个插件的控制台完成账号登录（可选）；或直接在「渠道管理」添加自己的上游（Base URL + 上游密钥）
@@ -62,7 +67,10 @@ docker compose up -d --build
 # 浏览器打开 http://localhost:8788（compose 默认映射到宿主机 8788，避开桌面版的 8787）
 ```
 
-镜像内置 TRAE / WorkBuddy 两个插件与 `mcp/github-search` 本地 MCP 服务器；`/data` 与 `/plugins` 两个命名卷分别持久化数据与插件，`/mcp` 卷用来放本地 MCP 服务器（自带 github-search，也可以加自己的）。
+镜像**只含网关本体**。`/data` 用命名卷持久化数据；`/plugins` 与 `/mcp` 是 bind mount，
+把插件与本地 MCP 放进 compose 同级的 `./plugins` 与 `./mcp` 目录即可
+（从 `ai-gateway-v<版本>-plugins-mcp.zip` 解压，或从仓库 `examples/` 复制），
+放好后在面板点「重新扫描」或重启容器生效。
 
 ### 客户端接入
 
@@ -181,7 +189,7 @@ Header : Authorization: Bearer sk-你的密钥
 
 面板「设置」页可热改的运行期设置：日志级别、插件探活间隔/超时/不健康阈值/最大重启次数、自动签到间隔、上游密钥熔断开关与基础/上限时长、pip 源。
 
-端口与访问范围在桌面版中会持久化到数据库，下次启动沿用。插件端口由宿主自动分配（`127.0.0.1` 上的空闲端口，通过 `AI_GATEWAY_PLUGIN_PORT` 注入），插件只监听这一个端口，因此不受本机其它软件占用影响。插件登录所需的本机 OAuth 回调页由网关在「监听端口 + 1」上提供入口（默认 8788），按插件声明的 `callback_paths` 原样透传；Docker 或远程访问时浏览器打不开该地址，把地址栏链接粘回面板即可。详情见 [插件开发规范](docs/plugin-spec.md)。
+端口与访问范围在桌面版中会持久化到数据库，下次启动沿用。插件端口由宿主自动分配（`127.0.0.1` 上的空闲端口，通过 `AI_GATEWAY_PLUGIN_PORT` 注入），插件只监听这一个端口，因此不受本机其它软件占用影响。插件登录所需的本机 OAuth 回调页直接落在插件自己的回环端口上（宿主通过 `X-Gateway-Callback-Base` 告知基址），不需要额外端口或映射；Docker 或远程访问时浏览器打不开该地址，把地址栏链接粘回面板即可。详情见 [插件开发规范](docs/plugin-spec.md)。
 
 ## 🔌 插件系统
 
@@ -196,7 +204,7 @@ plugins/
 
 同一份 `main.py` 在 Windows / macOS / Linux（含 Docker）上通用，不需要编译多份。网关只支持 Python 插件：`entry` 必须是插件目录内的 `.py` 脚本。宿主用系统 Python（`py -3` → `python3` → `python`）拉起插件，并按清单声明的 `requirements` 安装依赖到插件私有目录；Docker 镜像已内置 Python，Windows 桌面版需自行安装 Python 3。
 
-内置两个示例插件（`examples/plugins/`，均为纯 Python 标准库实现），安装包与镜像只打包这两个：
+内置两个示例插件（`examples/plugins/`，均为纯 Python 标准库实现），扩展包与镜像只打包这两个：
 
 | 插件 | 说明 |
 |---|---|
@@ -219,7 +227,7 @@ mcp/
     └── requirements.txt  # 可选：有实际依赖时自动 pip 安装
 ```
 
-安装包与镜像都内置了 `mcp/github-search`（GitHub 仓库 / 代码 / issue / PR / 提交 / 用户搜索）与 `mcp/image-generation`（生图，别名 `image-gen`）。前者纯标准库、匿名即可用，在它的 `mcp.json` 的 `env` 里填 `GITHUB_TOKEN` 可提升额度并解锁代码搜索；后者调用网关的 `/v1/images/generations`，密钥在面板「MCP 服务器 → 生图 → 密钥」里配。生图 MCP 的参考图接受公网 `image_url` 与本机 `image_path`；内网 `image_url` 由 MCP 自己下载后转 base64，超过单张 3 MB 时在图床公网可达的前提下上传换链接，不经过客户端上下文。想加自己的服务，参考仓库里的 `examples/mcp/local-demo`（最小实现），把目录整个复制到 `mcp/` 下即可。完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里把该密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
+扩展包（`ai-gateway-v<版本>-plugins-mcp.zip`）与仓库 `examples/` 都提供 `mcp/github-search`（GitHub 仓库 / 代码 / issue / PR / 提交 / 用户搜索）与 `mcp/image-generation`（生图，别名 `image-gen`）；Docker 部署时把它们放进 compose 映射的 `./mcp` 目录即可。前者纯标准库、匿名即可用，在它的 `mcp.json` 的 `env` 里填 `GITHUB_TOKEN` 可提升额度并解锁代码搜索；后者调用网关的 `/v1/images/generations`，密钥在面板「MCP 服务器 → 生图 → 密钥」里配。生图 MCP 的参考图接受公网 `image_url` 与本机 `image_path`；内网 `image_url` 由 MCP 自己下载后转 base64，超过单张 3 MB 时在图床公网可达的前提下上传换链接，不经过客户端上下文。想加自己的服务，参考仓库里的 `examples/mcp/local-demo`（最小实现），把目录整个复制到 `mcp/` 下即可。完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里把该密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
 
 ### 内置图床
 

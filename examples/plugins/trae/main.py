@@ -4,7 +4,7 @@
 
 能力：
   - 实现 GET /health、POST /v1/chat/completions、GET /v1/models
-  - 控制台：账号列表 / 网页登录（回调走网关统一入口）/ 手工导入 / 删除 / 签到 / 额度刷新
+  - 控制台：账号列表 / 网页登录（回调直达本插件端口）/ 手工导入 / 删除 / 签到 / 额度刷新
   - 按 X-Plugin-Account 精确选号（选择哪个账号全部归网关，插件不做任何调度）
 
 用法：
@@ -369,7 +369,7 @@ class Handler(BaseHTTPRequestHandler):
             status, body = console.handle_login_status(plugin, parts[2], self.query())
             return self.send_json(status, body)
         # TRAE 官方授权页只接受 http://127.0.0.1:<port>/authorize 作为回调，
-        # 网关回调入口（监听端口+1）按 callback_paths 把 /authorize 原样透传到这里。
+        # 该地址直接指向本插件端口，路径按 plugin.json 的 callback_paths 声明。
         if self.path.split("?", 1)[0] == "/authorize":
             raw_query = self.path.split("?", 1)[1] if "?" in self.path else ""
             ok, message = plugin.login.handle_callback("", self.path, raw_query)

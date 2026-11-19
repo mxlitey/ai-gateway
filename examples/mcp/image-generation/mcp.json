@@ -9,6 +9,8 @@
     "AIGW_IMAGE_API_KEY": "",
     "AIGW_IMAGE_MODEL": "",
     "AIGW_IMAGE_REF_MAX_MB": "3",
-    "AIGW_IMAGE_REF_TOTAL_MB": "7"
+    "AIGW_IMAGE_REF_TOTAL_MB": "7",
+    "AIGW_IMAGE_INLINE_MB": "4",
+    "AIGW_IMAGE_INLINE_TOTAL_MB": "10"
   }
 }

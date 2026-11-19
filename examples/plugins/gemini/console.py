@@ -8,9 +8,9 @@
 
 账号响应里绝不含任何凭据（access_token / refresh_token）。
 
-⚠️ 登录方式：Google 原生客户端走 **loopback 回调**，而插件规范禁止插件自行监听
-额外端口、网关统一回调地址也不在 Google 的 loopback 白名单里，故这里只支持
-粘贴 refresh_token（换取令牌那一步由用户在 Google 侧或其它工具完成）。
+⚠️ 登录方式：Google 原生客户端走 **loopback 回调**。网关给出的回调基址已是
+`http://127.0.0.1:<插件端口>`，形态上可用；但本插件尚未实现 OAuth 授权码流程，
+故这里只支持粘贴 refresh_token（换取令牌那一步由用户在 Google 侧或其它工具完成）。
 """
 
 import hashlib

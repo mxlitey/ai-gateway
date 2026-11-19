@@ -143,13 +143,8 @@ Remove-Item "$exe~" -Force -ErrorAction SilentlyContinue
 Remove-Item "dist/ai-gateway.exe" -Force -ErrorAction SilentlyContinue
 
 # ---- 4. 组装绿色版 ----
-Write-Host "[4/$totalSteps] 组装绿色版 ..." -ForegroundColor Cyan
-Copy-Item "build/README.txt" "dist/README.txt" -Force
-New-Item -ItemType Directory -Force -Path "dist/plugins", "dist/mcp", "dist/data" | Out-Null
-
-# 内置插件：插件一律是 Python 源码（同一份源码在 Windows / macOS / Linux 通用），
-# 整目录拷贝即可，不需要任何编译。先清空 dist/plugins，避免残留上一次的其它插件。
-# 上一次的网关可能仍在运行（Python 子进程占着目录），删除失败时重试几次并给出提示。
+# 清空并重建目录。上一次的网关可能仍在运行（Python 子进程占着目录），
+# 删除失败时重试几次并给出提示。
 function Reset-Dir([string]$path) {
     for ($i = 0; $i -lt 5; $i++) {
         if (-not (Test-Path $path)) { break }
@@ -162,77 +157,16 @@ function Reset-Dir([string]$path) {
     }
     New-Item -ItemType Directory -Force -Path $path | Out-Null
 }
-Reset-Dir "dist/plugins"
-foreach ($name in @("trae", "workbuddy")) {
-    $src = "examples/plugins/$name"
-    if (-not (Test-Path "$src/plugin.json")) { continue }
-    $dst = "dist/plugins/$name"
-    New-Item -ItemType Directory -Force -Path $dst | Out-Null
-    Copy-Item "$src/*.py" $dst -Force
-    Copy-Item "$src/plugin.json" "$dst/plugin.json" -Force
-}
 
-# 本地 MCP 服务器目录：内置 github-search（搜索）与 image-generation（生图），
-# 用户也可以放自己的服务进来；网关启动时自动扫描登记。
-Reset-Dir "dist/mcp"
-$mcpBuiltin = @{
-    "github-search"    = "examples/mcp/github-search"
-    "image-generation" = "examples/mcp/image-generation"
-}
-foreach ($name in $mcpBuiltin.Keys) {
-    $src = $mcpBuiltin[$name]
-    if (-not (Test-Path $src)) { continue }
-    $dst = "dist/mcp/$name"
-    New-Item -ItemType Directory -Force -Path $dst | Out-Null
-    Copy-Item "$src/*" $dst -Force -Recurse
-    # 别把本地运行产生的字节码带进安装包
-    Remove-Item "$dst/__pycache__" -Recurse -Force -ErrorAction SilentlyContinue
-}
-# 放一个说明文件，交代目录约定与如何加自己的服务
-$mcpReadme = @(
-    "mcp/ 目录：本地 MCP 服务器",
-    "",
-    "每个子目录一个服务，目录内放 mcp.json 与 Python 入口脚本（可带 requirements.txt）。",
-    "网关启动时自动扫描，分配 127.0.0.1 端口、安装依赖、崩溃自动重启，",
-    "并在「MCP 服务器」页带「本地」徽章展示；删除目录后重启即从列表移除。",
-    "",
-    "最小目录结构：",
-    "  mcp/我的服务/mcp.json",
-    "  mcp/我的服务/main.py",
-    "",
-    "内置 github-search：GitHub 仓库 / 代码 / issue / PR / 提交 / 用户搜索。",
-    "匿名调用可用（搜索 10 次/分钟，代码搜索需要令牌）；在 mcp/github-search/mcp.json 的 env 里",
-    "填 GITHUB_TOKEN 即可提升额度并解锁代码搜索。",
-    "",
-    "内置 image-generation（别名 image-gen）：调用网关 /v1/images/generations 生成图片，",
-    "参考图接受公网/内网 http(s) 地址（image_url）或本机文件路径（image_path）；",
-    "内网图片由服务自己下载后转 base64，超过上游预算且网关图床公网可达时自动上传换链接。",
-    "生图通常需要 1-3 分钟，工具会先返回 running + job_id，再用 get_image_job 轮询结果。",
-    "密钥在面板「MCP 服务器 → 生图 → 编辑 → 密钥」里填面板签发的 sk- 密钥，无需改 mcp.json；",
-    "想让服务端固定默认模型时，可在 mcp/image-generation/mcp.json 的 env 里填 AIGW_IMAGE_MODEL。",
-    "",
-    "参考实现见仓库 examples/mcp/local-demo 与 examples/mcp/github-search。",
-    "完整规范见仓库 docs/local-mcp-spec.md。"
-) -join "`r`n"
-[IO.File]::WriteAllText((Join-Path (Get-Location) "dist/mcp/README.txt"), $mcpReadme, (New-Object Text.UTF8Encoding($false)))
+Write-Host "[4/$totalSteps] 组装绿色版 ..." -ForegroundColor Cyan
+Copy-Item "build/README.txt" "dist/README.txt" -Force
+New-Item -ItemType Directory -Force -Path "dist/data" | Out-Null
 
-# ---- 打包交付物 ----
-# 全平台发版固定包含：Windows 绿色版 zip（exe + plugins + mcp + skills）与示例插件 zip。
-Write-Host "  打包 Windows 绿色版与示例插件 ..." -ForegroundColor Cyan
-
+# 主包只放网关本体：插件与 MCP 全部拆到独立压缩包，两者可分别升级。
 $stage = "dist/.stage-windows"
 Reset-Dir $stage
 Copy-Item "dist/README.txt" $stage -Force
 Copy-Item $exe $stage -Force
-New-Item -ItemType Directory -Force -Path "$stage/plugins", "$stage/mcp", "$stage/skills" | Out-Null
-Copy-Item "dist/plugins/*" "$stage/plugins" -Recurse -Force
-Copy-Item "dist/mcp/*" "$stage/mcp" -Recurse -Force
-if (Test-Path "examples/skills/image-gen") {
-    Copy-Item "examples/skills/image-gen" "$stage/skills/image-gen" -Recurse -Force
-}
-# 离线环境需要装插件依赖时，把放在 dist/ 的 Python 安装包一并带上（没有则跳过）
-Get-ChildItem "dist" -Filter "python-*-amd64.exe" -File -ErrorAction SilentlyContinue |
-    ForEach-Object { Copy-Item $_.FullName $stage -Force }
 Get-ChildItem $stage -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
@@ -241,27 +175,74 @@ Remove-Item $winZip -Force -ErrorAction SilentlyContinue
 Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $winZip -CompressionLevel Optimal
 Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue
 
-# 示例插件单独打包，解压后直接得到 plugins/ 目录
-$pluginStage = "dist/.stage-plugins"
-Reset-Dir $pluginStage
-foreach ($dir in Get-ChildItem "examples/plugins" -Directory) {
-    $dst = Join-Path $pluginStage ("plugins/" + $dir.Name)
+# 插件 + MCP 独立包：解压后直接得到 plugins/ 与 mcp/，与 exe 放同一目录即可被扫描到。
+# 插件一律是 Python 源码（同一份源码在 Windows / macOS / Linux 通用），整目录拷贝即可。
+$extrasStage = "dist/.stage-extras"
+Reset-Dir $extrasStage
+New-Item -ItemType Directory -Force -Path "$extrasStage/plugins", "$extrasStage/mcp", "$extrasStage/skills" | Out-Null
+
+foreach ($name in @("trae", "workbuddy")) {
+    $src = "examples/plugins/$name"
+    if (-not (Test-Path "$src/plugin.json")) { continue }
+    $dst = "$extrasStage/plugins/$name"
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
-    Copy-Item (Join-Path $dir.FullName "*") $dst -Recurse -Force
+    Copy-Item "$src/*.py" $dst -Force
+    Copy-Item "$src/plugin.json" "$dst/plugin.json" -Force
 }
-Get-ChildItem $pluginStage -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+
+$mcpBuiltin = @{
+    "github-search"    = "examples/mcp/github-search"
+    "image-generation" = "examples/mcp/image-generation"
+}
+foreach ($name in $mcpBuiltin.Keys) {
+    $src = $mcpBuiltin[$name]
+    if (-not (Test-Path $src)) { continue }
+    $dst = "$extrasStage/mcp/$name"
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Copy-Item "$src/*" $dst -Force -Recurse
+}
+if (Test-Path "examples/skills/image-gen") {
+    Copy-Item "examples/skills/image-gen" "$extrasStage/skills/image-gen" -Recurse -Force
+}
+# 插件与 MCP 都需要 Python 运行；离线环境把 dist/ 里的安装包一并带上（没有则跳过）
+Get-ChildItem "dist" -Filter "python-*-amd64.exe" -File -ErrorAction SilentlyContinue |
+    ForEach-Object { Copy-Item $_.FullName $extrasStage -Force }
+Get-ChildItem $extrasStage -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-$pluginsZip = "dist/plugins-v$Version.zip"
-Remove-Item $pluginsZip -Force -ErrorAction SilentlyContinue
-Compress-Archive -Path (Join-Path $pluginStage "plugins") -DestinationPath $pluginsZip -CompressionLevel Optimal
-Remove-Item $pluginStage -Recurse -Force -ErrorAction SilentlyContinue
+
+$extrasReadme = @(
+    "AI Gateway 插件与 MCP 扩展包（v$Version）",
+    "",
+    "用法：解压后把 plugins\ 与 mcp\ 放到 ai-gateway 可执行文件所在目录（与 exe 同级），",
+    "重启网关即可在面板看到；网关启动时自动扫描这两个目录。",
+    "",
+    "plugins\  插件目录（trae、workbuddy）。每个子目录一个插件，目录内含 plugin.json 与 Python 源码。",
+    "          也可从仓库 examples/plugins/ 复制更多插件进来，或直接在面板里「添加插件」。",
+    "mcp\      本地 MCP 服务器（github-search、image-generation）。每个子目录一个服务，",
+    "          目录内含 mcp.json 与 Python 入口；在「MCP 服务器」页带「本地」徽章。",
+    "skills\   image-gen 技能文档，供支持 skills 的客户端参考（可选，不影响运行）。",
+    "python-3.*-amd64.exe  离线用 Python 安装包（如果包含在本包里）。插件与 MCP 都是 Python 程序，",
+    "          需要 Python 3.10+；机器上已有 Python 时无需安装。",
+    "",
+    "插件与 MCP 都是纯 Python 源码，与网关版本解耦：升级网关时无需重新解压本包，",
+    "反过来升级本包也不需要更换网关。删除对应目录后重启即从面板移除。",
+    "",
+    "内置插件与 MCP 的用法见网关包里的 README.txt。"
+) -join "`r`n"
+[IO.File]::WriteAllText((Join-Path (Get-Location) "$extrasStage/README.txt"), $extrasReadme, (New-Object Text.UTF8Encoding($false)))
+
+$extrasZip = "dist/ai-gateway-v$Version-plugins-mcp.zip"
+Remove-Item $extrasZip -Force -ErrorAction SilentlyContinue
+Compress-Archive -Path (Join-Path $extrasStage "*") -DestinationPath $extrasZip -CompressionLevel Optimal
+Remove-Item $extrasStage -Recurse -Force -ErrorAction SilentlyContinue
 
 # ---- 5. Docker 镜像（可选）----
 if ($Docker) {
     Write-Host "[5/$totalSteps] 构建 Docker 镜像（$($DockerPlatforms -join ' / ')）..." -ForegroundColor Cyan
     Require-Command "docker" "请安装并启动 Docker Desktop"
 
-    # 镜像内嵌前端产物与 Go 二进制都在 Dockerfile 里自己构建，这里只需传版本号与 apt 源。
+    # 镜像只含网关本体（前端与 Go 二进制都在 Dockerfile 里构建），插件与 MCP 不打进去，
+    # 由用户放进 compose 映射的 ./plugins 与 ./mcp 目录。
     # 每个架构单独 buildx --load 并导出独立 tar，目标机器 docker load 后即可运行。
     $tars = @()
     foreach ($platform in $DockerPlatforms) {
@@ -317,12 +298,12 @@ if ($Docker) {
 
 Write-Host ""
 Write-Host "构建完成: $exe ($Version)" -ForegroundColor Green
-Write-Host "Windows 绿色版: $winZip" -ForegroundColor Green
-Write-Host "示例插件包: $pluginsZip" -ForegroundColor Green
-Write-Host "双击 $exe 即可启动并打开管理面板" -ForegroundColor Green
+Write-Host "Windows 绿色版（仅网关本体）: $winZip" -ForegroundColor Green
+Write-Host "插件与 MCP 扩展包: $extrasZip" -ForegroundColor Green
+Write-Host "双击 $exe 即可启动并打开管理面板；需要插件或 MCP 时把扩展包解压到同一目录" -ForegroundColor Green
 if ($Docker) {
     Write-Host "Docker 镜像（$($DockerPlatforms -join ' / ')）已导出：" -ForegroundColor Green
     foreach ($t in $tars) { Write-Host "  $t" -ForegroundColor Green }
     Write-Host "  目标机器导入: docker load -i <对应架构的 tar>" -ForegroundColor Green
-    Write-Host "  首次启动前清空旧插件卷: docker volume rm ai-gateway-plugins -f" -ForegroundColor Yellow
+    Write-Host "  镜像不含插件与 MCP：把扩展包解压到 compose 同级的 plugins/ 与 mcp/ 目录即可" -ForegroundColor Green
 }

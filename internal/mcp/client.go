@@ -20,7 +20,10 @@ import (
 const sessionHeader = "Mcp-Session-Id"
 
 // maxResponseBytes 单次上游响应体的读取上限，防止异常上游撑爆内存。
-const maxResponseBytes = 16 << 20
+//
+// 生图 MCP 会把图片以 base64 内联进 MCP 响应（单次总量默认 10 MB 原始字节，
+// 膨胀后约 13.3 MB），16 MB 会把合法响应截断成非法 JSON，因此留到 32 MB。
+const maxResponseBytes = 32 << 20
 
 // client 对一个 MCP 上游的调用封装：无状态，每次调用自带会话 id。
 //

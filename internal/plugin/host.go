@@ -115,9 +115,6 @@ type Host struct {
 	shutdown bool
 	// policy 监管策略（探活 / 重启 / 签到节奏），可在面板中热更新。
 	policy Policy
-	// cbSrv / cbLn 登录回调透传入口（监听端口 +1，见 callback.go）。
-	cbSrv *http.Server
-	cbLn  net.Listener
 	// logins 授权登录的计时登记（网关计时 90 秒，见 callback.go 的 LoginTTL）。
 	logins map[string]loginTimer
 }
@@ -514,13 +511,7 @@ func (h *Host) Shutdown() {
 	for pid := range h.items {
 		ids = append(ids, pid)
 	}
-	cbSrv := h.cbSrv
 	h.mu.Unlock()
-
-	// 回调入口先停：它只是登录链路的旁路，越早释放端口越好
-	if cbSrv != nil {
-		_ = cbSrv.Close()
-	}
 
 	for _, pid := range ids {
 		_ = h.stopInternal(pid, true)
@@ -561,11 +552,6 @@ func (h *Host) startInternal(pluginID string, persist bool) error {
 	if inst.active {
 		h.mu.Unlock()
 		return nil
-	}
-	if msg := h.callbackConflictLocked(inst); msg != "" {
-		h.mu.Unlock()
-		h.setStatus(inst, StatusFailed, msg)
-		return fmt.Errorf("%s", msg)
 	}
 	inst.enabled = true
 	inst.failures = 0
@@ -797,8 +783,9 @@ func (h *Host) spawn(inst *instance) error {
 		"AI_GATEWAY_PLUGIN_PORT="+strconv.Itoa(inst.port),
 		"AI_GATEWAY_PLUGIN_DIR="+inst.dir,
 		"AI_GATEWAY_PLUGIN_DATA="+vars.Data,
-		// 统一登录回调入口的基址（见 callback.go）；登录时还会用请求头覆盖它
-		CallbackEnvVar+"="+h.CallbackBase(),
+		// 登录回调基址就是插件自己的回环端口（见 callback.go）；
+		// 登录时还会用请求头覆盖它，宿主换端口后无需重启插件
+		CallbackEnvVar+"="+callbackBaseFor(inst.port),
 	)
 	cmd.Env = childEnv
 

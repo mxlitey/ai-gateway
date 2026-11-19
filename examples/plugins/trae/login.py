@@ -6,12 +6,12 @@ TRAE 官方授权页（www.trae.cn/authorization）对 auth_callback_url 做硬�
 线上页面代码为 `/^http:\\/\\/127\\.0\\.0\\.1:(\\d+)\\/authorize$/`，
 不匹配就直接进入「登录失败 / 网络错误，请刷新页面重试」。
 
-网关的回调入口是 `http://127.0.0.1:<网关监听端口+1>`，它把 /authorize 原样透传到本插件，
-因此上面的正则依然匹配（路径与回环主机都对，端口只要是数字即可）。
+网关的回调基址就是本插件自己的回环端口（`http://127.0.0.1:<插件端口>`），
+因此授权后的 /authorize 直接打到本进程，不经过网关转发。
 
 流程：
   ① POST /console/login/web → 拼出 <网关注入的回调基址>/authorize，返回 {status,url,state}
-  ② 面板打开 url，用户在浏览器授权，浏览器跳回网关回调入口的 /authorize?<授权参数>
+  ② 面板打开 url，用户在浏览器授权，浏览器跳回本插件的 /authorize?<授权参数>
   ③ state 无法放进回调地址（正则要求精确 /authorize），改由服务端单会话跟踪
   ④ 回调里取 refreshToken → ExchangeToken → GetUserInfo → 原子落盘 → 会话标记 ok
   ⑤ 面板轮询 GET /console/login/web?state=xxx 拿到 ok → 自动刷新账号列表
@@ -34,10 +34,10 @@ LOGIN_TTL_SECONDS = 90
 
 
 def loopback_base(headers=None, port=0):
-    """回调基址：网关回调入口（127.0.0.1:<监听端口+1>）优先，其次插件自身端口。
+    """回调基址：网关注入的插件回环端口优先，其次插件自身端口。
 
     官方授权页只接受 `http://127.0.0.1:<任意端口>/authorize` 形态，
-    路径部分由本插件自行指定，网关只做原样透传（plugin-spec §6.7）。
+    路径部分由本插件自行指定并写进 plugin.json 的 callback_paths（plugin-spec §6.7）。
     """
     import os
 

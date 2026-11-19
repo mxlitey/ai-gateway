@@ -3,8 +3,7 @@
 
 LobsterAI 登录门户要求 `redirect_uri` 是 `http://127.0.0.1:<端口>/auth/callback`
 形态（路径逐字固定）。基址取自网关注入的 X-Gateway-Callback-Base
-（即 `http://127.0.0.1:<网关监听端口+1>`），插件只在自己的端口上实现该路径，
-由网关按 callback_paths 原样透传（plugin-spec §6.7）。
+（即本插件自己的回环端口），该路径直接由本插件处理（plugin-spec §6.7）。
 """
 
 import threading
@@ -37,7 +36,7 @@ class LoginBroker:
         self.sessions = {}
 
     def start(self, callback_base=""):
-        """返回 {url, state}；回调落在网关回调入口的 /auth/callback。"""
+        """返回 {url, state}；回调落在本插件自己的 /auth/callback。"""
         state = util.new_state()
         flow_uuid = str(uuid.uuid4())
         first_keyfrom = str(util.now_millis())

@@ -20,12 +20,17 @@
   AIGW_IMAGE_API_KEY         网关 sk- 密钥；留空时用调用方带来的 Authorization，
                              即面板「MCP 服务器 → 生图 → 密钥」里配的那把
   AIGW_IMAGE_MODEL           默认生图模型（generate_image 未传 model 时使用）
-  AIGW_IMAGE_SAVE_DIR        图片保存目录，默认 $AIGW_MCP_DATA/images
+  AIGW_IMAGE_INLINE_MB       单张可内联返回的上限（MB），默认 4；超过只回传直链
+  AIGW_IMAGE_INLINE_TOTAL_MB 单次响应内联图片的总上限（MB），默认 10
   AIGW_IMAGE_FETCH_CA        下载内网 https 图片时使用的 CA 文件（自签证书场景）
   AIGW_IMAGE_FETCH_INSECURE  =1 时跳过内网图片的 TLS 校验（默认关闭，不推荐）
 
 返回约定：
-  - 图片统一返回网关地址，images[].expires_at 是图片链接的 Unix 秒过期时间（默认约 1 小时）；
+  - 图片统一由网关落盘并返回自己的地址，images[].expires_at 是链接的 Unix 秒过期时间（默认约 1 小时）；
+  - get_image_job 默认（inline=true）把图片字节以 MCP image 内容块一起返回，直链与图片数据
+    在同一次响应里给全，客户端可直接保存/显示，不必再按链接下载一次；
+  - 本服务不落盘：只做「取字节 + 内联」，重复的本地副本没有意义（服务常跑在网关容器里，
+    其文件路径对客户端不可用）；
   - 作业对象带 expires_at（作业记录保留 24 小时，结果里叫 job_expires_at）与 poll_count / stage 进度；
   - 失败时 isError=true，structuredContent.error 含 code / message / retryable / upstream_status；
   - generate_image 支持 request_id 幂等键：相同 request_id 重复调用复用同一作业。
@@ -52,7 +57,6 @@ import socket
 import ssl
 import threading
 import time
-import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -85,6 +89,12 @@ MAX_REFERENCE_MB = max(1, _env_int("AIGW_IMAGE_REF_MAX_MB", 3))
 MAX_REFERENCE_BYTES = MAX_REFERENCE_MB << 20
 MAX_REFERENCE_TOTAL_MB = max(MAX_REFERENCE_MB, _env_int("AIGW_IMAGE_REF_TOTAL_MB", 7))
 MAX_REFERENCE_TOTAL_CHARS = MAX_REFERENCE_TOTAL_MB << 20
+# 单张可内联进 MCP 响应的上限：图片以 base64 塞进内容块会膨胀 4/3。
+# 超过就只回传直链，不随响应返回图片字节。
+MAX_INLINE_BYTES = max(1, _env_int("AIGW_IMAGE_INLINE_MB", 4)) << 20
+# 一次响应内联图片的原始字节总预算。网关读取 MCP 响应的上限是 32 MB，
+# base64 膨胀 4/3 后必须留余量，否则响应会被截断成非法 JSON。
+MAX_INLINE_TOTAL_BYTES = max(1, _env_int("AIGW_IMAGE_INLINE_TOTAL_MB", 10)) << 20
 LINK_TTL_HINT = "链接有时效（images[].expires_at 是 Unix 秒，默认约 1 小时，以网关配置为准）"
 # 参考图下载（内网 http/https）的边界：只转发，不落盘持久保存
 IMAGE_FETCH_MAX_BYTES = 32 << 20
@@ -113,7 +123,8 @@ IMAGE_TOOLS = [
             "queued / running / succeeded / failed / canceled，只有 succeeded 才有图片，"
             "failed / canceled 会直接以错误返回。"
             "成功结果的 url 是网关自身地址（/v1/images/files/...），"
-            + LINK_TTL_HINT + "，可直接下载或给用户；重要结果建议在 get_image_job 里传 download=true 落本地。"
+            + LINK_TTL_HINT + "，可直接下载或给用户；"
+            "get_image_job 默认会把图片数据与直链一起返回，不必再单独下载。"
             "参考图用公网 http(s) URL（image_url）或本机文件路径（image_path）；"
             "内网 URL 由本服务下载后转发。"
             "对话里粘贴的图片、或本机读不到的文件，先调 image_host_info 拿图床直传端点，"
@@ -180,12 +191,20 @@ IMAGE_TOOLS = [
         "description": (
             "查询 generate_image 创建的作业；status 为 queued / running / succeeded / failed / canceled。"
             "作业保存在网关 SQLite 中，网关或本服务重启都不会丢失（保留 24 小时）。"
+            "出图成功时一次返回两样东西：images[].url（网关直链，有时效）与 image 内容块（图片字节），"
+            "客户端可直接保存/显示，不必再按链接下载。"
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "job_id": {"type": "string", "description": "generate_image 返回的作业 ID"},
-                "download": {"type": "boolean", "description": "为 true 时把已成功的图片下载到本地并返回路径"},
+                "inline": {
+                    "type": "boolean",
+                    "description": (
+                        "默认 true：把图片字节以 MCP image 内容块随响应返回，与直链一起给全。"
+                        "设为 false 只返回直链（体积小，但客户端需自行下载）。"
+                    ),
+                },
             },
             "required": ["job_id"],
         },
@@ -236,8 +255,9 @@ INSTRUCTIONS = (
     "作业状态共 queued/running/succeeded/failed/canceled 五种，只有 succeeded 才有图片，"
     "failed/canceled 会以 isError 返回；"
     "   网关或本服务重启不会丢作业：异步任务会继续轮询，同步任务会标记为 gateway_restarted 让你重提；"
-    "4) 成功结果的 images[].url 是网关自身地址，images[].expires_at 是 Unix 秒过期时间，可直接下载或交给用户；"
-    "需要长期保存时在 get_image_job 里传 download=true 落本地；"
+    "4) 成功时一次拿到两样东西：images[].url 是网关直链（expires_at 是 Unix 秒过期时间），"
+    "同一次响应里还会带上 image 内容块（图片字节），客户端可直接保存/显示，不必再按链接下载；"
+    "只想要直链、不要图片数据时传 inline=false；"
     "5) 失败时 isError=true，structuredContent.error 含 code/message/retryable；"
     "6) 超时重试请带上同一个 request_id，网关会复用已有作业，不会重复生图；"
     "7) 需要放弃时调用 cancel_image_job(job_id)：只停止网关侧等待与轮询，"
@@ -292,16 +312,6 @@ def _api_key():
 
 def _default_model():
     return _env("AIGW_IMAGE_MODEL")
-
-
-def _save_dir():
-    configured = _env("AIGW_IMAGE_SAVE_DIR")
-    if configured:
-        return configured
-    data_dir = _env("AIGW_MCP_DATA")
-    if data_dir:
-        return os.path.join(data_dir, "images")
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".images")
 
 
 # 访问本机网关不走系统代理；下载参考图同样直连（内网地址走代理只会失败）
@@ -415,10 +425,24 @@ def _job_elapsed_ms(view):
     return max(0, int((float(end) - float(created)) * 1000))
 
 
-def _job_images(view, download):
-    """把网关作业结果转成 images[]，可选下载到本地。"""
+def _size_text(num):
+    """把字节数写成易读的 KB/MB，避免小图显示成「0 MB」。"""
+    if num >= 1 << 20:
+        return "%d MB" % (num >> 20)
+    return "%d KB" % max(1, num >> 10)
+
+
+def _job_images(view, inline):
+    """把网关作业结果转成 images[]，并按需内联图片字节。
+
+    返回 (images, blocks)：blocks 是 MCP image 内容块，inline=True 时才填充。
+    图片只由网关落盘，本服务不再保存第二份副本：拿到字节就内联交付，
+    拿不到就退回直链，二者在同一次响应里给全。
+    """
     items = view.get("data") or []
     images = []
+    blocks = []
+    inlined = 0
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -427,29 +451,59 @@ def _job_images(view, download):
         entry = {}
         if image_url:
             entry["url"] = image_url
-        if b64:
-            # b64 塞进 MCP 文本会非常大：一律落盘，返回本地路径
-            path, size = _save_base64(b64)
-            entry["path"] = path
-            entry["bytes"] = size
-        if not entry:
-            continue
         if isinstance(item.get("expires_at"), (int, float)):
             entry["expires_at"] = int(item["expires_at"])
-        if download and image_url and not entry.get("path"):
+
+        raw = b""
+        mime = ""
+        if b64:
+            # 上游直接给 base64（未落盘的情况）：解码后只走 image 块，不再回显文本
+            raw, mime = _decode_base64_image(b64)
+        if inline and image_url and not raw:
             try:
-                path, size = _download_image(image_url)
-                entry["path"] = path
-                entry["bytes"] = size
+                raw, mime = _fetch_image(image_url)
             except ToolError as exc:
-                # 下载失败不影响已生成的图片地址
-                entry["download_error"] = exc.message
-        images.append(entry)
-    return images
+                # 下载失败不影响已生成的直链
+                entry["inline_error"] = exc.message
+        if not entry and not raw:
+            continue
+        if raw:
+            entry["bytes"] = len(raw)
+
+        inlined_this = False
+        if inline and raw and mime.startswith("image/"):
+            if len(raw) > MAX_INLINE_BYTES:
+                entry["inline_skipped"] = (
+                    "图片 %s 超过单张内联上限 %d MB，未随响应返回；"
+                    "请用 url 下载，或调大 AIGW_IMAGE_INLINE_MB"
+                    % (_size_text(len(raw)), MAX_INLINE_BYTES >> 20)
+                )
+            elif inlined + len(raw) > MAX_INLINE_TOTAL_BYTES:
+                entry["inline_skipped"] = (
+                    "本次响应内联图片已达内联总量上限（%s），这张未随响应返回；"
+                    "请用 url 下载，或减少数量 / 调大 AIGW_IMAGE_INLINE_TOTAL_MB"
+                    % _size_text(MAX_INLINE_TOTAL_BYTES)
+                )
+            else:
+                inlined += len(raw)
+                inlined_this = True
+                blocks.append({
+                    "type": "image",
+                    "data": base64.b64encode(raw).decode("ascii"),
+                    "mimeType": mime,
+                })
+
+        # 内联了就不再回显 b64 文本（同一张图出现两份等于体积翻倍）；
+        # 只有「这张没内联成功、又没有直链」时才把 b64 当作唯一可用的句柄。
+        if b64 and not inlined_this and "url" not in entry:
+            entry["b64_json"] = b64
+        if entry:
+            images.append(entry)
+    return images, blocks
 
 
-def _job_result(view, download=False, reused=False):
-    images = _job_images(view, download)
+def _job_result(view, inline=True, reused=False):
+    images, blocks = _job_images(view, inline)
     if not images:
         raise ToolError("网关返回的图片为空", code="empty_result", retryable=True)
     result = {
@@ -459,6 +513,9 @@ def _job_result(view, download=False, reused=False):
         "count": len(images),
         "images": images,
     }
+    if blocks:
+        # 由 call_tool 取出拼成 image 内容块，不进入 structuredContent
+        result["_inline_images"] = blocks
     if isinstance(view.get("expires_at"), (int, float)):
         # 作业记录的保留期（24 小时），与图片链接过期时间不是一回事
         result["job_expires_at"] = int(view["expires_at"])
@@ -536,23 +593,25 @@ def _extract_error_detail(text):
     return _clip(text, 400), ""
 
 
-# ---------- 图片落盘 ----------
+# ---------- 图片取回 ----------
 
-def _save_base64(b64_text):
+def _decode_base64_image(b64_text):
+    """解码网关返回的 base64 图片，返回 (原始字节, mime)。"""
     try:
         raw = base64.b64decode(b64_text)
     except Exception:
         raise ToolError("网关返回的 base64 图片无法解码", code="invalid_response", retryable=True)
     if len(raw) > MAX_DOWNLOAD_BYTES:
-        raise ToolError("图片超过 %d MB，无法保存" % (MAX_DOWNLOAD_BYTES >> 20), code="too_large")
-    return _write_image(raw, _sniff_ext(raw))
+        raise ToolError("图片超过 %d MB，无法取回" % (MAX_DOWNLOAD_BYTES >> 20), code="too_large")
+    return raw, _mime_from_bytes(raw)
 
 
-def _download_image(url):
+def _fetch_image(url):
+    """按直链取回图片字节，返回 (原始字节, mime)。"""
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ToolError(
-            "图片地址不是 http/https，无法下载：%s" % _clip(url, 120),
+            "图片地址不是 http/https，无法取回：%s" % _clip(url, 120),
             code="download_failed",
         )
     req = urllib.request.Request(url, method="GET")
@@ -563,37 +622,21 @@ def _download_image(url):
             content_type = resp.headers.get("Content-Type", "")
     except urllib.error.HTTPError as exc:
         raise ToolError(
-            "下载图片失败（HTTP %d）：%s" % (exc.code, _clip(url, 120)),
+            "取回图片失败（HTTP %d）：%s" % (exc.code, _clip(url, 120)),
             code="download_failed",
             retryable=exc.code >= 500,
             upstream_status=exc.code,
         )
     except Exception as exc:
-        raise ToolError("下载图片失败：%s" % exc, code="download_failed", retryable=True)
+        raise ToolError("取回图片失败：%s" % exc, code="download_failed", retryable=True)
     if len(raw) > MAX_DOWNLOAD_BYTES:
-        raise ToolError("图片超过 %d MB，拒绝下载" % (MAX_DOWNLOAD_BYTES >> 20), code="too_large")
-    ext = _ext_from_content_type(content_type) or _ext_from_url(parsed.path) or _sniff_ext(raw)
-    return _write_image(raw, ext)
-
-
-def _write_image(raw, ext):
-    directory = _save_dir()
-    try:
-        os.makedirs(directory, exist_ok=True)
-        name = "image-%s-%s.%s" % (
-            time.strftime("%Y%m%d-%H%M%S"),
-            uuid.uuid4().hex[:8],
-            ext,
-        )
-        path = os.path.join(directory, name)
-        with open(path, "wb") as fh:
-            fh.write(raw)
-    except OSError as exc:
-        raise ToolError(
-            "保存图片失败：%s（检查 AIGW_IMAGE_SAVE_DIR / AIGW_MCP_DATA 是否可写）" % exc,
-            code="storage_error",
-        )
-    return path, len(raw)
+        raise ToolError("图片超过 %d MB，拒绝取回" % (MAX_DOWNLOAD_BYTES >> 20), code="too_large")
+    # 优先信任响应头里的图片类型，否则按文件头嗅探
+    mime = ""
+    head = (content_type or "").split(";")[0].strip().lower()
+    if head.startswith("image/"):
+        mime = head
+    return raw, mime or _mime_from_bytes(raw)
 
 
 def _sniff_ext(raw):
@@ -606,25 +649,6 @@ def _sniff_ext(raw):
     if raw[:6] in (b"GIF87a", b"GIF89a"):
         return "gif"
     return "bin"
-
-
-def _ext_from_content_type(content_type):
-    mapping = {
-        "image/png": "png",
-        "image/jpeg": "jpg",
-        "image/jpg": "jpg",
-        "image/webp": "webp",
-        "image/gif": "gif",
-    }
-    return mapping.get((content_type or "").split(";")[0].strip().lower(), "")
-
-
-def _ext_from_url(path):
-    match = re.search(r"\.(png|jpe?g|webp|gif)$", (path or "").lower())
-    if not match:
-        return ""
-    ext = match.group(1)
-    return "jpg" if ext == "jpeg" else ext
 
 
 def _clip(text, limit):
@@ -1105,7 +1129,7 @@ def _generate(args, key=""):
         _raise_job_failure(view)
     if status == "succeeded":
         # 复用已完成的作业时结果已就绪，不必再让客户端多轮一次
-        return _job_result(view, False, reused)
+        return _job_result(view, True, reused)
 
     # 只提交不等待：出图耗时不可预测，阻塞调用容易撞客户端超时
     return {
@@ -1115,7 +1139,7 @@ def _generate(args, key=""):
         "reused": reused,
         "hint": (
             "作业已提交，请每 5 秒调用 get_image_job(job_id=\"%s\") 获取结果；"
-            "需要保存到本地时在 get_image_job 里传 download=true" % job_id
+            "成功时直链与图片数据会一起返回" % job_id
         ),
     }
 
@@ -1124,12 +1148,12 @@ def _job_status(args, key=""):
     job_id = str(args.get("job_id") or "").strip()
     if not job_id:
         raise ToolError("缺少参数 job_id")
-    download = _bool_arg(args, "download", False)
+    inline = _bool_arg(args, "inline", True)
     view = _fetch_job(job_id, key)
     status = str(view.get("status") or "")
 
     if status == "succeeded":
-        return _job_result(view, download)
+        return _job_result(view, inline)
     if status in ("failed", "canceled"):
         err = view.get("error") or {}
         if not isinstance(err, dict):
@@ -1192,8 +1216,14 @@ def call_tool(name, arguments, key=""):
     except Exception as exc:
         return _error_result("内部错误: %s" % exc, code="internal_error")
 
+    blocks = []
+    if isinstance(payload, dict):
+        # 内联图片块从 payload 里摘出来，避免把 base64 再塞进 structuredContent 和文本
+        blocks = payload.pop("_inline_images", None) or []
+    content = [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}]
+    content.extend(blocks)
     return {
-        "content": [{"type": "text", "text": json.dumps(payload, ensure_ascii=False)}],
+        "content": content,
         "structuredContent": payload,
         "isError": False,
     }
@@ -1335,13 +1365,6 @@ def main():
     global MCP_PATH
     MCP_PATH = os.environ.get("AIGW_MCP_PATH") or "/mcp"
     port = int(os.environ.get("AIGW_MCP_PORT") or os.environ.get("PORT") or "9100")
-
-    data_dir = _env("AIGW_MCP_DATA")
-    if data_dir:
-        try:
-            os.makedirs(data_dir, exist_ok=True)
-        except OSError:
-            pass
 
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True

@@ -139,11 +139,8 @@ func (a *App) Start() error {
 		MaxFailures:         runtime.PluginMaxFailures,
 		AutoCheckinInterval: time.Duration(runtime.PluginAutoCheckinMinutes) * time.Minute,
 	})
-	// 插件登录回调入口：固定占用「监听端口 +1」。起不来不影响网关主功能，
-	// 用户仍可在插件控制台粘贴回调链接完成登录。
-	if err := host.StartCallbackServer(); err != nil {
-		slog.Warn("插件登录回调入口启动失败，插件授权登录将只能粘贴回调链接", "err", err)
-	}
+	// 插件登录回调：浏览器直接跳到插件自己的回环端口，网关不再额外占端口。
+	// Docker / 远端部署时该地址打不开属预期，用户可在面板粘贴回调链接（见 plugin.SubmitCallback）。
 
 	pricer := pricing.New(st)
 	if err := pricer.Reload(); err != nil {

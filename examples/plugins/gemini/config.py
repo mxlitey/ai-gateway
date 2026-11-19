@@ -4,9 +4,9 @@
 全部字段均可在插件目录下的 config.json 里覆盖：上游一改，只改配置、不动代码。
 
 ⚠️ 登录方式说明：Google 的原生客户端走 **loopback 回调**
-（`http://localhost:<端口>/oauth-callback`，任意端口合法）。插件规范禁止插件
-自行监听额外端口，而网关统一回调地址是 https 域名、不匹配 Google 的
-「原生应用 loopback」白名单，因此本插件采用**粘贴 refresh_token** 的登录方式
+（`http://localhost:<端口>/oauth-callback`，任意端口合法）。网关现在给出的回调基址
+正是 `http://127.0.0.1:<插件端口>`，形态上满足 Google 的「原生应用 loopback」要求；
+但本插件尚未实现 OAuth 授权码流程，因此仍采用**粘贴 refresh_token** 的登录方式
 （OAuth 换取令牌那一步由用户在 Google 侧或其它工具完成）。
 """
 

@@ -39,7 +39,7 @@ type Manifest struct {
 	// Requirements 需要预先安装的 Python 依赖（格式同 requirements.txt）。
 	Requirements []string `json:"requirements"`
 	// CallbackPaths 插件自行监听、且必须由浏览器直达的回调路径（如 TRAE 的 /authorize）。
-	// 仅在这些路径上允许「粘贴回调链接」；Docker 中回调端口无法从宿主机访问时使用。
+	// 仅在这些路径上允许「粘贴回调链接」；Docker / 远端部署时浏览器打不开回环地址，用它兜底。
 	CallbackPaths []string `json:"callback_paths"`
 
 	// ID 由插件目录名推导（加载时填充），无需在 plugin.json 里声明

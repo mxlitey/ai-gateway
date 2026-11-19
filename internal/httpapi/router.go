@@ -83,7 +83,7 @@ func NewRouter(d Deps) http.Handler {
 		mux.HandleFunc("/admin/mcp/", d.AdminMCP.Handle)
 	}
 
-	// 登录回调走独立端口（监听端口 +1，见 internal/plugin/callback.go），不挂在主路由上。
+	// 插件登录回调直接打到插件自己的回环端口（见 internal/plugin/callback.go），不经过主路由。
 
 	// /admin/api/* 管理接口（鉴权在 handler 内部根据路径区分）
 	mux.HandleFunc("/admin/api/", d.Admin.Handle)

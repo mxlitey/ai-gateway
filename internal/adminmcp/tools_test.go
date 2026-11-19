@@ -66,8 +66,10 @@ func TestSetModelMetaTool(t *testing.T) {
 		"reference":      true,
 		"chinese_text":   true,
 		"max_ref_count":  float64(5),
-		"min_side_px":    float64(512),
-		"max_side_px":    float64(4096),
+		"min_width_px":   float64(512),
+		"min_height_px":  float64(512),
+		"max_width_px":   float64(4096),
+		"max_height_px":  float64(4096),
 		"output_formats": []any{"PNG", "gif"},
 	}, true)
 	if res["isError"] == true {
@@ -79,12 +81,13 @@ func TestSetModelMetaTool(t *testing.T) {
 		t.Fatalf("应能读回: %v", err)
 	}
 	if got.Description != "通用文生图" {
-		t.Fatalf("说明应去掉首尾空白，实际 %q", got.Description)
+		t.Fatalf("描述应去掉首尾空白，实际 %q", got.Description)
 	}
 	if !got.Reference || !got.ChineseText || got.MaxRefCount != 5 {
 		t.Fatalf("能力与约束不符: %+v", got)
 	}
-	if got.MinSidePx != 512 || got.MaxSidePx != 4096 {
+	if got.MinWidthPx != 512 || got.MaxWidthPx != 4096 ||
+		got.MinHeightPx != 512 || got.MaxHeightPx != 4096 {
 		t.Fatalf("分辨率区间不符: %+v", got)
 	}
 	if len(got.OutputFormats) != 1 || got.OutputFormats[0] != "png" {

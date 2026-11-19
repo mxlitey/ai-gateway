@@ -22,8 +22,10 @@ func TestModelMetaRoundTrip(t *testing.T) {
 		MaxN:           4,
 		MaxNRef:        1,
 		OutputFormats:  []string{"png", "jpeg"},
-		MinSidePx:      768,
-		MaxSidePx:      4096,
+		MinWidthPx:     512,
+		MinHeightPx:    768,
+		MaxWidthPx:     4096,
+		MaxHeightPx:    6144,
 	}
 	if err := s.UpsertModelMeta(in); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -51,7 +53,8 @@ func TestModelMetaRoundTrip(t *testing.T) {
 	if got.MaxN != 4 || got.MaxNRef != 1 {
 		t.Fatalf("张数不符: %+v", got)
 	}
-	if got.MinSidePx != 768 || got.MaxSidePx != 4096 {
+	if got.MinWidthPx != 512 || got.MinHeightPx != 768 ||
+		got.MaxWidthPx != 4096 || got.MaxHeightPx != 6144 {
 		t.Fatalf("分辨率区间不符: %+v", got)
 	}
 	if got.UpdatedAt == 0 {

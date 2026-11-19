@@ -20,6 +20,7 @@ import {
   PageHead,
   Segmented,
   Switch,
+  Textarea,
 } from './ui'
 
 /** 元数据表单草稿：数字全部用字符串，留空即「不限制」。 */
@@ -34,8 +35,10 @@ type MetaDraft = {
   max_n: string
   max_n_ref: string
   output_formats: string[]
-  min_side_px: string
-  max_side_px: string
+  min_width_px: string
+  min_height_px: string
+  max_width_px: string
+  max_height_px: string
 }
 
 const META_FORMATS: { value: string; label: string }[] = [
@@ -56,8 +59,10 @@ function emptyMetaDraft(): MetaDraft {
     max_n: '',
     max_n_ref: '',
     output_formats: [],
-    min_side_px: '',
-    max_side_px: '',
+    min_width_px: '',
+    min_height_px: '',
+    max_width_px: '',
+    max_height_px: '',
   }
 }
 
@@ -75,8 +80,10 @@ function metaDraftOf(m?: ModelMeta): MetaDraft {
     max_n: str(m.max_n),
     max_n_ref: str(m.max_n_ref),
     output_formats: m.output_formats ?? [],
-    min_side_px: str(m.min_side_px),
-    max_side_px: str(m.max_side_px),
+    min_width_px: str(m.min_width_px),
+    min_height_px: str(m.min_height_px),
+    max_width_px: str(m.max_width_px),
+    max_height_px: str(m.max_height_px),
   }
 }
 
@@ -94,8 +101,10 @@ function metaPayloadOf(model: string, d: MetaDraft) {
     max_n: num(d.max_n),
     max_n_ref: num(d.max_n_ref),
     output_formats: d.output_formats,
-    min_side_px: num(d.min_side_px),
-    max_side_px: num(d.max_side_px),
+    min_width_px: num(d.min_width_px),
+    min_height_px: num(d.min_height_px),
+    max_width_px: num(d.max_width_px),
+    max_height_px: num(d.max_height_px),
   }
 }
 
@@ -642,7 +651,13 @@ function MetaEditor({
     </div>
   )
 
-  const numField = (label: string, hint: string, key: keyof MetaDraft, disabled = false) => (
+  const numField = (
+    label: string,
+    hint: string,
+    key: keyof MetaDraft,
+    disabled = false,
+    width = 90,
+  ) => (
     <Field label={label} hint={hint}>
       <Input
         type="number"
@@ -651,9 +666,21 @@ function MetaEditor({
         disabled={disabled}
         value={draft[key] as string}
         onChange={(e) => set(key, e.target.value as never)}
-        style={{ width: 90 }}
+        style={{ width }}
       />
     </Field>
+  )
+
+  // sizeBox 只放一个数字输入，标签固定为宽/高，用于分辨率两两成对展示
+  const sizeBox = (key: keyof MetaDraft, ph: string) => (
+    <Input
+      type="number"
+      min={0}
+      placeholder={ph}
+      value={draft[key] as string}
+      onChange={(e) => set(key, e.target.value as never)}
+      style={{ width: 76 }}
+    />
   )
 
   return (
@@ -672,12 +699,13 @@ function MetaEditor({
       }
     >
       <div className="stack">
-        <Field label="说明" hint="一句话描述这个模型，会展示给 AI 客户端">
-          <Input
-            placeholder="例如：通用文生图，支持参考图改图"
+        <Field label="描述" hint="说明这个模型能做什么，会展示给 AI 客户端；支持 Markdown">
+          <Textarea
+            rows={3}
+            placeholder="例如：通用文生图，支持参考图改图；最高 4K"
             value={draft.description}
             onChange={(e) => set('description', e.target.value)}
-            maxLength={200}
+            maxLength={500}
           />
         </Field>
 
@@ -709,13 +737,10 @@ function MetaEditor({
             <div className="tiny muted" style={{ marginBottom: 4 }}>
               约束
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
-              {numField('参考图数', '参考图最多几张，留空不限', 'max_ref_count', refOff)}
-            </div>
-
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
-              {numField('文生图张数', '不带参考图时 n 的上限', 'max_n')}
-              {numField('参考图张数', '带参考图时 n 的上限', 'max_n_ref', refOff)}
+            <div style={{ display: 'flex', gap: 10 }}>
+              {numField('输入参考图数', '最多可以传几张参考图，留空不限', 'max_ref_count', refOff, 96)}
+              {numField('文生图输出数', '不带参考图时最多出几张', 'max_n', false, 110)}
+              {numField('图生图输出数', '带参考图时最多出几张', 'max_n_ref', refOff, 110)}
             </div>
 
             <div style={{ marginTop: 6 }} title="生图结果可返回的图片格式">
@@ -747,9 +772,24 @@ function MetaEditor({
               </div>
             </div>
 
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 8 }}>
-              {numField('最小分辨率', '输出图片边长下限，如 512', 'min_side_px')}
-              {numField('最大分辨率', '输出图片边长上限，如 4096', 'max_side_px')}
+            <div style={{ marginTop: 8 }} title="输出图片的最小与最大宽高，单位像素">
+              <div className="tiny muted" style={{ marginBottom: 4 }}>
+                分辨率
+              </div>
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span className="tiny muted">最小</span>
+                  {sizeBox('min_width_px', '宽')}
+                  <span className="tiny faint">×</span>
+                  {sizeBox('min_height_px', '高')}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span className="tiny muted">最大</span>
+                  {sizeBox('max_width_px', '宽')}
+                  <span className="tiny faint">×</span>
+                  {sizeBox('max_height_px', '高')}
+                </div>
+              </div>
             </div>
           </div>
         </div>

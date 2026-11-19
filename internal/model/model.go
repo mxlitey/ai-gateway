@@ -444,7 +444,8 @@ type ModelPrice struct {
 type ModelMeta struct {
 	// Model 公开模型名，与客户端请求里的 model 严格一致（不做大小写归一化）。
 	Model string `json:"model"`
-	// Description 一句话说明，会随模型列表一起给到 AI 客户端。
+	// Description 模型描述，会随模型列表一起给到 AI 客户端。
+	// 允许 Markdown（客户端可自行渲染或降级为纯文本）。
 	Description string `json:"description"`
 
 	// ---- 能力开关 ----
@@ -459,23 +460,25 @@ type ModelMeta struct {
 	// ChineseText 能把中文文字正确渲染进画面（如海报标题）。
 	ChineseText bool `json:"chinese_text"`
 
-	// ---- 参考图约束 ----
-	// MaxRefCount 参考图最多几张，0 表示不限。
+	// ---- 输入参考图 ----
+	// MaxRefCount 输入参考图最多几张，0 表示不限。
 	MaxRefCount int `json:"max_ref_count"`
 
 	// ---- 出图张数 ----
-	// MaxN 不带参考图时 n 的上限，0 表示不限。
+	// MaxN 文生图（不带参考图）时 n 的上限，0 表示不限。
 	MaxN int `json:"max_n"`
-	// MaxNRef 带参考图时 n 的上限，0 表示沿用 MaxN。
+	// MaxNRef 图生图（带参考图）时 n 的上限，0 表示沿用 MaxN。
 	MaxNRef int `json:"max_n_ref"`
 
 	// ---- 输出 ----
 	// OutputFormats 可返回的图片格式（png / jpeg / webp），空表示不声明。
 	OutputFormats []string `json:"output_formats"`
-	// MinSidePx 输出图片边长下限（像素），0 表示不声明。
-	MinSidePx int `json:"min_side_px"`
-	// MaxSidePx 输出图片边长上限（像素），0 表示不声明。
-	MaxSidePx int `json:"max_side_px"`
+	// MinWidthPx / MinHeightPx 输出图片宽高的下限（像素），0 表示不声明。
+	MinWidthPx  int `json:"min_width_px"`
+	MinHeightPx int `json:"min_height_px"`
+	// MaxWidthPx / MaxHeightPx 输出图片宽高的上限（像素），0 表示不声明。
+	MaxWidthPx  int `json:"max_width_px"`
+	MaxHeightPx int `json:"max_height_px"`
 
 	// UpdatedAt 最后保存时间（Unix 毫秒）。
 	UpdatedAt int64 `json:"updated_at"`

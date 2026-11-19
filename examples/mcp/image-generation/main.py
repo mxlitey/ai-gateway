@@ -1250,12 +1250,15 @@ def _model_spec(raw):
     formats = raw.get("output_formats")
     if isinstance(formats, list) and formats:
         out["formats"] = [str(f) for f in formats]
-    lo = _as_int(raw.get("min_side_px"))
-    hi = _as_int(raw.get("max_side_px"))
-    if lo > 0:
-        out["min_side_px"] = lo
-    if hi > 0:
-        out["max_side_px"] = hi
+    for key, name in (
+        ("min_width_px", "min_width"),
+        ("min_height_px", "min_height"),
+        ("max_width_px", "max_width"),
+        ("max_height_px", "max_height"),
+    ):
+        n = _as_int(raw.get(key))
+        if n > 0:
+            out[name] = n
     if out:
         spec["output"] = out
 

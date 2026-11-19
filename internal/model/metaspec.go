@@ -17,17 +17,22 @@ func SanitizeModelMeta(name string, in ModelMeta) ModelMeta {
 	out := in
 	out.Model = name
 	out.Description = strings.TrimSpace(out.Description)
-	if utf8.RuneCountInString(out.Description) > 200 {
-		out.Description = string([]rune(out.Description)[:200])
+	if utf8.RuneCountInString(out.Description) > 500 {
+		out.Description = string([]rune(out.Description)[:500])
 	}
 	out.MaxRefCount = ClampInt(out.MaxRefCount, 0, 32)
 	out.MaxN = ClampInt(out.MaxN, 0, 16)
 	out.MaxNRef = ClampInt(out.MaxNRef, 0, 16)
-	out.MinSidePx = ClampInt(out.MinSidePx, 0, 16384)
-	out.MaxSidePx = ClampInt(out.MaxSidePx, 0, 16384)
+	out.MinWidthPx = ClampInt(out.MinWidthPx, 0, 16384)
+	out.MinHeightPx = ClampInt(out.MinHeightPx, 0, 16384)
+	out.MaxWidthPx = ClampInt(out.MaxWidthPx, 0, 16384)
+	out.MaxHeightPx = ClampInt(out.MaxHeightPx, 0, 16384)
 	// 下限大于上限时以上限为准，避免在响应里给出自相矛盾的区间
-	if out.MaxSidePx > 0 && out.MinSidePx > out.MaxSidePx {
-		out.MinSidePx = out.MaxSidePx
+	if out.MaxWidthPx > 0 && out.MinWidthPx > out.MaxWidthPx {
+		out.MinWidthPx = out.MaxWidthPx
+	}
+	if out.MaxHeightPx > 0 && out.MinHeightPx > out.MaxHeightPx {
+		out.MinHeightPx = out.MaxHeightPx
 	}
 
 	// 输出格式只保留受支持的三类，统一小写

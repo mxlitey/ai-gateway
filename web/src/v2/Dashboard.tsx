@@ -557,22 +557,32 @@ function Sparkline({
         )
       : ''
 
+  // 末端脉冲点在 DOM 层定位，不用 <circle>：
+  // viewBox 被 preserveAspectRatio="none" 横向拉伸后，圆会被拉成椭圆且比例随容器宽度变化，
+  // vector-effect 只影响描边、对填充几何无效。百分比 + px 的组合与拉伸完全解耦。
+  const lastIdx = today.length - 1
+  const dotLeft = (lastIdx / 23) * 100
+  const dotTop = y(today[lastIdx])
+
   return (
     <div className="spark">
-      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
-        <defs>
-          <linearGradient id="v2spark" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" className="spark-stop-0" />
-            <stop offset="100%" className="spark-stop-1" />
-          </linearGradient>
-        </defs>
-        <path d={area} fill="url(#v2spark)" />
-        <path d={line} className="spark-now" fill="none" />
-        {/* 虚线最后画，避免被实线（起始段重合）盖住 */}
-        {prevPath ? (
-          <path d={prevPath} className="spark-prev" fill="none" />
-        ) : null}
-      </svg>
+      <div className="spark-canvas">
+        <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="v2spark" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" className="spark-stop-0" />
+              <stop offset="100%" className="spark-stop-1" />
+            </linearGradient>
+          </defs>
+          <path d={area} fill="url(#v2spark)" />
+          <path d={line} className="spark-now" fill="none" />
+          {/* 虚线最后画，避免被实线（起始段重合）盖住 */}
+          {prevPath ? (
+            <path d={prevPath} className="spark-prev" fill="none" />
+          ) : null}
+        </svg>
+        <span className="spark-dot" style={{ left: `${dotLeft}%`, top: `${dotTop}px` }} />
+      </div>
     </div>
   )
 }

@@ -285,9 +285,14 @@ if ($Docker) {
                        "--build-arg", "TARGETARCH=$arch",
                        "--build-arg", "APT_MIRROR=$AptMirror", "--load", ".")
         # docker 的构建进度写在 stderr，PowerShell 5 在 ErrorActionPreference=Stop 下
-        # 会把原生命令的 stderr 当异常抛出，这里合流到 stdout，只按退出码判断成败
+        # 会把原生命令的 stderr 当异常抛出（NativeCommandError），即使构建本身成功也会中断脚本。
+        # 这里临时把偏好设为 Continue，合流到 stdout，只按退出码判断成败。
+        $prevEAP = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
         & docker @buildArgs 2>&1 | ForEach-Object { Write-Host $_ }
-        if ($LASTEXITCODE -ne 0) {
+        $dockerExit = $LASTEXITCODE
+        $ErrorActionPreference = $prevEAP
+        if ($dockerExit -ne 0) {
             Write-Host "[错误] Docker 镜像构建失败（$platform）" -ForegroundColor Red
             if ($platform -match "arm64|arm/") {
                 Write-Host "  arm 架构需要 QEMU 模拟，可先执行：" -ForegroundColor Yellow

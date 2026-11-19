@@ -23,7 +23,7 @@ import {
   Textarea,
 } from './ui'
 
-/** 元数据表单草稿：数字全部用字符串，留空即「不限制」。 */
+/** 元数据表单草稿：数字全部用字符串，留空即「未声明」。 */
 type MetaDraft = {
   description: string
   reference: boolean
@@ -87,7 +87,7 @@ function metaDraftOf(m?: ModelMeta): MetaDraft {
   }
 }
 
-/** 草稿转提交体；数字留空按 0（不限制）处理。 */
+/** 草稿转提交体；数字留空按 0（未声明）处理。 */
 function metaPayloadOf(model: string, d: MetaDraft) {
   return {
     model,
@@ -662,7 +662,7 @@ function MetaEditor({
       <Input
         type="number"
         min={0}
-        placeholder="不限"
+        placeholder="未声明"
         disabled={disabled}
         value={draft[key] as string}
         onChange={(e) => set(key, e.target.value as never)}
@@ -738,7 +738,7 @@ function MetaEditor({
               约束
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
-              {numField('输入参考图数', '最多可以传几张参考图，留空不限', 'max_ref_count', refOff, 96)}
+              {numField('输入参考图数', '最多可以传几张参考图，留空不声明', 'max_ref_count', refOff, 96)}
               {numField('文生图输出数', '不带参考图时最多出几张', 'max_n', false, 110)}
               {numField('图生图输出数', '带参考图时最多出几张', 'max_n_ref', refOff, 110)}
             </div>
@@ -795,7 +795,7 @@ function MetaEditor({
         </div>
 
         <p className="tiny faint" style={{ margin: 0 }}>
-          留空的数值表示不限制。这些声明只用于对外说明能力，网关不会据此拒绝请求。
+          留空表示未声明。声明只用于对外说明能力，网关不据此拒绝请求；客户端遇到未声明的项会按「未知」保守取值。
         </p>
       </div>
     </Modal>

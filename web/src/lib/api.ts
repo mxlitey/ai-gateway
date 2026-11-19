@@ -449,11 +449,11 @@ export type ModelMeta = {
   chinese_prompt: boolean
   /** 能把中文文字正确画进图里 */
   chinese_text: boolean
-  /** 输入参考图最多几张，0 表示不限 */
+  /** 输入参考图最多几张，0 表示未声明 */
   max_ref_count: number
-  /** 文生图输出张数上限，0 表示不限 */
+  /** 文生图输出张数上限，0 表示未声明 */
   max_n: number
-  /** 图生图输出张数上限，0 表示沿用 max_n */
+  /** 图生图输出张数上限，0 表示未声明（沿用 max_n） */
   max_n_ref: number
   /** 可返回的图片格式，空表示不声明 */
   output_formats: string[]

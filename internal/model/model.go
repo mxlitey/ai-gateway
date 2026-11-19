@@ -440,7 +440,8 @@ type ModelPrice struct {
 //
 // 上游的 /v1/models 只有 id / object / created / owned_by，拿不到任何能力信息，
 // 而主动探测一次就是一次真实计费出图，因此这些约束只能人工声明。
-// 字段全部可选：零值表示「未声明」，对外输出时按「不限制 / 不声明」处理。
+// 字段全部可选：零值表示「未声明」（未知），不等于「不限制」，
+// 客户端在没声明时应当保守取值。
 type ModelMeta struct {
 	// Model 公开模型名，与客户端请求里的 model 严格一致（不做大小写归一化）。
 	Model string `json:"model"`
@@ -461,13 +462,13 @@ type ModelMeta struct {
 	ChineseText bool `json:"chinese_text"`
 
 	// ---- 输入参考图 ----
-	// MaxRefCount 输入参考图最多几张，0 表示不限。
+	// MaxRefCount 输入参考图最多几张，0 表示未声明。
 	MaxRefCount int `json:"max_ref_count"`
 
 	// ---- 出图张数 ----
-	// MaxN 文生图（不带参考图）时 n 的上限，0 表示不限。
+	// MaxN 文生图（不带参考图）时 n 的上限，0 表示未声明。
 	MaxN int `json:"max_n"`
-	// MaxNRef 图生图（带参考图）时 n 的上限，0 表示沿用 MaxN。
+	// MaxNRef 图生图（带参考图）时 n 的上限，0 表示未声明（沿用 MaxN）。
 	MaxNRef int `json:"max_n_ref"`
 
 	// ---- 输出 ----

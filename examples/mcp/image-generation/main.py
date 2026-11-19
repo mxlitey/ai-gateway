@@ -227,8 +227,9 @@ IMAGE_TOOLS = [
         "description": (
             "列出当前密钥可用的生图模型（来自网关 /v1/models?type=image）。"
             "首次调用 generate_image 前用它确定 model 取值；返回 default_model 表示服务端已配置默认模型。"
-            "若网关侧为该模型声明过约束，还会返回 specs[模型名]：支持的尺寸、参考图上限、"
-            "最多出几张、是否支持中文等。传参前先看 specs，能避免因猜参数被上游拒绝。"
+            "若网关侧为该模型声明过约束，还会返回 specs[模型名]：参考图上限、出图张数、"
+            "输出格式与分辨率区间、是否支持中文等。传参前先看 specs；未出现的字段表示未声明（未知），"
+            "不代表不限制，用常规取值即可。"
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
@@ -1186,8 +1187,8 @@ def _list_models(key=""):
         # 只保留有人工声明的字段，避免把一堆默认值塞给客户端
         payload["specs"] = specs
         payload["specs_hint"] = (
-            "specs 里是网关侧声明的模型约束（尺寸枚举、参考图上限、能否写中文等）；"
-            "未出现的字段表示未声明，按「不限制」处理。"
+            "specs 里是网关侧声明的模型约束（参考图上限、出图张数、输出格式与分辨率、能否写中文等）；"
+            "未出现的字段表示未声明（未知），不代表不限制——请使用常规取值，不要推到极端。"
         )
     default = _default_model()
     if default:
@@ -1225,20 +1226,23 @@ def _model_spec(raw):
     if abilities:
         spec["abilities"] = abilities
 
-    # 参考图约束
+    # 参考图约束：reference 为 false 时 max_ref_count 没有意义，不输出，
+    # 否则会出现「abilities 里没有参考图，却给了参考图上限」的矛盾
     ref = {}
     n = _as_int(raw.get("max_ref_count"))
-    if n > 0:
+    if raw.get("reference") and n > 0:
         ref["max_count"] = n
     if ref:
         spec["reference"] = ref
 
-    # 出图张数
+    # 出图张数；不支持参考图时，「带参考图」的上限同样不输出
     counts = {}
     for key, name in (
         ("max_n", "max"),
         ("max_n_ref", "max_with_reference"),
     ):
+        if name == "max_with_reference" and not raw.get("reference"):
+            continue
         n = _as_int(raw.get(key))
         if n > 0:
             counts[name] = n

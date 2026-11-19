@@ -436,6 +436,48 @@ export type PriceInput = {
   note: string
 }
 
+/** 生图模型的元数据声明（面板手工维护，按公开模型名存一份）。 */
+export type ModelMeta = {
+  model: string
+  /** 一句话说明，会展示给 AI 客户端 */
+  description: string
+  /** 支持参考图（图生图 / 改图） */
+  reference: boolean
+  negative_prompt: boolean
+  seed: boolean
+  /** 能理解中文提示词 */
+  chinese_prompt: boolean
+  /** 能把中文文字正确画进图里 */
+  chinese_text: boolean
+  /** 参考图最多几张，0 表示不限 */
+  max_ref_count: number
+  /** 参考图长边像素上限，0 表示不限 */
+  max_ref_side_px: number
+  /** 参考图单张体积上限（MB），0 表示不限 */
+  max_ref_mb: number
+  ref_formats: string[]
+  /** 不带参考图时 n 的上限，0 表示不限 */
+  max_n: number
+  /** 带参考图时 n 的上限，0 表示沿用 max_n */
+  max_n_ref: number
+  default_n: number
+  sizes: string[]
+  custom_size: boolean
+  /** 带参考图时上游忽略 size */
+  ignore_size_with_ref: boolean
+  updated_at: number
+  /** 当前是否仍有渠道承载该模型名（服务端计算） */
+  has_channel: boolean
+}
+
+export type ModelMetaInput = Omit<ModelMeta, 'updated_at' | 'has_channel'>
+
+export type ModelMetaResponse = {
+  items: ModelMeta[]
+  /** 已声明但当前没有任何渠道承载的模型 */
+  orphans: ModelMeta[]
+}
+
 export type ChannelInput = {
   name: string
   base_url: string
@@ -980,6 +1022,15 @@ export const api = {
     request<ModelPrice>('/admin/api/prices', { method: 'PUT', ...json(body) }),
   deletePrice: (model: string) =>
     request<{ success: boolean }>(`/admin/api/prices?model=${encodeURIComponent(model)}`, {
+      method: 'DELETE',
+    }),
+
+  // 生图模型元数据（手工声明的能力与约束）
+  modelMeta: () => request<ModelMetaResponse>('/admin/api/model-meta'),
+  upsertModelMeta: (body: ModelMetaInput) =>
+    request<ModelMeta>('/admin/api/model-meta', { method: 'PUT', ...json(body) }),
+  deleteModelMeta: (model: string) =>
+    request<{ success: boolean }>(`/admin/api/model-meta?model=${encodeURIComponent(model)}`, {
       method: 'DELETE',
     }),
 }

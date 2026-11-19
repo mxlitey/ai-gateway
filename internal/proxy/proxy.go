@@ -727,16 +727,40 @@ func (h *Handler) handleModels(w http.ResponseWriter, allowed []string, onlyImag
 		Object  string `json:"object"`
 		Created int    `json:"created"`
 		OwnedBy string `json:"owned_by"`
+		// Image 面板里手工声明的生图约束；没有声明时整个字段不出现，
+		// 旧客户端只读 id，不受影响。
+		Image *model.ModelMeta `json:"image,omitempty"`
 	}
 	data := []item{}
 	seen := map[string]bool{}
+
+	// 元数据按公开模型名索引，一次性读出，避免每个模型都查一次库
+	metas := map[string]*model.ModelMeta{}
+	if onlyImage {
+		if list, err := h.store.ListModelMetas(); err != nil {
+			slog.Warn("读取模型元数据失败，模型列表不含元数据", "err", err)
+		} else {
+			for i := range list {
+				metas[list[i].Model] = &list[i]
+			}
+		}
+	}
 
 	add := func(name, owner string) {
 		if name == "" || seen[name] {
 			return
 		}
 		seen[name] = true
-		data = append(data, item{ID: name, Object: "model", Created: 0, OwnedBy: owner})
+		it := item{ID: name, Object: "model", Created: 0, OwnedBy: owner}
+		if onlyImage {
+			// 拷贝一份，避免多个模型共享同一条记录里的 HasChannel 等计算字段
+			if m, ok := metas[name]; ok {
+				cp := *m
+				cp.HasChannel = true
+				it.Image = &cp
+			}
+		}
+		data = append(data, it)
 	}
 
 	for i := range channels {

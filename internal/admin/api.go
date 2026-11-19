@@ -244,6 +244,14 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 	case path == "/prices" && method == http.MethodDelete:
 		a.deletePrice(w, r)
 
+	// ---- 生图模型元数据 ----
+	case path == "/model-meta" && method == http.MethodGet:
+		a.listModelMeta(w)
+	case path == "/model-meta" && method == http.MethodPut:
+		a.upsertModelMeta(w, r)
+	case path == "/model-meta" && method == http.MethodDelete:
+		a.deleteModelMeta(w, r)
+
 	default:
 		jsonErr(w, http.StatusNotFound, "Not found")
 	}
@@ -2075,6 +2083,173 @@ func (a *API) reloadPrices() {
 	if err := a.pricer.Reload(); err != nil {
 		slog.Error("[pricing] 重建价格索引失败", "err", err)
 	}
+}
+
+// ---------- 生图模型元数据 ----------
+
+// listModelMeta 返回全部模型元数据声明，并把「已无渠道承载」的条目单独分出来。
+//
+// 孤儿判定只看名字是否还被任何渠道引用，不看渠道是否启用：
+// 渠道临时停用、密钥全部熔断都属于运行状态，不该让配置被判成孤儿而误删。
+func (a *API) listModelMeta(w http.ResponseWriter) {
+	items, err := a.store.ListModelMetas()
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	live, err := a.liveModelNames()
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 有渠道的进 items，没渠道的进 orphans：面板上半部分按渠道聚合，
+	// 下半部分单独给「已无渠道的模型」留一个清理入口。
+	out := make([]model.ModelMeta, 0, len(items))
+	orphans := make([]model.ModelMeta, 0)
+	for _, m := range items {
+		m.HasChannel = live[m.Model]
+		if m.HasChannel {
+			out = append(out, m)
+		} else {
+			orphans = append(orphans, m)
+		}
+	}
+	jsonOK(w, map[string]any{"items": out, "orphans": orphans})
+}
+
+// liveModelNames 收集当前所有渠道里出现过的公开模型名（含被单独停用的）。
+func (a *API) liveModelNames() (map[string]bool, error) {
+	channels, err := a.store.ListChannels()
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]bool, 32)
+	for i := range channels {
+		ch := &channels[i]
+		for pub := range ch.ModelMap {
+			if _, ok := ch.ResolveUpstreamModel(pub); ok {
+				names[strings.TrimSpace(pub)] = true
+			}
+		}
+		for _, m := range ch.Models {
+			if _, ok := ch.ResolveUpstreamModel(m); ok {
+				names[strings.TrimSpace(m)] = true
+			}
+		}
+		for _, m := range ch.ImageModels {
+			names[strings.TrimSpace(m)] = true
+		}
+	}
+	return names, nil
+}
+
+func (a *API) upsertModelMeta(w http.ResponseWriter, r *http.Request) {
+	var in model.ModelMeta
+	if !decodeBody(w, r, &in) {
+		return
+	}
+	name := strings.TrimSpace(in.Model)
+	if name == "" {
+		jsonErr(w, http.StatusBadRequest, "模型名不能为空")
+		return
+	}
+	meta := sanitizeModelMeta(name, in)
+	if err := a.store.UpsertModelMeta(&meta); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if live, err := a.liveModelNames(); err == nil {
+		meta.HasChannel = live[meta.Model]
+	}
+	jsonOK(w, meta)
+}
+
+func (a *API) deleteModelMeta(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.URL.Query().Get("model"))
+	if name == "" {
+		jsonErr(w, http.StatusBadRequest, "缺少 model 参数")
+		return
+	}
+	if err := a.store.DeleteModelMeta(name); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	jsonOK(w, map[string]any{"success": true, "model": name})
+}
+
+// sanitizeModelMeta 规整表单输入：去空白、过滤非法值、给数值加上合理上界。
+// 这些字段只是声明，不做业务校验，因此宽松处理即可——但脏数据会原样传播到客户端，
+// 所以明显无意义的值（负数、超长文本）在这里拦掉。
+func sanitizeModelMeta(name string, in model.ModelMeta) model.ModelMeta {
+	out := in
+	out.Model = name
+	out.Description = strings.TrimSpace(out.Description)
+	if utf8.RuneCountInString(out.Description) > 200 {
+		out.Description = string([]rune(out.Description)[:200])
+	}
+	out.MaxRefCount = clampInt(out.MaxRefCount, 0, 32)
+	out.MaxRefSidePx = clampInt(out.MaxRefSidePx, 0, 16384)
+	out.MaxRefMB = clampInt(out.MaxRefMB, 0, 1024)
+	out.MaxN = clampInt(out.MaxN, 0, 16)
+	out.MaxNRef = clampInt(out.MaxNRef, 0, 16)
+	out.DefaultN = clampInt(out.DefaultN, 0, 16)
+
+	// 格式只保留受支持的三类，统一小写
+	formats := make([]string, 0, len(in.RefFormats))
+	seenFmt := map[string]bool{}
+	for _, f := range in.RefFormats {
+		f = strings.ToLower(strings.TrimSpace(f))
+		switch f {
+		case "png", "jpeg", "webp":
+			if !seenFmt[f] {
+				seenFmt[f] = true
+				formats = append(formats, f)
+			}
+		}
+	}
+	out.RefFormats = formats
+
+	// 尺寸只保留「数字x数字」形态，统一成小写 x 并去重
+	sizes := make([]string, 0, len(in.Sizes))
+	seenSize := map[string]bool{}
+	for _, s := range in.Sizes {
+		norm, ok := normalizeSizeToken(s)
+		if !ok || seenSize[norm] {
+			continue
+		}
+		seenSize[norm] = true
+		sizes = append(sizes, norm)
+	}
+	out.Sizes = sizes
+	return out
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
+// normalizeSizeToken 把 "1024x1024" / "1024*1024" / "1024X1024" 统一成小写 x 形态。
+// 宽高各自限制在 64..16384：太小没有意义，太大超出任何上游的接受范围。
+func normalizeSizeToken(s string) (string, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	parts := strings.FieldsFunc(s, func(r rune) bool { return r == 'x' || r == '*' })
+	if len(parts) != 2 {
+		return "", false
+	}
+	for _, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 64 || n > 16384 {
+			return "", false
+		}
+	}
+	return parts[0] + "x" + parts[1], true
 }
 
 // ---------- 输入模型与工具 ----------

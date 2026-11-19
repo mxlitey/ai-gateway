@@ -227,6 +227,8 @@ IMAGE_TOOLS = [
         "description": (
             "列出当前密钥可用的生图模型（来自网关 /v1/models?type=image）。"
             "首次调用 generate_image 前用它确定 model 取值；返回 default_model 表示服务端已配置默认模型。"
+            "若网关侧为该模型声明过约束，还会返回 specs[模型名]：支持的尺寸、参考图上限、"
+            "最多出几张、是否支持中文等。传参前先看 specs，能避免因猜参数被上游拒绝。"
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
@@ -1162,10 +1164,17 @@ def _list_models(key=""):
 
     items = data.get("data") if isinstance(data, dict) else None
     models = []
+    # 网关手工声明的约束（尺寸、参考图上限等）：只有面板里配过才有这一项。
+    # 旧网关没有 image 字段，这里自然为空，行为与之前一致。
+    specs = {}
     if isinstance(items, list):
         for item in items:
             if isinstance(item, dict) and item.get("id"):
-                models.append(str(item["id"]))
+                name = str(item["id"])
+                models.append(name)
+                spec = _model_spec(item.get("image"))
+                if spec:
+                    specs[name] = spec
     if not models:
         raise ToolError(
             "当前没有可用的生图模型：请到面板「渠道」把模型加入「生图模型」并选择同步或异步",
@@ -1173,12 +1182,98 @@ def _list_models(key=""):
         )
 
     payload = {"status": "succeeded", "count": len(models), "models": models}
+    if specs:
+        # 只保留有人工声明的字段，避免把一堆默认值塞给客户端
+        payload["specs"] = specs
+        payload["specs_hint"] = (
+            "specs 里是网关侧声明的模型约束（尺寸枚举、参考图上限、能否写中文等）；"
+            "未出现的字段表示未声明，按「不限制」处理。"
+        )
     default = _default_model()
     if default:
         payload["default_model"] = default
     else:
         payload["hint"] = "generate_image 需要显式传 model（或在 mcp.json 的 env 里设置 AIGW_IMAGE_MODEL）"
     return payload
+
+
+def _model_spec(raw):
+    """把网关 /v1/models 里的 image 元数据压成「只留有值」的精简结构。
+
+    网关为了表单往返方便，字段全是固定键、零值表示未声明；
+    这里把零值全部丢掉，客户端看到的每一项都是真实约束。
+    """
+    if not isinstance(raw, dict):
+        return None
+    spec = {}
+
+    desc = str(raw.get("description") or "").strip()
+    if desc:
+        spec["description"] = desc
+
+    # 能力开关：只列出为真的项，省得客户端逐项判断 false
+    abilities = []
+    for key, label in (
+        ("reference", "参考图"),
+        ("negative_prompt", "反向提示词"),
+        ("seed", "随机种子"),
+        ("chinese_prompt", "中文提示词"),
+        ("chinese_text", "画面写中文"),
+    ):
+        if raw.get(key):
+            abilities.append(label)
+    if abilities:
+        spec["abilities"] = abilities
+
+    # 参考图约束
+    ref = {}
+    for key, name in (
+        ("max_ref_count", "max_count"),
+        ("max_ref_side_px", "max_side_px"),
+        ("max_ref_mb", "max_mb"),
+    ):
+        n = _as_int(raw.get(key))
+        if n > 0:
+            ref[name] = n
+    formats = raw.get("ref_formats")
+    if isinstance(formats, list) and formats:
+        ref["formats"] = [str(f) for f in formats]
+    if ref:
+        spec["reference"] = ref
+
+    # 出图张数
+    counts = {}
+    for key, name in (
+        ("max_n", "max"),
+        ("max_n_ref", "max_with_reference"),
+        ("default_n", "default"),
+    ):
+        n = _as_int(raw.get(key))
+        if n > 0:
+            counts[name] = n
+    if counts:
+        spec["n"] = counts
+
+    # 尺寸
+    sizes = raw.get("sizes")
+    size_spec = {}
+    if isinstance(sizes, list) and sizes:
+        size_spec["values"] = [str(s) for s in sizes]
+    if raw.get("custom_size"):
+        size_spec["custom"] = True
+    if raw.get("ignore_size_with_ref"):
+        size_spec["ignored_with_reference"] = True
+    if size_spec:
+        spec["size"] = size_spec
+
+    return spec or None
+
+
+def _as_int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _generate(args, key=""):

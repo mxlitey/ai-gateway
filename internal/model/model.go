@@ -436,6 +436,61 @@ type ModelPrice struct {
 	UpdatedAt   int64        `json:"updated_at"`
 }
 
+// ModelMeta 生图模型的元数据声明（面板手工维护，按公开模型名存一份）。
+//
+// 上游的 /v1/models 只有 id / object / created / owned_by，拿不到任何能力信息，
+// 而主动探测一次就是一次真实计费出图，因此这些约束只能人工声明。
+// 字段全部可选：零值表示「未声明」，对外输出时按「不限制 / 不声明」处理。
+type ModelMeta struct {
+	// Model 公开模型名，与客户端请求里的 model 严格一致（不做大小写归一化）。
+	Model string `json:"model"`
+	// Description 一句话说明，会随模型列表一起给到 AI 客户端。
+	Description string `json:"description"`
+
+	// ---- 能力开关 ----
+	// Reference 支持参考图（图生图 / 改图）。
+	Reference bool `json:"reference"`
+	// NegativePrompt 支持反向提示词（negative_prompt）。
+	NegativePrompt bool `json:"negative_prompt"`
+	// Seed 支持随机种子（seed），可用于复现同一张图。
+	Seed bool `json:"seed"`
+	// ChinesePrompt 能理解中文提示词。
+	ChinesePrompt bool `json:"chinese_prompt"`
+	// ChineseText 能把中文文字正确渲染进画面（如海报标题）。
+	ChineseText bool `json:"chinese_text"`
+
+	// ---- 参考图约束 ----
+	// MaxRefCount 参考图最多几张，0 表示不限。
+	MaxRefCount int `json:"max_ref_count"`
+	// MaxRefSidePx 参考图长边像素上限，0 表示不限。
+	MaxRefSidePx int `json:"max_ref_side_px"`
+	// MaxRefMB 参考图单张体积上限（MB），0 表示不限。
+	MaxRefMB int `json:"max_ref_mb"`
+	// RefFormats 允许的参考图格式（png / jpeg / webp），空表示不限制。
+	RefFormats []string `json:"ref_formats"`
+
+	// ---- 出图张数 ----
+	// MaxN 不带参考图时 n 的上限，0 表示不限。
+	MaxN int `json:"max_n"`
+	// MaxNRef 带参考图时 n 的上限，0 表示沿用 MaxN。
+	MaxNRef int `json:"max_n_ref"`
+	// DefaultN 客户端未传 n 时使用的默认张数，0 表示由上游决定。
+	DefaultN int `json:"default_n"`
+
+	// ---- 尺寸 ----
+	// Sizes 支持的尺寸枚举，形如 1024x1024；空表示不声明。
+	Sizes []string `json:"sizes"`
+	// CustomSize 允许在 Sizes 之外自定义尺寸。
+	CustomSize bool `json:"custom_size"`
+	// IgnoreSizeWithRef 带参考图时上游忽略 size 参数。
+	IgnoreSizeWithRef bool `json:"ignore_size_with_ref"`
+
+	// UpdatedAt 最后保存时间（Unix 毫秒）。
+	UpdatedAt int64 `json:"updated_at"`
+	// HasChannel 当前是否仍有渠道承载该模型名；由管理接口计算，不入库。
+	HasChannel bool `json:"has_channel"`
+}
+
 // UsageBucket 用量汇总的一个分组。
 // Requests 包含失败请求（失败的那次调用也算一次），SuccessRequests 是其中成功的部分。
 type UsageBucket struct {

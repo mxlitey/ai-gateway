@@ -172,14 +172,11 @@ Header : Authorization: Bearer sk-你的密钥
 | `-plugins-dir` | `AIGW_PLUGINS_DIR` | `./plugins` | 插件目录 |
 | `-log-level` | `AIGW_LOG_LEVEL` | `info` | 日志级别 `debug\|info\|warn\|error` |
 | `-admin-password` | `AIGW_ADMIN_PASSWORD` | 空 | 首次初始化管理员密码（已初始化则忽略） |
-| `-public-url` | `AIGW_PUBLIC_BASE_URL` | 空 | 对外访问地址（如 `https://gw.example.com`）；生图与图床返回的图片链接用它拼接，容器/反代后建议显式配置 |
-| `-image-host` | `AIGW_IMAGE_HOST` | `true` | 开启内置图床（图片上传接口） |
-| `-image-host-public` | `AIGW_IMAGE_HOST_PUBLIC` | `auto` | 图床公网可达性声明 `auto\|on\|off`；`auto` 按 `AIGW_PUBLIC_BASE_URL` 字面量判断，`on` 必须同时配置对外地址 |
-| `-image-max-mb` | `AIGW_IMAGE_HOST_MAX_MB` | `100` | 图床上传单张大小上限（MB） |
-| `-image-ttl` | `AIGW_IMAGE_TTL_SECONDS` | `3600` | 生图结果保留秒数 |
-| `-upload-ttl` | `AIGW_UPLOAD_TTL_SECONDS` | `3600` | 上传图片保留秒数 |
 | `-dev` | — | `false` | 开发模式（不自动拉起插件） |
 | `-no-browser` | — | `false` | 启动后不自动打开浏览器（`cmd/gateway` 默认即不打开） |
+
+> 对象存储（S3 兼容）**不走启动参数与环境变量**，只能在面板「设置 → 对象存储」里配置，
+> 保存后立即生效、无需重启；未配置时 `/v1/storage/tickets` 返回 501。
 
 仅环境变量生效的项：
 
@@ -227,59 +224,45 @@ mcp/
     └── requirements.txt  # 可选：有实际依赖时自动 pip 安装
 ```
 
-扩展包（`ai-gateway-v<版本>-plugins-mcp.zip`）与仓库 `examples/` 都提供 `mcp/github-search`（GitHub 仓库 / 代码 / issue / PR / 提交 / 用户搜索）与 `mcp/image-generation`（生图，别名 `image-gen`）；Docker 部署时把它们放进 compose 映射的 `./mcp` 目录即可。前者纯标准库、匿名即可用，在它的 `mcp.json` 的 `env` 里填 `GITHUB_TOKEN` 可提升额度并解锁代码搜索；后者调用网关的 `/v1/images/generations`，密钥在面板「MCP 服务器 → 生图 → 密钥」里配。生图 MCP 的参考图接受公网 `image_url` 与本机 `image_path`；内网 `image_url` 由 MCP 自己下载后转 base64，超过单张 3 MB 时在图床公网可达的前提下上传换链接，不经过客户端上下文。想加自己的服务，参考仓库里的 `examples/mcp/local-demo`（最小实现），把目录整个复制到 `mcp/` 下即可。完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里把该密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
+扩展包（`ai-gateway-v<版本>-plugins-mcp.zip`）与仓库 `examples/` 都提供 `mcp/github-search`（GitHub 仓库 / 代码 / issue / PR / 提交 / 用户搜索）与 `mcp/image-generation`（生图，别名 `image-gen`）；Docker 部署时把它们放进 compose 映射的 `./mcp` 目录即可。前者纯标准库、匿名即可用，在它的 `mcp.json` 的 `env` 里填 `GITHUB_TOKEN` 可提升额度并解锁代码搜索；后者调用网关的 `/v1/images/generations`，密钥在面板「MCP 服务器 → 生图 → 密钥」里配。生图 MCP 的参考图接受公网 `image_url` 与本机 `image_path`；内网 `image_url` 由 MCP 自己下载后转 base64，超过单张 3 MB 时改用对象存储预签名 PUT 直传换链接，不经过客户端上下文。想加自己的服务，参考仓库里的 `examples/mcp/local-demo`（最小实现），把目录整个复制到 `mcp/` 下即可。完整规范见 [docs/local-mcp-spec.md](docs/local-mcp-spec.md)。客户端仍然只连网关的 MCP 聚合入口，并可在「API 密钥」里把该密钥的 MCP 权限设为「全部 / 仅勾选 / 禁用」，按服务器粒度授权。
 
-### 内置图床
+### 对象存储直传
 
-网关默认开启图片托管能力（`AIGW_IMAGE_HOST=on`），用于把图片变成网关自己的 URL：
+网关不再自带图床、也不再落盘生图结果。需要「把图变成 URL」时，改用兼容 S3 的对象存储：
 
-- `POST /v1/images/uploads`：原始图片字节（`Content-Type: image/png|jpeg|webp|gif`），需要 API Key；返回 `{id, url, bytes, content_type, expires_at}`。
-- `GET /v1/images/host`：图床能力声明，需要 API Key；返回 `{enabled, public, public_base, url_prefix, max_mb, ttl_seconds, supports_upload_token}`。
-- `GET /v1/uploads/<id>`：公开只读，知道链接即可访问，支持 HEAD 与 Range。
-- `DELETE /v1/uploads/<id>`、`DELETE /v1/images/files/<id>`：需要 API Key，成功返回 204。
-- 单张上限默认 100 MB（`AIGW_IMAGE_HOST_MAX_MB`），按文件头判断类型，不接受 SVG；保留期默认 3600 秒（`AIGW_UPLOAD_TTL_SECONDS`）。
-- 链接用 `AIGW_PUBLIC_BASE_URL` 拼接。
-
-#### 签名路径（把上传能力交给第三方而不暴露密钥）
-
-`POST /v1/images/upload-tokens` 用 API Key 签一个**短有效期、只读路径自带凭据**的上传令牌：
+- **只能在面板配置**：「设置 → 对象存储」填写 Endpoint / Bucket / 凭证等，保存即生效，无需重启。
+  不支持启动参数与环境变量。
+- `POST /v1/storage/tickets`：需要 API Key。签发一对预签名 URL，请求体可选：
 
 ```bash
-curl -sS -X POST https://gw.example.com/v1/images/upload-tokens \
+curl -sS -X POST https://gw.example.com/v1/storage/tickets \
   -H 'Authorization: Bearer sk-...' -H 'Content-Type: application/json' \
-  -d '{"ttl_seconds":600,"max_mb":5}'
-# → {"token":"...","upload_url":"https://gw.example.com/v1/uploads/...","expires_at":...,"max_mb":5}
+  -d '{"filename":"ref.png","ttl_seconds":600}'
+# → {"driver":"s3","bucket":"...","key":"aigw/uploads/2026-11-20/ab12….png","method":"PUT",
+#    "headers":{},"upload_url":"https://…&X-Amz-Signature=…","download_url":"https://…",
+#    "public_url":"","expires_at":1793…,"expires_in":1800}
 ```
 
-拿到 `upload_url` 后，第三方（例如 agent）直接 POST 图片字节即可，**不需要任何请求头或密钥**：
+客户端把图片原始字节 `PUT` 到 `upload_url` 即完成上传，网关完全不接触字节。之后：
 
-| 请求 | 行为 |
+| 场景 | 拿哪个字段当 `image_url` |
 |---|---|
-| `POST /v1/uploads/<token>` | 上传；文件名为 `<sid>-<随机名>.png`，`sid` 绑定该令牌 |
-| `DELETE /v1/uploads/<token>/<name>` | 删该令牌上传的**一张**；还剩文件时令牌继续有效，删的是最后一张则自动吊销 |
-| `DELETE /v1/uploads/<token>` | 删该令牌上传的**全部**，成功后立即吊销令牌 |
+| 公开桶 / 配了「公开访问前缀」 | `public_url` |
+| 私有桶（推荐） | `download_url`（自带签名，有效期内上游可直接下载） |
 
 约束：
 
-- TTL 由签发者指定，上限 24 小时；`max_mb` 只能收紧，不能超过全局上限；
-- 令牌只能操作**自己上传**的文件（按 `sid` 前缀校验），动别人的文件返回 403；
-- 令牌不具备任何 `sk-` 权限，不能签发新令牌、不能调用对话接口；
-- 整批删除中途失败时**不吊销**，令牌仍可重试，避免剩余文件无法清理；
-- **逐张单删到最后一张也会自动吊销**：删完即失效，不会留下「只能继续上传」的空令牌；
-- 令牌不绑 API Key：禁用某把 `sk-` 不会让已签发的令牌失效，靠短 TTL 与吊销控制；
-- 令牌在 URL 里会进入反向代理日志与浏览器历史，这是路径形态的固有代价，因此默认 TTL 只有 10 分钟。
-
-
-图床是否公网可达无法自动探测，只能由 `AIGW_IMAGE_HOST_PUBLIC` 声明：`auto`（默认）按 `AIGW_PUBLIC_BASE_URL` 的字面量判断，`on` 表示上游能访问，`off` 表示不能。声明为非公网时，网关会把请求里指向自己 `/v1/uploads/` 的参考图链接读成本地文件并转成 base64 再转发；单张超过 3 MB 或合计超过 7 M 字符时返回 `reference_exceeds_base64_limit`。网关不会抓取任意外部 URL。
-
-图床解决的是「把图变成 URL」；上游是否接受该图片（尺寸、体积、格式）仍由模型厂商决定。
+- 未配置对象存储（面板「驱动」选「不启用」或必填项没填全）时该接口返回 **501**，`code=storage_not_configured`；
+- 预签名有效期由面板的「预签名有效期」决定（默认 1800 秒，上限 604800），请求里的 `ttl_seconds` 只能收紧，不能延长；
+- 不传 `key` 时网关生成高熵对象键；密钥签发的只是单个对象的 PUT/GET 权限，不具备任何 `sk-` 能力；
+- 网关不代理上传、不做文件清理：过期对象由桶的生命周期规则回收。
 
 ### 生图接口
 
 - `POST /v1/images/generations`：OpenAI 标准 JSON，需要 API Key。可用私有扩展字段 `image_url`（字符串或数组）传参考图；带 `async: true` 或 `X-AIGW-Async` 时返回 202 + 作业对象。
 - `POST /v1/images/edits`：OpenAI 标准 `multipart/form-data`，参考图用 `image`（可重复，`image[]` 同样识别）。网关把文件转成 data URI 后走与 `generations` 完全相同的渠道改写链路。只接受 PNG / JPEG / WebP（按文件头嗅探），单张 3 MB、合计 7 M 字符、请求体 32 MB；`mask` 暂忽略，**不支持异步**。
 - `GET /v1/images/jobs/<id>`、`DELETE /v1/images/jobs/<id>`：查询与取消异步作业。作业落 SQLite，网关重启后可恢复，默认保留 24 小时。
-- 无论同步还是异步，返回的图片都统一落盘并替换为网关自身的访问 URL；生图渠道的协议差异（同步 / 异步、字段名、任务轮询）由渠道的 `image_generation` 配置吸收。
+- 生图结果**严格透传、不落盘**：同步与异步都原样返回上游响应体，`url`、`b64_json`、`usage`、`output_images` 等顶层字段一个不改，网关也不下载或转码图片。唯一的加工是校验：上游 2xx 但按渠道 `images_field` 找不到图片时按失败处理（`上游未返回图片`）。异步作业视图把上游响应顶层字段平铺进作业对象，网关自带字段（`id`/`status`/`stage`/`object`/`expires_at` 等）同名优先。
 
 ## 🛠️ 从源码构建
 

@@ -14,6 +14,7 @@
   --text-3: #5d656f;
   --brand: #3b9dff;
   --brand-weak: #0d1c2e;
+  --brand-flash: rgba(59, 157, 255, 0.32);
   --ok: #35c759;
   --ok-weak: rgba(53, 199, 89, 0.12);
   --warn: #f5a623;
@@ -54,6 +55,7 @@
   --text-3: #8a929d;
   --brand: #007aff;
   --brand-weak: #eaf3ff;
+  --brand-flash: rgba(0, 122, 255, 0.22);
   --ok: #17a34a;
   --ok-weak: rgba(23, 163, 74, 0.1);
   --warn: #b87200;
@@ -1453,42 +1455,80 @@
 }
 
 /* ---------- 路由表格 ---------- */
-.v2 .order-cell {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0;
-}
-.v2 .order-cell .btn.order-btn {
-  padding: 0 4px;
-  font-size: 9px;
-  line-height: 12px;
-  height: 14px;
-  min-height: 0;
-  color: var(--text-3);
+/* 拖动手柄单独一列、无列名；从上到下即优先级由高到低 */
+.v2 .route-tbl .order-grip {
+  display: inline-flex;
+  flex: none;
+  padding: 2px 3px;
   border-radius: 3px;
-  display: flex;
+  color: var(--text-3);
+  cursor: grab;
+  user-select: none;
+  -webkit-user-drag: element;
 }
-.v2 .order-cell .btn.order-btn:hover {
-  color: var(--text);
-  background: var(--surface-2);
+.v2 .route-tbl .order-grip:active {
+  cursor: grabbing;
+}
+.v2 .route-tbl tbody tr:hover .order-grip {
+  color: var(--text-2);
+}
+/* 被拖动的那一行淡出 */
+.v2 .route-tbl tbody tr.row-dragging {
+  opacity: 0.35;
+}
+/* 拖动时鼠标扫过的行：底色渐入 + 一次扫光亮起，给出「已扫过」的反馈 */
+.v2 .route-tbl tbody tr td {
+  transition: background-color 0.18s ease;
+}
+.v2 .route-tbl tbody tr.row-drag-swept td {
+  background: var(--brand-weak);
+  animation: route-drag-sweep 0.32s ease-out;
+}
+@keyframes route-drag-sweep {
+  from {
+    background-color: var(--brand-flash);
+  }
+}
+/* 放入位置的虚拟行：虚框 + 浅色底，明确标示松手后落在哪里 */
+.v2 .route-tbl tbody tr.row-placeholder td,
+.v2 .route-tbl tbody tr.row-placeholder:hover td {
+  padding: 0;
+  border-bottom: 0;
+  background: transparent;
+}
+.v2 .route-tbl .ph-slot {
+  height: 28px;
+  margin: 2px;
+  border: 1px dashed var(--brand);
+  border-radius: 6px;
+  background: var(--brand-weak);
+  animation: route-ph-in 0.16s ease-out;
+}
+@keyframes route-ph-in {
+  from {
+    opacity: 0;
+    transform: scaleY(0.35);
+  }
 }
 .v2 .route-tbl td,
 .v2 .route-tbl th {
   padding-top: 6px;
   padding-bottom: 6px;
-  /* 横向内边距收窄：状态 / 顺序列都只有一个小控件，留白够用即可 */
+  /* 横向内边距收窄：状态列只有一个开关，留白够用即可 */
   padding-left: 8px;
   padding-right: 8px;
+}
+/* 手柄列：只放手柄，右侧不留白，把宽度让给渠道名 */
+.v2 .route-tbl td.grip-cell,
+.v2 .route-tbl th.grip-th {
+  padding-left: 6px;
+  padding-right: 0;
 }
 .v2 .route-tbl td:last-child,
 .v2 .route-tbl th:last-child {
   padding-right: 2px;
 }
-/* 徽章 / 状态 / 顺序三列的单元格几乎没有留白需求，统一收窄，
-   把宽度全留给模型名 */
-.v2 .route-tbl td:nth-child(3),
-.v2 .route-tbl th:nth-child(3),
+/* 状态列几乎没有留白需求，收窄后把宽度全留给模型名 */
 .v2 .route-tbl td:nth-child(4),
 .v2 .route-tbl th:nth-child(4) {
   padding-left: 4px;
@@ -1496,19 +1536,20 @@
 }
 .v2 .route-tbl {
   table-layout: fixed;
-  /* 渠道 / 状态 / 顺序 三列都很窄，手机竖屏也放得下，
+  /* 手柄 / 渠道 / 状态三列都很窄，手机竖屏也放得下，
      模型名靠截断让位，不需要横向滚动 */
   min-width: 320px;
 }
 /* 列宽：只给「刚好装下内容」的宽度，其余全部归上游模型名 */
+.v2 .route-tbl col.c-grip {
+  width: 24px;
+}
 .v2 .route-tbl col.c-ch {
+  /* 渠道名 6 个汉字 */
   width: 96px;
 }
 .v2 .route-tbl col.c-state {
   width: 50px;
-}
-.v2 .route-tbl col.c-order {
-  width: 32px;
 }
 /* 模型名 + 徽章同一行：名字占据自身长度，徽章紧跟其后；
    名字过长时收缩并截断，给徽章留出固定位置 */
@@ -1536,22 +1577,31 @@
   gap: 6px;
   min-width: 0;
 }
-/* 窄屏：只收控制列与留白，渠道列保持不变，
-   保证「6 个汉字」这个上限在各尺寸下都成立 */
+/* 手柄独立成列后，渠道名直接落在单元格里，需要块级才吃得到截断 */
+.v2 .route-tbl .ch-name {
+  display: block;
+}
+/* 窄屏：收窄留白与状态列，渠道列同步收一档，
+   手柄与 6 个汉字的渠道名仍能并排放下 */
 @media (max-width: 640px) {
   .v2 .route-tbl td,
   .v2 .route-tbl th {
     padding-left: 6px;
     padding-right: 6px;
   }
+  .v2 .route-tbl td.grip-cell,
+  .v2 .route-tbl th.grip-th {
+    padding-left: 4px;
+    padding-right: 0;
+  }
+  .v2 .route-tbl col.c-grip {
+    width: 22px;
+  }
   .v2 .route-tbl col.c-ch {
     width: 88px;
   }
   .v2 .route-tbl col.c-state {
     width: 46px;
-  }
-  .v2 .route-tbl col.c-order {
-    width: 30px;
   }
 }
 
@@ -2109,10 +2159,5 @@
     font-size: 13px;
     padding-top: 8px;
     padding-bottom: 8px;
-  }
-  .v2 .order-cell .btn.order-btn {
-    padding: 0 6px;
-    height: 16px;
-    line-height: 14px;
   }
 }

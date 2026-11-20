@@ -76,9 +76,15 @@ def now_millis():
     return int(time.time() * 1000)
 
 
+# 签到「今天」固定按 UTC+8 判定：与网关用量统计、上游每日刷新口径一致。
+# 插件进程可能跑在 UTC 容器里，用本地时间会让签到日在本地零点后 8 小时才翻转，
+# 表现为仪表盘过了零点仍显示「已签到」。
+_CST_OFFSET_SECONDS = 8 * 3600
+
+
 def today_str():
-    """本地日期 YYYY-MM-DD：签到状态按天判定的日界。"""
-    return time.strftime("%Y-%m-%d")
+    """今日日期 YYYY-MM-DD（固定 UTC+8）：签到状态按天判定的日界。"""
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time() + _CST_OFFSET_SECONDS))
 
 
 def new_state():

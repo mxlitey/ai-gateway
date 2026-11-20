@@ -9,7 +9,6 @@ import (
 
 	"github.com/czg95/ai-gateway-v2/internal/admin"
 	"github.com/czg95/ai-gateway-v2/internal/adminmcp"
-	"github.com/czg95/ai-gateway-v2/internal/imagestore"
 	"github.com/czg95/ai-gateway-v2/internal/mcp"
 	"github.com/czg95/ai-gateway-v2/internal/proxy"
 	"github.com/czg95/ai-gateway-v2/web"
@@ -24,12 +23,8 @@ type Deps struct {
 	// AdminMCP 管理 MCP 入口（/admin/mcp）；为空表示未启用。
 	// 与 MCP 完全独立：工具由本进程实现，鉴权走管理令牌。
 	AdminMCP *adminmcp.Handler
-	// Images 生图结果存储；为空表示不提供图片访问路由。
-	Images *imagestore.Store
-	// Uploads 图床上传存储；为空表示未开启图床。
-	Uploads *imagestore.Store
-	// ImageHost 图床上传与删除接口；为空表示未开启。
-	ImageHost *ImageHost
+	// Storage 对象存储预签名接口；为空表示未启用（接口回 501）。
+	Storage *Storage
 }
 
 // NewRouter 组装完整路由。
@@ -41,30 +36,9 @@ func NewRouter(d Deps) http.Handler {
 		_, _ = w.Write([]byte("AI Gateway is running."))
 	})
 
-	// 生图结果访问入口：文件名本身即凭证（高熵随机），无需密钥；
-	// 必须注册在 /v1/ 之前语义上更具体，ServeMux 会优先匹配。
-	if d.Images != nil {
-		mux.HandleFunc("GET "+imagestore.URLPrefix, d.Images.ServeHTTP)
-		mux.HandleFunc("HEAD "+imagestore.URLPrefix, d.Images.ServeHTTP)
-	}
-	if d.Uploads != nil {
-		mux.HandleFunc("GET "+imagestore.UploadURLPrefix, d.Uploads.ServeHTTP)
-		mux.HandleFunc("HEAD "+imagestore.UploadURLPrefix, d.Uploads.ServeHTTP)
-	}
-	if d.ImageHost != nil {
-		mux.HandleFunc("GET /v1/images/host", d.ImageHost.Capabilities)
-		mux.HandleFunc("POST /v1/images/uploads", d.ImageHost.Upload)
-		// 签发签名路径令牌（需要 sk-）
-		mux.HandleFunc("POST /v1/images/upload-tokens", d.ImageHost.MintUploadToken)
-		if d.Images != nil {
-			mux.HandleFunc("DELETE "+imagestore.URLPrefix, d.ImageHost.Delete)
-		}
-		if d.Uploads != nil {
-			// 签名路径：上传 / 删除（删除同时兼容原有的 sk- 单文件删除，见 DeleteByPath）
-			mux.HandleFunc("POST "+imagestore.UploadURLPrefix+"{token}", d.ImageHost.UploadByToken)
-			mux.HandleFunc("DELETE "+imagestore.UploadURLPrefix+"{token}/{name}", d.ImageHost.DeleteByPath)
-			mux.HandleFunc("DELETE "+imagestore.UploadURLPrefix+"{token}", d.ImageHost.DeleteByPath)
-		}
+	// 对象存储预签名：网关只签 URL，字节由客户端直传对象存储
+	if d.Storage != nil {
+		mux.HandleFunc("POST /v1/storage/tickets", d.Storage.Ticket)
 	}
 
 	// /v1/* 代理

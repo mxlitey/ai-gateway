@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { api, type PythonSettings, type RuntimeSettings } from '../lib/api'
+import { api, type PythonSettings, type RuntimeSettings, type StorageSettings } from '../lib/api'
 import { toast } from '../lib/toast'
 import {
   Badge,
@@ -36,6 +36,15 @@ export default function V2Settings() {
   if (pythonSettingsQuery.data && pyDraft === null) {
     setPyDraft(pythonSettingsQuery.data.settings)
   }
+
+  const storageSettingsQuery = useQuery({ queryKey: ['storage-settings'], queryFn: api.storageSettings })
+  const [stDraft, setStDraft] = useState<StorageSettings | null>(null)
+  if (storageSettingsQuery.data && stDraft === null) {
+    setStDraft(storageSettingsQuery.data.settings)
+  }
+  // 上次保存时后端报告的启用状态；未保存过则用查询结果
+  const [storageEnabled, setStorageEnabled] = useState<boolean | null>(null)
+  const storageActive = storageEnabled ?? storageSettingsQuery.data?.enabled ?? false
 
   const adminMCP = useQuery({ queryKey: ['admin-mcp'], queryFn: api.adminMCPState })
   const [mcpTokens, setMcpTokens] = useState<{ readonly: string; writable: string }>({
@@ -80,6 +89,17 @@ export default function V2Settings() {
       toast('ok', 'Python 运行时设置已保存')
       void queryClient.invalidateQueries({ queryKey: ['python-status'] })
       void queryClient.invalidateQueries({ queryKey: ['python-settings'] })
+    },
+    onError: (err: Error) => toast('err', err.message),
+  })
+
+  const saveStorageSettings = useMutation({
+    mutationFn: (body: StorageSettings) => api.updateStorageSettings(body),
+    onSuccess: (res) => {
+      setStorageEnabled(res.enabled)
+      setStDraft(res.settings)
+      toast('ok', res.enabled ? '对象存储设置已保存并生效' : '对象存储设置已保存，但尚未可用')
+      void queryClient.invalidateQueries({ queryKey: ['storage-settings'] })
     },
     onError: (err: Error) => toast('err', err.message),
   })
@@ -497,6 +517,149 @@ export default function V2Settings() {
         ) : (
           <div className="faint tiny">读取中…</div>
         )}
+      </Panel>
+
+      <Panel title="对象存储">
+        <div style={{ maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+            <span className="tiny muted">
+              网关只签发预签名 URL，文件字节由客户端直传对象存储，不经过网关中转。
+            </span>
+            <span style={{ flex: 1 }} />
+            <Badge tone={storageActive ? 'ok' : 'off'}>{storageActive ? '已启用' : '未启用'}</Badge>
+          </div>
+          {storageSettingsQuery.isError ? (
+            <ErrorText text={(storageSettingsQuery.error as Error).message} />
+          ) : null}
+
+          {stDraft ? (
+            <>
+              <Field label="驱动" hint="仅在面板配置，不支持启动参数；选「S3 兼容」并填齐下面四项必填即可启用">
+                <Segmented
+                  value={stDraft.driver === 's3' ? 's3' : 'none'}
+                  onChange={(v) => setStDraft({ ...stDraft, driver: v })}
+                  options={[
+                    { value: 'none', label: '不启用' },
+                    { value: 's3', label: 'S3 兼容' },
+                  ]}
+                />
+              </Field>
+
+              <Field label="Endpoint" hint="如 https://s3.us-east-1.amazonaws.com 或自建 MinIO 地址（必填）">
+                <Input
+                  value={stDraft.endpoint}
+                  onChange={(e) => setStDraft({ ...stDraft, endpoint: e.target.value })}
+                  placeholder="https://s3.example.com"
+                />
+              </Field>
+
+              <div className="v2grid g2">
+                <Field label="Region" hint="签名区域，留空按 us-east-1；R2 填 auto">
+                  <Input
+                    value={stDraft.region}
+                    onChange={(e) => setStDraft({ ...stDraft, region: e.target.value })}
+                    placeholder="us-east-1"
+                  />
+                </Field>
+                <Field label="Bucket" hint="目标桶名（必填）">
+                  <Input
+                    value={stDraft.bucket}
+                    onChange={(e) => setStDraft({ ...stDraft, bucket: e.target.value })}
+                    placeholder="ai-gateway"
+                  />
+                </Field>
+              </div>
+
+              <div className="v2grid g2">
+                <Field label="Access Key" hint="预签名凭证（必填）">
+                  <Input
+                    value={stDraft.access_key}
+                    onChange={(e) => setStDraft({ ...stDraft, access_key: e.target.value })}
+                    placeholder="AKIA..."
+                  />
+                </Field>
+                <Field label="Secret Key" hint="读取时脱敏；留空或保留脱敏串表示不修改">
+                  <Input
+                    type="password"
+                    value={stDraft.secret_key}
+                    onChange={(e) => setStDraft({ ...stDraft, secret_key: e.target.value })}
+                    placeholder="留空表示不修改"
+                  />
+                </Field>
+              </div>
+
+              <div className="v2grid g2">
+                <Field label="对象键前缀" hint="留空则直接写在桶根目录下">
+                  <Input
+                    value={stDraft.prefix}
+                    onChange={(e) => setStDraft({ ...stDraft, prefix: e.target.value })}
+                    placeholder="aigw"
+                  />
+                </Field>
+                <Field label="预签名有效期（秒）" hint="默认 1800，最大 604800（7 天）；0 表示用默认值">
+                  <Input
+                    type="number"
+                    min={0}
+                    max={604800}
+                    value={stDraft.presign_ttl_seconds}
+                    onChange={(e) =>
+                      setStDraft({
+                        ...stDraft,
+                        presign_ttl_seconds: e.target.value === '' ? 0 : Number(e.target.value),
+                      })
+                    }
+                  />
+                </Field>
+              </div>
+
+              <Field
+                label="公开访问前缀"
+                hint="填了则返回公开链接（CDN 或公开桶），留空只用预签名地址"
+              >
+                <Input
+                  value={stDraft.public_base}
+                  onChange={(e) => setStDraft({ ...stDraft, public_base: e.target.value })}
+                  placeholder="https://cdn.example.com"
+                />
+              </Field>
+
+              <Field label="Path-style 访问" hint="MinIO、Cloudflare R2 等通常需要开启">
+                <Segmented
+                  value={stDraft.force_path_style === 'on' ? 'on' : 'off'}
+                  onChange={(v) => setStDraft({ ...stDraft, force_path_style: v })}
+                  options={[
+                    { value: 'off', label: '关闭' },
+                    { value: 'on', label: '开启' },
+                  ]}
+                />
+              </Field>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Button
+                  variant="primary"
+                  disabled={saveStorageSettings.isPending}
+                  onClick={() => saveStorageSettings.mutate(stDraft)}
+                >
+                  {saveStorageSettings.isPending ? '保存中…' : '保存'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={saveStorageSettings.isPending || !storageSettingsQuery.data}
+                  onClick={() => {
+                    if (storageSettingsQuery.data) {
+                      setStDraft(storageSettingsQuery.data.settings)
+                      setStorageEnabled(null)
+                    }
+                  }}
+                >
+                  重置
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="faint tiny">读取中…</div>
+          )}
+        </div>
       </Panel>
 
       <Panel title="Python 插件运行时">

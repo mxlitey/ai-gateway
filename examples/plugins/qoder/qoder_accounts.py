@@ -1487,6 +1487,16 @@ CHECKIN_WINDOW_HOUR_UTC8 = 10
 _UTC8 = datetime.timezone(datetime.timedelta(hours=8))
 
 
+def _today_utc8(ts=None):
+    """今日日期 YYYY-MM-DD（固定 UTC+8）：签到按天判定的日界。
+
+    与官方每日刷新口径一致；容器里常是 UTC，用本地时间会让「已签到」在
+    本地零点后 8 小时才失效，表现为仪表盘过了零点仍显示已签到。
+    """
+    moment = time.time() if ts is None else float(ts)
+    return datetime.datetime.fromtimestamp(moment, _UTC8).strftime("%Y-%m-%d")
+
+
 def next_checkin_window(now=None):
     """下一个「每日 10:00（UTC+8）」窗口 → (epoch 秒:int, 人类可读:str)。
 
@@ -2839,11 +2849,10 @@ class Account(object):
         last = ""
         if q.get("lastClaimedAt"):
             try:
-                last = time.strftime("%Y-%m-%d",
-                                     time.localtime(int(q["lastClaimedAt"])))
+                last = _today_utc8(int(q["lastClaimedAt"]))
             except Exception:
                 last = ""
-        today = time.strftime("%Y-%m-%d")
+        today = _today_utc8()
         status = str(q.get("status") or "")
         return True, {
             "status": status,
@@ -3445,8 +3454,8 @@ class Account(object):
 
 
     def _checkin_stamped_today(self):
-        """#25-e：本地今天是否已盖章（防重复写盘的短路判据）。"""
-        return str(self.last_checkin or "").startswith(time.strftime("%Y-%m-%d"))
+        """#25-e：本地今天是否已盖章（防重复写盘的短路判据，按 UTC+8 判定）。"""
+        return str(self.last_checkin or "").startswith(_today_utc8())
 
     def _note_quota_anomaly(self, raw, reason):
         """#25-d：记录一次「不可信的 quota 响应」并**保留旧快照**。
@@ -3481,7 +3490,8 @@ class Account(object):
                 "anomaly": anomaly}
 
     def _stamp_checkin(self):
-        self.last_checkin = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.last_checkin = datetime.datetime.fromtimestamp(
+            time.time(), _UTC8).strftime("%Y-%m-%d %H:%M:%S")
         if self.path and os.path.exists(os.path.dirname(self.path)):
             self.save(os.path.dirname(self.path))
 

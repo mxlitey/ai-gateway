@@ -26,9 +26,9 @@ func TestInstructionsFor(t *testing.T) {
 		t.Fatalf("直连说明书不完整: %s", single)
 	}
 
-	// 图床说明只在直连入口追加（且由 upstream 是否带 instructions 决定），聚合入口不追加
-	if strings.Contains(aggregate, "/v1/images/uploads") {
-		t.Fatalf("聚合入口不应追加图床说明: %s", aggregate)
+	// 存储说明只在直连入口追加（且由 upstream 是否带 instructions 决定），聚合入口不追加
+	if strings.Contains(aggregate, "/v1/storage/tickets") {
+		t.Fatalf("聚合入口不应追加存储说明: %s", aggregate)
 	}
 }
 
@@ -148,8 +148,8 @@ func TestHandleInitializeAggregate(t *testing.T) {
 	if !strings.Contains(out.Result.Instructions, "tools/list") {
 		t.Fatalf("聚合说明书缺少调用指引: %s", out.Result.Instructions)
 	}
-	// 聚合入口只拼接上游说明，不追加网关图床说明
-	if strings.Contains(out.Result.Instructions, "/v1/images/uploads") {
-		t.Fatalf("聚合入口不应追加图床说明: %s", out.Result.Instructions)
+	// 聚合入口只拼接上游说明，不追加网关存储说明
+	if strings.Contains(out.Result.Instructions, "/v1/storage/tickets") {
+		t.Fatalf("聚合入口不应追加存储说明: %s", out.Result.Instructions)
 	}
 }

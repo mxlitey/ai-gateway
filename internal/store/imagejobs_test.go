@@ -29,8 +29,6 @@ func TestImageJobLifecycle(t *testing.T) {
 		Stage:             "queued",
 		Payload:           []byte(`{"prompt":"a cat"}`),
 		AllowedChannelIDs: []string{"ch-1"},
-		BaseURL:           "https://gw.example.com",
-		ResponseFormat:    "url",
 		CreatedAt:         now.UnixMilli(),
 		UpdatedAt:         now.UnixMilli(),
 		ExpiresAt:         now.Add(time.Hour).UnixMilli(),

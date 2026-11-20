@@ -26,7 +26,9 @@
   AIGW_IMAGE_FETCH_INSECURE  =1 时跳过内网图片的 TLS 校验（默认关闭，不推荐）
 
 返回约定：
-  - 图片统一由网关落盘并返回自己的地址，images[].expires_at 是链接的 Unix 秒过期时间（默认约 1 小时）；
+  - 网关严格透传、不落盘：作业结果里的 data / output_images / images 等字段是上游原始响应，
+    images[].url 与 b64_json 都不经过转换，链接有效期由上游决定；
+    网关只校验「必须有图」，取不到图会直接报错，不会返回一个空结果；
   - get_image_job 默认（inline=true）把图片字节以 MCP image 内容块一起返回，直链与图片数据
     在同一次响应里给全，客户端可直接保存/显示，不必再按链接下载一次；
   - 本服务不落盘：只做「取字节 + 内联」，重复的本地副本没有意义（服务常跑在网关容器里，
@@ -40,10 +42,10 @@
   get_image_job      查询生图作业状态与结果
   cancel_image_job   取消仍在排队或执行的作业
   list_image_models  列出可用生图模型（等价于网关 /v1/models?type=image）
-  image_host_info    查询图床直传端点，图片走 HTTP 直传，不进 MCP 的 8 MB 限制
+  image_host_info    取对象存储预签名直传地址，图片走 HTTP 直传，不进 MCP 的 8 MB 限制
 
 自描述：initialize 会返回 instructions，说明模型查询、作业轮询、交付方式，
-客户端不依赖外部技能文档也能完成第一次调用。图床能力（HTTP 直传，不经过 MCP，
+客户端不依赖外部技能文档也能完成第一次调用。直传能力（HTTP 直传，不经过 MCP，
 不受 8 MB 请求体限制）由 image_host_info 工具描述与返回值承载，不再写进 instructions，
 避免地址写死或与工具说明重复。
 """
@@ -95,7 +97,7 @@ MAX_INLINE_BYTES = max(1, _env_int("AIGW_IMAGE_INLINE_MB", 4)) << 20
 # 一次响应内联图片的原始字节总预算。网关读取 MCP 响应的上限是 32 MB，
 # base64 膨胀 4/3 后必须留余量，否则响应会被截断成非法 JSON。
 MAX_INLINE_TOTAL_BYTES = max(1, _env_int("AIGW_IMAGE_INLINE_TOTAL_MB", 10)) << 20
-LINK_TTL_HINT = "链接有时效（images[].expires_at 是 Unix 秒，默认约 1 小时，以网关配置为准）"
+LINK_TTL_HINT = "链接由上游直接签发，有效期不受网关控制"
 # 参考图下载（内网 http/https）的边界：只转发，不落盘持久保存
 IMAGE_FETCH_MAX_BYTES = 32 << 20
 IMAGE_FETCH_TIMEOUT = 30
@@ -108,8 +110,8 @@ _BLOCKED_NETS = [
 REFERENCE_HINT = (
     "参考图支持三种来源：公网 http(s) 图片地址（image_url 直接传）；"
     "本机文件（image_path 传路径，仅本服务与文件同机时可用）；"
-    "对话里粘贴的图片或本机读不到的图片，先用 image_host_info 拿到带凭据的 upload_url，"
-    "把图片原始字节 POST 上去换取 url（不需要任何请求头），再作为 image_url 传入。"
+    "对话里粘贴的图片或本机读不到的图片，先用 image_host_info 取对象存储预签名 upload_url，"
+    "把图片原始字节 PUT 上去换取公网 url，再作为 image_url 传入。"
 )
 
 IMAGE_TOOLS = [
@@ -122,13 +124,13 @@ IMAGE_TOOLS = [
             "请每 5 秒调用 get_image_job(job_id)。作业状态共 5 种："
             "queued / running / succeeded / failed / canceled，只有 succeeded 才有图片，"
             "failed / canceled 会直接以错误返回。"
-            "成功结果的 url 是网关自身地址（/v1/images/files/...），"
+            "success 时返回的 url 是上游直接签发的链接，"
             + LINK_TTL_HINT + "，可直接下载或给用户；"
             "get_image_job 默认会把图片数据与直链一起返回，不必再单独下载。"
             "参考图用公网 http(s) URL（image_url）或本机文件路径（image_path）；"
             "内网 URL 由本服务下载后转发。"
-            "对话里粘贴的图片、或本机读不到的文件，先调 image_host_info 拿图床直传端点，"
-            "把图片原始字节 POST 上去换成 url，再作为 image_url 传入。"
+            "对话里粘贴的图片、或本机读不到的文件，先调 image_host_info 取预签名直传地址，"
+            "把图片原始字节 PUT 上去换成 url，再作为 image_url 传入。"
         ),
         "inputSchema": {
             "type": "object",
@@ -148,7 +150,7 @@ IMAGE_TOOLS = [
                         "参考图数组，传单个字符串也可以。"
                         "公网 http(s) 地址直接传；内网地址由本服务下载后转 base64。"
                         "对话里粘贴的图片、或本机读不到的文件，先调 image_host_info 拿直传端点，"
-                        "把图片原始字节 POST 上去换取 url，再传到这里。"
+                        "把图片原始字节 PUT 上去换取 url，再传到这里。"
                         "建议最多 4 张。"
                     ),
                 },
@@ -159,9 +161,9 @@ IMAGE_TOOLS = [
                         "参考图的本机文件路径数组（传单个字符串也可以）。"
                         "服务会读取文件转成 base64 再发给网关，适合对话附件已落盘成本地文件的场景。"
                         "仅当本服务与文件在同一台机器上时可用；服务部署在远端时路径读不到。"
-                        "读不到时不要反复试其它路径，直接用 image_host_info 上传图床换 url。"
+                        "读不到时不要反复试其它路径，直接用 image_host_info 取预签名地址直传换 url。"
                         "支持 PNG/JPEG/WebP/GIF；"
-                        f"超过 {MAX_REFERENCE_MB} MB 时，若网关图床公网可达会自动上传换链接，否则报错。"
+                        f"超过 {MAX_REFERENCE_MB} MB 时自动直传对象存储换链接（需网关配置 S3）。"
                     ),
                 },
                 "size": {"type": "string", "description": "图片尺寸，例如 1024x1024、1328x1328"},
@@ -191,7 +193,7 @@ IMAGE_TOOLS = [
         "description": (
             "查询 generate_image 创建的作业；status 为 queued / running / succeeded / failed / canceled。"
             "作业保存在网关 SQLite 中，网关或本服务重启都不会丢失（保留 24 小时）。"
-            "出图成功时一次返回两样东西：images[].url（网关直链，有时效）与 image 内容块（图片字节），"
+            "出图成功时一次返回两样东西：images[].url（上游直链）与 image 内容块（图片字节），"
             "客户端可直接保存/显示，不必再按链接下载。"
         ),
         "inputSchema": {
@@ -236,13 +238,15 @@ IMAGE_TOOLS = [
     {
         "name": "image_host_info",
         "description": (
-            "查询网关内置图床并签发一个「签名路径」上传地址：是否开启、是否公网可达、单张上限、保留时长。"
+            "向网关申请一个对象存储预签名直传地址（mode=presigned_put），"
             "用途：把本地图片换成可作为 image_url 的短链接。"
-            "返回的 upload_url 里已自带凭据（mode=signed_path），"
-            "直接把图片原始字节 POST 上去即可，不需要任何请求头或密钥；"
-            "上传是普通 HTTP（不经过 MCP，不受 8 MB 请求体限制），响应里的 url 可直接作为 image_url。"
-            "该地址只具备上传与删除自己上传文件的能力，不涉及 sk- 密钥权限。"
+            "返回 upload_url / method / headers / public_url / download_url / expires_at；"
+            "网关只签 URL、不接收字节，客户端把图片原始字节按 method PUT 到 upload_url 即完成上传。"
+            "上传是普通 HTTP（不经过 MCP，不受 8 MB 请求体限制），"
+            "成功后把 public_url（私有桶则为 download_url）作为 image_url 使用。"
+            "预签名地址有时效，过期后重新调用本工具签发。"
             "参考图在本机读不到、或超过单张 base64 上限时，优先走这里。"
+            "网关未配置对象存储时返回 enabled=false（HTTP 501）。"
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
@@ -258,7 +262,7 @@ INSTRUCTIONS = (
     "作业状态共 queued/running/succeeded/failed/canceled 五种，只有 succeeded 才有图片，"
     "failed/canceled 会以 isError 返回；"
     "   网关或本服务重启不会丢作业：异步任务会继续轮询，同步任务会标记为 gateway_restarted 让你重提；"
-    "4) 成功时一次拿到两样东西：images[].url 是网关直链（expires_at 是 Unix 秒过期时间），"
+    "4) 成功时一次拿到两样东西：images[].url 是上游直接签发的链接（有效期不受网关控制），"
     "同一次响应里还会带上 image 内容块（图片字节），客户端可直接保存/显示，不必再按链接下载；"
     "只想要直链、不要图片数据时传 inline=false；"
     "5) 失败时 isError=true，structuredContent.error 含 code/message/retryable；"
@@ -266,10 +270,10 @@ INSTRUCTIONS = (
     "7) 需要放弃时调用 cancel_image_job(job_id)：只停止网关侧等待与轮询，"
     "不保证终止上游任务，异步渠道可能继续执行并已产生费用；"
     "8) 参考图三种来源：公网 http(s) 链接直接作为 image_url；本机文件用 image_path（仅同机可用）；"
-    "对话里粘贴的图片、或本机读不到的文件，先调用 image_host_info 拿带凭据的 upload_url，"
-    "把图片原始字节 POST 上去换取 url（不需要任何请求头），再作为 image_url 传入——"
+    "对话里粘贴的图片、或本机读不到的文件，先调用 image_host_info 取对象存储预签名 upload_url，"
+    "把图片原始字节 PUT 上去换取 url，再作为 image_url 传入——"
     "该请求不经过 MCP，不受 8 MB 请求体限制。"
-    "image_path 报文件不存在时不要换路径反复试，直接改走图床。"
+    "image_path 报文件不存在时不要换路径反复试，直接改走直传。"
 )
 
 
@@ -436,32 +440,59 @@ def _size_text(num):
     return "%d KB" % max(1, num >> 10)
 
 
+def _image_items(view):
+    """从作业视图里收集图片条目，兼容各种上游响应形状。
+
+    网关严格透传上游响应体，作业视图按顶层字段平铺，因此图片可能出现在：
+      - data: [{url|b64_json}]      OpenAI 标准形状；
+      - output_images: ["url"]      ModelScope 等异步服务商；
+      - images / result.images     部分服务商的自定义字段。
+    值既可能是字符串直链，也可能是带 url / b64_json 的对象。
+    与网关的校验口径一致：命中第一个非空字段就停止，避免同一张图被重复返回。
+    """
+    candidates = [view.get("data"), view.get("output_images"), view.get("images")]
+    result = view.get("result")
+    if isinstance(result, dict):
+        candidates.extend([result.get("images"), result.get("data"), result.get("output_images")])
+    for value in candidates:
+        if isinstance(value, list) and value:
+            return value
+        if isinstance(value, (dict, str)) and value:
+            return [value]
+    return []
+
+
 def _job_images(view, inline):
     """把网关作业结果转成 images[]，并按需内联图片字节。
 
     返回 (images, blocks)：blocks 是 MCP image 内容块，inline=True 时才填充。
-    图片只由网关落盘，本服务不再保存第二份副本：拿到字节就内联交付，
-    拿不到就退回直链，二者在同一次响应里给全。
+    网关不落盘：图片要么是上游直链，要么是上游给的 base64，
+    本服务只负责取字节并内联交付，拿不到字节就退回直链，二者在同一次响应里给全。
     """
-    items = view.get("data") or []
     images = []
     blocks = []
     inlined = 0
-    for item in items:
-        if not isinstance(item, dict):
+    for item in _image_items(view):
+        image_url = ""
+        b64 = ""
+        if isinstance(item, str):
+            image_url = item.strip()
+        elif isinstance(item, dict):
+            image_url = (item.get("url") or item.get("image_url") or "").strip()
+            b64 = item.get("b64_json") or item.get("b64") or ""
+        if not image_url and not b64:
             continue
-        image_url = item.get("url") or ""
-        b64 = item.get("b64_json") or ""
+
         entry = {}
         if image_url:
             entry["url"] = image_url
-        if isinstance(item.get("expires_at"), (int, float)):
+        if isinstance(item, dict) and isinstance(item.get("expires_at"), (int, float)):
             entry["expires_at"] = int(item["expires_at"])
 
         raw = b""
         mime = ""
-        if b64:
-            # 上游直接给 base64（未落盘的情况）：解码后只走 image 块，不再回显文本
+        if inline and b64:
+            # 上游直接给 base64（未落盘）：解码后只走 image 块，不再回显文本
             raw, mime = _decode_base64_image(b64)
         if inline and image_url and not raw:
             try:
@@ -501,6 +532,9 @@ def _job_images(view, inline):
         # 只有「这张没内联成功、又没有直链」时才把 b64 当作唯一可用的句柄。
         if b64 and not inlined_this and "url" not in entry:
             entry["b64_json"] = b64
+        if not entry and inlined_this:
+            # 只走 image 块的图片也要占一条，保证 count 与内容块数量对得上
+            entry["inlined"] = True
         if entry:
             images.append(entry)
     return images, blocks
@@ -600,14 +634,24 @@ def _extract_error_detail(text):
 # ---------- 图片取回 ----------
 
 def _decode_base64_image(b64_text):
-    """解码网关返回的 base64 图片，返回 (原始字节, mime)。"""
+    """解码网关返回的 base64 图片，返回 (原始字节, mime)。
+
+    网关严格透传上游响应，b64_json 可能带 data URI 前缀（data:image/png;base64,...），
+    这里先剥掉前缀再解码，避免原样透传导致的解码失败。
+    """
+    text = (b64_text or "").strip()
+    mime = ""
+    if text.lower().startswith("data:"):
+        header, _, payload = text.partition(",")
+        text = payload.strip()
+        mime = header[5:].split(";")[0].strip().lower()
     try:
-        raw = base64.b64decode(b64_text)
+        raw = base64.b64decode(text)
     except Exception:
         raise ToolError("网关返回的 base64 图片无法解码", code="invalid_response", retryable=True)
     if len(raw) > MAX_DOWNLOAD_BYTES:
         raise ToolError("图片超过 %d MB，无法取回" % (MAX_DOWNLOAD_BYTES >> 20), code="too_large")
-    return raw, _mime_from_bytes(raw)
+    return raw, mime if mime.startswith("image/") else _mime_from_bytes(raw)
 
 
 def _fetch_image(url):
@@ -689,8 +733,16 @@ def _mime_from_bytes(raw):
     }.get(ext, "")
 
 
-_IMAGE_HOST_CACHE = {"at": 0.0, "value": None}
-_IMAGE_HOST_LOCK = threading.Lock()
+def _ext_from_mime(mime):
+    """把 MIME 转成扩展名，用于对象键后缀。"""
+    return {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/webp": "webp",
+        "image/gif": "gif",
+    }.get((mime or "").strip().lower(), "png")
+
+
 _FETCH_OPENER = None
 _FETCH_OPENER_LOCK = threading.Lock()
 
@@ -793,203 +845,119 @@ def _fetch_reference(url, index):
     return raw, mime
 
 
-def _gateway_image_host(key):
-    """查询网关图床是否开启、是否声明公网可达；失败按不可用处理。"""
-    now = time.time()
-    with _IMAGE_HOST_LOCK:
-        value = _IMAGE_HOST_CACHE["value"]
-        if value is not None and now - _IMAGE_HOST_CACHE["at"] < 300:
-            return value
-    key = (key or "").strip() or _api_key()
-    req = urllib.request.Request(_base_url() + "/v1/images/host", method="GET")
-    req.add_header("User-Agent", "ai-gateway-image-mcp")
-    if key:
-        req.add_header("Authorization", "Bearer " + key)
-    try:
-        with _LOCAL_OPENER.open(req, timeout=10) as resp:
-            data = json.loads(resp.read(1 << 20).decode("utf-8", "replace"))
-    except Exception:
-        return {"enabled": False, "public": False, "unavailable": True}
-    if not isinstance(data, dict):
-        return {"enabled": False, "public": False, "unavailable": True}
-    value = {
-        "enabled": bool(data.get("enabled")),
-        "public": bool(data.get("public")),
-        "max_mb": int(data.get("max_mb") or 0),
-        "public_base": str(data.get("public_base") or ""),
-        "url_prefix": str(data.get("url_prefix") or ""),
-        "ttl_seconds": int(data.get("ttl_seconds") or 0),
-    }
-    with _IMAGE_HOST_LOCK:
-        _IMAGE_HOST_CACHE["at"] = now
-        _IMAGE_HOST_CACHE["value"] = value
-    return value
+def _storage_ticket(key, filename=""):
+    """向网关申请对象存储预签名直传凭证；网关未配置对象存储时返回 None。
 
-
-def _image_host_info(key=""):
-    """把图床能力转成客户端可直接使用的直传说明。
-
-    只返回「端点 + 凭证用法」，文件本体由客户端 HTTP 直传，不进 MCP 的 JSON body。
-    """
-    cap = _gateway_image_host(key)
-    base = _base_url()
-    if cap.get("unavailable"):
-        return {
-            "enabled": False,
-            "public": False,
-            "hint": "读不到网关图床能力：请检查网关地址（AIGW_IMAGE_BASE_URL）与密钥是否正确。",
-        }
-    out = {"enabled": bool(cap.get("enabled")), "public": bool(cap.get("public"))}
-    if not out["enabled"]:
-        out["hint"] = (
-            "网关未开启图床：参考图请用公网 http(s) 链接，或压缩到单张 3 MB 以内。"
-        )
-        return out
-    out.update({
-        # 优先用网关声明的公网地址，远端客户端才连得上
-        "endpoint": (cap.get("public_base") or base) + "/v1/images/uploads",
-        "method": "POST",
-        "content_type": "image/png / image/jpeg / image/webp / image/gif",
-        "auth_header": "Authorization: Bearer <调用本 MCP 时配置的同一把 sk- 密钥>",
-        "max_mb": int(cap.get("max_mb") or 0),
-        "url_prefix": cap.get("url_prefix") or "",
-        "ttl_seconds": int(cap.get("ttl_seconds") or 0),
-    })
-
-    # 优先签发签名路径令牌：路径里直接带凭据，调用方拿不到也不用接触 sk- 密钥
-    minted = _mint_upload_token(key)
-    if minted:
-        base_url = (cap.get("public_base") or base).rstrip("/")
-        upload_url = base_url + "/v1/uploads/" + str(minted.get("token", ""))
-        out.update({
-            "mode": "signed_path",
-            "upload_url": upload_url,
-            "delete_url": upload_url,
-            "expires_at": int(minted.get("expires_at") or 0),
-            "token_max_mb": int(minted.get("max_mb") or 0),
-            "hint": (
-                "把图片原始字节 POST 到 upload_url 即可，不需要任何请求头或密钥 —— "
-                "凭据在 URL 里。示例："
-                "curl -sS -X POST '" + upload_url + "' "
-                "-H 'Content-Type: image/png' --data-binary @/本地/图片.png。"
-                "响应里的 url 可直接作为 generate_image 的 image_url。"
-                "该请求是普通 HTTP，不经过 MCP，因此不受 8 MB 请求体限制。"
-                "用完想清理：DELETE upload_url 会删掉该令牌上传的所有图片并立即吊销令牌；"
-                "DELETE upload_url/<文件名> 只删一张，删的是最后一张时令牌也会自动吊销。"
-                "令牌有有效期（expires_at），过期后需重新调用本工具签发。"
-            ) + ("当前图床未声明公网可达，上传得到的链接可能无法被上游下载。" if not out["public"] else ""),
-        })
-        return out
-
-    # 网关注不支持签发令牌（旧版本）时，退回 sk- 直传的说明
-    hint = (
-        "请求体是图片原始字节；响应里的 url 可直接作为 generate_image 的 image_url。"
-        "该请求是普通 HTTP，不经过 MCP，因此不受 8 MB 请求体限制。"
-        "用你本地的命令执行工具（如 shell）发一次即可，示例："
-        "curl -sS -X POST '" + out["endpoint"] + "' "
-        "-H 'Authorization: Bearer $AIGW_IMAGE_API_KEY' "
-        "-H 'Content-Type: image/png' --data-binary @/本地/图片.png。"
-        "这里的密钥就是你配置本 MCP 时填的那把 sk-，不需要再向用户索取；"
-        "只有确实拿不到时才让用户提供。"
-    )
-    out["mode"] = "bearer"
-    if not out["public"]:
-        hint += "当前图床未声明公网可达，上传得到的链接可能无法被上游下载。"
-    out["hint"] = hint
-    return out
-
-
-def _mint_upload_token(key, ttl_seconds=600):
-    """签发一个签名路径上传令牌，返回 {token, upload_url, expires_at, max_mb}。
-
-    令牌只具备「上传」与「删除自己上传的文件」两项能力，不含任何 sk- 权限，
-    因此可以放心交给 agent 使用；同时它直接可作 URL，不需要额外的请求头。
+    网关只签 URL，不接收图片字节：客户端拿到 upload_url 后自己 PUT 到对象存储。
     """
     key = (key or "").strip() or _api_key()
     if not key:
         return None
-    body = json.dumps({"ttl_seconds": ttl_seconds}).encode("utf-8")
-    req = urllib.request.Request(_base_url() + "/v1/images/upload-tokens", data=body, method="POST")
+    body = json.dumps({"filename": filename}, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(_base_url() + "/v1/storage/tickets", data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Authorization", "Bearer " + key)
     req.add_header("User-Agent", "ai-gateway-image-mcp")
     try:
         with _LOCAL_OPENER.open(req, timeout=15) as resp:
             data = json.loads(resp.read(1 << 20).decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 501:
+            return None
+        return None
     except Exception:
         return None
-    if not isinstance(data, dict) or not data.get("token"):
+    if not isinstance(data, dict) or not data.get("upload_url"):
         return None
     return data
 
 
-def _upload_reference(raw, mime, index, key):
-    """超预算参考图上传图床，返回可直接交给上游的公网链接。
+def _image_host_info(key=""):
+    """返回对象存储直传说明 + 一张可直接使用的预签名上传凭证。
 
-    优先用签名路径令牌（不需要把 sk- 交给任何一方）；网关版本较旧、
-    不支持签发时回落到 sk- 直传。
+    只返回「预签名 URL + 方法」，文件本体由客户端 HTTP 直传对象存储，
+    不进 MCP 的 JSON body。
     """
-    minted = _mint_upload_token(key)
-    if minted:
-        endpoint = _base_url() + "/v1/uploads/" + str(minted["token"])
-        req = urllib.request.Request(endpoint, data=raw, method="POST")
-        req.add_header("Content-Type", mime)
-        req.add_header("User-Agent", "ai-gateway-image-mcp")
-    else:
-        key = (key or "").strip() or _api_key()
-        if not key:
-            raise ToolError("第 %d 张参考图超过 base64 上限，上传图床需要 AIGW_IMAGE_API_KEY" % index,
-                            code="auth_missing")
-        req = urllib.request.Request(_base_url() + "/v1/images/uploads", data=raw, method="POST")
-        req.add_header("Content-Type", mime)
-        req.add_header("Authorization", "Bearer " + key)
-        req.add_header("User-Agent", "ai-gateway-image-mcp")
+    ticket = _storage_ticket(key)
+    if not ticket:
+        return {
+            "enabled": False,
+            "hint": (
+                "网关未配置对象存储，无法签发直传地址。"
+                "请在网关面板「设置 → 对象存储」中填写并保存。"
+                "参考图请用公网 http(s) 链接，或压缩到单张 3 MB 以内转 base64。"
+            ),
+        }
+    out = {
+        "enabled": True,
+        "mode": "presigned_put",
+        "driver": ticket.get("driver") or "s3",
+        "bucket": ticket.get("bucket") or "",
+        "key": ticket.get("key") or "",
+        "method": ticket.get("method") or "PUT",
+        "headers": ticket.get("headers") or {},
+        "upload_url": ticket.get("upload_url") or "",
+        "download_url": ticket.get("download_url") or "",
+        "public_url": ticket.get("public_url") or "",
+        "expires_at": int(ticket.get("expires_at") or 0),
+        "ttl_seconds": int(ticket.get("expires_in") or 0),
+        "hint": (
+            "把图片原始字节 PUT 到 upload_url 即完成上传（签名在 URL 里，不需要额外请求头）。"
+            "示例：curl -sS -X PUT '<upload_url>' --data-binary @/本地/图片.png 。"
+            "上传成功后把 public_url（若为空则用 download_url）作为 generate_image 的 image_url。"
+            "该请求是普通 HTTP，不经过 MCP，因此不受 8 MB 请求体限制。"
+            "预签名地址有有效期（expires_at 为 Unix 秒），过期后重新调用本工具签发。"
+        ),
+    }
+    if not out["public_url"]:
+        out["hint"] += (
+            "当前桶是私有的，没有公开地址：image_url 请用 download_url —— 它自带签名，"
+            "在有效期内上游可以直接下载。"
+        )
+    return out
+
+
+def _upload_reference(raw, mime, index, key):
+    """超预算参考图直传对象存储，返回可作为 image_url 的链接。"""
+    ticket = _storage_ticket(key, "ref-%d.%s" % (index, _ext_from_mime(mime)))
+    if not ticket:
+        raise ToolError(
+            "第 %d 张参考图超过内联上限，且网关未配置对象存储（无法换取公网链接）" % index,
+            code="reference_exceeds_base64_limit",
+            hint="请压缩图片后重试，或改用公网图片地址。",
+        )
+    headers = dict(ticket.get("headers") or {})
+    if mime and "Content-Type" not in headers:
+        headers["Content-Type"] = mime
+    req = urllib.request.Request(str(ticket["upload_url"]), data=raw, method=str(ticket.get("method") or "PUT"))
+    for name, value in headers.items():
+        req.add_header(name, value)
+    req.add_header("User-Agent", "ai-gateway-image-mcp")
     try:
-        with _LOCAL_OPENER.open(req, timeout=60) as resp:
-            data = json.loads(resp.read(1 << 20).decode("utf-8", "replace"))
+        with _LOCAL_OPENER.open(req, timeout=60):
+            pass
     except urllib.error.HTTPError as exc:
         detail = ""
         try:
             detail = exc.read(4096).decode("utf-8", "replace")
         except Exception:
             pass
-        hint = "网关图床可能未开启或不可用"
-        if exc.code == 413:
-            hint = "图片超过网关图床单张上限"
-        raise ToolError(("第 %d 张参考图上传失败: HTTP %d %s" % (index, exc.code, detail)).strip(),
-                        code="image_upload_failed", hint=hint) from exc
+        raise ToolError(("第 %d 张参考图直传失败: HTTP %d %s" % (index, exc.code, detail)).strip(),
+                        code="image_upload_failed",
+                        hint="检查桶策略是否允许 PUT，以及预签名地址是否已过期。") from exc
     except Exception as exc:
-        raise ToolError("第 %d 张参考图上传失败: %s" % (index, exc),
+        raise ToolError("第 %d 张参考图直传失败: %s" % (index, exc),
                         code="image_upload_failed") from exc
-    url = data.get("url") if isinstance(data, dict) else None
+    url = str(ticket.get("public_url") or ticket.get("download_url") or "")
     if not url:
         raise ToolError("第 %d 张参考图上传后没有拿到链接" % index, code="image_upload_failed")
-    return str(url)
+    return url
 
 
 def _reference_from_bytes(raw, mime, index, key):
-    """预算内直接转 base64；超预算时只有图床公网可达才能换成链接。"""
+    """预算内直接转 base64；超预算时直传对象存储换成链接。"""
     if len(raw) <= MAX_REFERENCE_BYTES:
         return "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
-    size = "%.1f MB" % (len(raw) / (1 << 20))
-    cap = _gateway_image_host(key)
-    if not cap.get("enabled"):
-        raise ToolError(
-            "第 %d 张参考图 %s，超过单张上限 %d MB；网关图床未开启，无法换成公网链接"
-            % (index, size, MAX_REFERENCE_MB),
-            code="reference_exceeds_base64_limit",
-            hint="请压缩图片后重试，或改用公网图片地址。"
-                 "也可先调 image_host_info 确认图床是否开启（AIGW_IMAGE_HOST）。",
-        )
-    if not cap.get("public"):
-        raise ToolError(
-            "第 %d 张参考图 %s，超过单张上限 %d MB；"
-            "网关图床不可公网访问，上传后的链接上游取不到"
-            % (index, size, MAX_REFERENCE_MB),
-            code="reference_exceeds_base64_limit",
-            hint="请压缩图片后重试，或改用公网图片地址。"
-                 "也可先调 image_host_info 确认图床是否开启（AIGW_IMAGE_HOST）。",
-        )
     return _upload_reference(raw, mime, index, key)
 
 
@@ -1001,7 +969,7 @@ def _normalize_reference(value, index, key):
     if not text.lower().startswith(("http://", "https://")):
         raise ToolError("第 %d 张参考图无法识别。%s" % (index, REFERENCE_HINT),
                         code="invalid_reference",
-                        hint="先用 image_host_info 拿带凭据的 upload_url，把图片字节 POST 上去换 url。")
+                        hint="先用 image_host_info 取对象存储预签名地址，把图片字节 PUT 上去换 url。")
     if _is_public_url(text):
         return text
     raw, mime = _fetch_reference(text, index)
@@ -1009,7 +977,7 @@ def _normalize_reference(value, index, key):
 
 
 def _reference_from_path(value, index, key):
-    """读取本机图片文件，按预算决定转 base64 还是上传图床。"""
+    """读取本机图片文件，按预算决定转 base64 还是直传对象存储。"""
     raw_path = str(value or "").strip()
     if not raw_path:
         raise ToolError("第 %d 张参考图路径为空" % index, code="invalid_reference")

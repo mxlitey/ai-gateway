@@ -37,6 +37,105 @@ const (
 	SettingAdminMCPWritable = "admin_mcp.writable"
 )
 
+// 对象存储（S3 兼容）设置。与 RuntimeSettings 分开存：
+// 含凭据，需要可回显掩码，且保存后要立即重建预签名句柄。
+const (
+	SettingStorageDriver         = "storage.driver"
+	SettingStorageEndpoint       = "storage.s3_endpoint"
+	SettingStorageRegion         = "storage.s3_region"
+	SettingStorageBucket         = "storage.s3_bucket"
+	SettingStorageAccessKey      = "storage.s3_access_key"
+	SettingStorageSecretKey      = "storage.s3_secret_key"
+	SettingStoragePrefix         = "storage.s3_prefix"
+	SettingStoragePresignTTL     = "storage.s3_presign_ttl_seconds"
+	SettingStoragePublicBase     = "storage.s3_public_base"
+	SettingStorageForcePathStyle = "storage.s3_force_path_style"
+)
+
+// StorageSettings 对象存储设置：只能通过面板配置，未落库项为零值。
+type StorageSettings struct {
+	// Driver 驱动：none 不启用；s3 使用 S3 兼容协议。
+	Driver string `json:"driver"`
+	// Endpoint 服务端点，如 https://s3.us-east-1.amazonaws.com 或自建 MinIO 地址。
+	Endpoint string `json:"endpoint"`
+	// Region 签名区域。
+	Region string `json:"region"`
+	// Bucket 目标桶名。
+	Bucket string `json:"bucket"`
+	// AccessKey / SecretKey 预签名凭证；SecretKey 读取时脱敏。
+	AccessKey string `json:"access_key"`
+	SecretKey string `json:"secret_key"`
+	// Prefix 对象键前缀，可为空。
+	Prefix string `json:"prefix"`
+	// PresignTTLSeconds 预签名有效期（秒）；0 表示用默认值 1800。
+	PresignTTLSeconds int `json:"presign_ttl_seconds"`
+	// PublicBase 公开访问前缀（CDN 或公开桶），可为空。
+	PublicBase string `json:"public_base"`
+	// ForcePathStyle path-style 开关：on 使用；off（或空）不使用。
+	ForcePathStyle string `json:"force_path_style"`
+}
+
+// LoadStorageSettings 读取对象存储设置：未落库的项保持零值。
+func (s *Store) LoadStorageSettings() (StorageSettings, error) {
+	var out StorageSettings
+	strs := []struct {
+		key string
+		dst *string
+	}{
+		{SettingStorageDriver, &out.Driver},
+		{SettingStorageEndpoint, &out.Endpoint},
+		{SettingStorageRegion, &out.Region},
+		{SettingStorageBucket, &out.Bucket},
+		{SettingStorageAccessKey, &out.AccessKey},
+		{SettingStorageSecretKey, &out.SecretKey},
+		{SettingStoragePrefix, &out.Prefix},
+		{SettingStoragePublicBase, &out.PublicBase},
+		{SettingStorageForcePathStyle, &out.ForcePathStyle},
+	}
+	for _, item := range strs {
+		v, ok, err := s.GetSetting(item.key)
+		if err != nil {
+			return out, err
+		}
+		if ok {
+			*item.dst = v
+		}
+	}
+	if v, ok, err := s.GetSetting(SettingStoragePresignTTL); err != nil {
+		return out, err
+	} else if ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			out.PresignTTLSeconds = n
+		}
+	}
+	return out, nil
+}
+
+// SaveStorageSettings 落库对象存储设置（整体覆盖）。
+func (s *Store) SaveStorageSettings(ss StorageSettings) error {
+	pairs := []struct {
+		key   string
+		value string
+	}{
+		{SettingStorageDriver, ss.Driver},
+		{SettingStorageEndpoint, ss.Endpoint},
+		{SettingStorageRegion, ss.Region},
+		{SettingStorageBucket, ss.Bucket},
+		{SettingStorageAccessKey, ss.AccessKey},
+		{SettingStorageSecretKey, ss.SecretKey},
+		{SettingStoragePrefix, ss.Prefix},
+		{SettingStoragePresignTTL, strconv.Itoa(ss.PresignTTLSeconds)},
+		{SettingStoragePublicBase, ss.PublicBase},
+		{SettingStorageForcePathStyle, ss.ForcePathStyle},
+	}
+	for _, p := range pairs {
+		if err := s.SetSetting(p.key, p.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RuntimeSettings 运行期设置：面板可改，多数立即生效（无需重启）。
 //
 // 字符串项留空表示「未显式设置」，由调用方回退到启动参数 / 环境变量 / 内置默认；

@@ -19,7 +19,6 @@ import (
 
 	"github.com/czg95/ai-gateway-v2/internal/channel"
 	"github.com/czg95/ai-gateway-v2/internal/id"
-	"github.com/czg95/ai-gateway-v2/internal/imagestore"
 	"github.com/czg95/ai-gateway-v2/internal/model"
 	"github.com/czg95/ai-gateway-v2/internal/penalty"
 	"github.com/czg95/ai-gateway-v2/internal/pricing"
@@ -35,14 +34,6 @@ type Handler struct {
 	balancer    *routing.Balancer
 	pricer      *pricing.Resolver
 	cooler      *penalty.Cooler
-	// images 生图结果落盘；nil 表示保留上游原始结果。
-	images *imagestore.Store
-	// uploads 图床上传目录；nil 表示图床未开启。
-	uploads *imagestore.Store
-	// imageHostPublic 图床是否声明为公网可达；false 时把自家链接转成 base64。
-	imageHostPublic bool
-	// publicBase 对外访问地址；为空时按请求推导。
-	publicBase string
 	// jobMu / jobCancels 管理异步生图作业的取消函数。
 	jobMu      sync.Mutex
 	jobCancels map[string]context.CancelFunc
@@ -107,65 +98,6 @@ func (h *Handler) coolerConfig() penalty.Config {
 
 // Cooler 暴露密钥冷却器，供管理接口查询与手动重置。
 func (h *Handler) Cooler() *penalty.Cooler { return h.cooler }
-
-// SetImageStore 注入图片存储（生图结果落盘）。传 nil 表示不落盘。
-func (h *Handler) SetImageStore(s *imagestore.Store) { h.images = s }
-
-// SetImageUploads 注入图床存储，并声明其是否公网可达。
-// 非公网时，请求里指向本图床的参考图链接会在转发前转成 base64。
-func (h *Handler) SetImageUploads(s *imagestore.Store, public bool) {
-	h.uploads = s
-	h.imageHostPublic = public
-}
-
-// SetPublicBaseURL 设置对外访问地址（如 https://gw.example.com）。
-// 为空时按请求的 Host / X-Forwarded-* 推导。
-func (h *Handler) SetPublicBaseURL(base string) {
-	h.publicBase = strings.TrimRight(strings.TrimSpace(base), "/")
-}
-
-// imagePersist 按当前请求构造落盘配置：优先用显式配置的对外地址，否则取请求 Host。
-func (h *Handler) imagePersist(r *http.Request) ImagePersist {
-	if h.images == nil {
-		return ImagePersist{}
-	}
-	base := h.publicBase
-	if base == "" {
-		base = PublicBaseURL(r)
-	}
-	return ImagePersist{Store: h.images, BaseURL: base}
-}
-
-// PublicBaseURL 推导客户端访问网关所用的地址。
-func PublicBaseURL(r *http.Request) string {
-	if r == nil {
-		return ""
-	}
-	scheme := firstHeaderValue(r.Header.Get("X-Forwarded-Proto"))
-	if scheme != "http" && scheme != "https" {
-		if r.TLS != nil {
-			scheme = "https"
-		} else {
-			scheme = "http"
-		}
-	}
-	host := firstHeaderValue(r.Header.Get("X-Forwarded-Host"))
-	if host == "" {
-		host = r.Host
-	}
-	if host == "" {
-		return ""
-	}
-	return scheme + "://" + host
-}
-
-func firstHeaderValue(v string) string {
-	v = strings.TrimSpace(v)
-	if i := strings.IndexByte(v, ','); i >= 0 {
-		v = strings.TrimSpace(v[:i])
-	}
-	return v
-}
 
 // Handle 处理 /v1/* 请求。
 func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
@@ -451,15 +383,6 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 		return
 	}
 
-	if err := h.rewriteImageRefs(body); err != nil {
-		status, code := imageRefErrorStatus(err)
-		msg := err.Error()
-		h.logGatewayError(modelName, status, "生图请求被拒绝: "+msg)
-		rec.Finish(status, msg)
-		jsonErrorCode(w, status, msg, code)
-		return
-	}
-
 	targets, err := h.balancer.SelectImageTarget(modelName, allowed)
 	if err != nil {
 		slog.Error("选择生图渠道失败", "err", err)
@@ -504,11 +427,13 @@ func (h *Handler) handleImages(w http.ResponseWriter, r *http.Request, body map[
 		}
 		rec.Attempt()
 		rec.Served(t)
-		res := GenerateImage(r.Context(), h.imageClient, t.Channel, t.Key, body, modelName, r, h.imagePersist(r))
+		res := GenerateImage(r.Context(), h.imageClient, t.Channel, t.Key, body, modelName, r)
 		if res.StatusCode >= 200 && res.StatusCode < 300 {
 			h.cooler.Success(t.Channel.ID, t.Key)
 			rec.Served(t)
 			rec.Finish(res.StatusCode, "")
+			// 上游若在响应里带了 usage（部分服务商有），照实记入用量；没有则为 0
+			rec.ObserveJSON(res.Body)
 			// 同步生图没有响应体包装，需显式结算本次尝试
 			rec.Commit()
 			writeRawJSON(w, res.StatusCode, res.Body)

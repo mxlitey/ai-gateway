@@ -15,7 +15,7 @@ import (
 	"github.com/czg95/ai-gateway-v2/internal/store"
 )
 
-// imageJobTTL 作业记录的保留时长。图片本身按图床 TTL 过期，
+// imageJobTTL 作业记录的保留时长。图片本身由上游或对象存储决定有效期，
 // 但「取餐号」要比图片活得久，方便客户端在图片过期后仍能查到结果与失败原因。
 const imageJobTTL = 24 * time.Hour
 
@@ -78,7 +78,6 @@ func (h *Handler) submitImageJob(w http.ResponseWriter, r *http.Request, body ma
 		return
 	}
 
-	responseFormat, _ := body["response_format"].(string)
 	now := time.Now()
 	job := &store.ImageJob{
 		ID:                "imgjob_" + id.Hex(12),
@@ -89,8 +88,6 @@ func (h *Handler) submitImageJob(w http.ResponseWriter, r *http.Request, body ma
 		Stage:             "queued",
 		Payload:           raw,
 		AllowedChannelIDs: allowed,
-		BaseURL:           h.jobBaseURL(r),
-		ResponseFormat:    responseFormat,
 		CreatedAt:         now.UnixMilli(),
 		UpdatedAt:         now.UnixMilli(),
 		ExpiresAt:         now.Add(imageJobTTL).UnixMilli(),
@@ -173,27 +170,32 @@ func (h *Handler) CancelImageJob(w http.ResponseWriter, r *http.Request) {
 }
 
 // writeImageJob 输出作业视图。
+//
+// 成功的作业把上游响应体顶层字段原样平铺进视图（data / created / usage /
+// output_images 等），网关自带字段（id/status/stage/object/expires_at 等）同名优先，
+// 保证作业视图既能被轮询客户端识别，也不丢失上游原始信息。
 func (h *Handler) writeImageJob(w http.ResponseWriter, job *store.ImageJob, status int, reused bool) {
-	view := map[string]any{
-		"id":         job.ID,
-		"object":     imageJobObject,
-		"status":     job.Status,
-		"stage":      job.Stage,
-		"model":      job.Model,
-		"created_at": job.CreatedAt / 1000,
-		"updated_at": job.UpdatedAt / 1000,
-		"expires_at": job.ExpiresAt / 1000,
-		"poll_count": job.PollCount,
-	}
-	if reused {
-		view["reused"] = true
-	}
+	view := map[string]any{}
 	if job.Status == store.ImageJobSucceeded && len(job.Result) > 0 {
 		var body map[string]any
 		if err := json.Unmarshal(job.Result, &body); err == nil {
-			view["created"] = body["created"]
-			view["data"] = body["data"]
+			for k, v := range body {
+				view[k] = v
+			}
 		}
+	}
+
+	view["id"] = job.ID
+	view["object"] = imageJobObject
+	view["status"] = job.Status
+	view["stage"] = job.Stage
+	view["model"] = job.Model
+	view["created_at"] = job.CreatedAt / 1000
+	view["updated_at"] = job.UpdatedAt / 1000
+	view["expires_at"] = job.ExpiresAt / 1000
+	view["poll_count"] = job.PollCount
+	if reused {
+		view["reused"] = true
 	}
 	if job.Error != "" {
 		view["error"] = map[string]any{
@@ -220,26 +222,6 @@ func imageJobRetryable(code string) bool {
 		return false
 	}
 	return true
-}
-
-// jobBaseURL 作业落盘时使用的对外地址：优先显式配置，其次按提交请求推导。
-func (h *Handler) jobBaseURL(r *http.Request) string {
-	if h.publicBase != "" {
-		return h.publicBase
-	}
-	return PublicBaseURL(r)
-}
-
-// jobPersist 构造作业执行期的落盘配置。
-func (h *Handler) jobPersist(job *store.ImageJob) ImagePersist {
-	if h.images == nil {
-		return ImagePersist{}
-	}
-	base := h.publicBase
-	if base == "" {
-		base = job.BaseURL
-	}
-	return ImagePersist{Store: h.images, BaseURL: base}
 }
 
 // launchImageJob 启动后台执行，并登记取消函数。
@@ -314,7 +296,7 @@ func (h *Handler) runImageJob(ctx context.Context, jobID string) {
 		if err := h.store.MarkImageJobRunning(job.ID, t.Channel.ID, t.Key); err != nil {
 			slog.Warn("[image] 更新作业状态失败", "job", job.ID, "err", err)
 		}
-		task := SubmitImageTask(ctx, h.imageClient, t.Channel, t.Key, payload, job.Model, nil, h.jobPersist(job))
+		task := SubmitImageTask(ctx, h.imageClient, t.Channel, t.Key, payload, job.Model, nil)
 		if task.Result != nil {
 			if task.Result.Canceled {
 				h.finishJob(job.ID, store.ImageJobCanceled, nil, "作业已取消", "canceled")
@@ -338,7 +320,7 @@ func (h *Handler) runImageJob(ctx context.Context, jobID string) {
 			slog.Warn("[image] 保存上游任务 ID 失败", "job", job.ID, "err", err)
 		}
 		res := PollImageTask(ctx, h.imageClient, t.Channel, t.Key, t.Channel.ImageConfig(),
-			task.TaskID, job.ResponseFormat, nil, h.jobPersist(job), h.jobProgress(job.ID))
+			task.TaskID, nil, h.jobProgress(job.ID))
 		h.finishFromResult(job.ID, t.Channel.ID, t.Key, res, cdCfg)
 		return
 	}
@@ -359,7 +341,7 @@ func (h *Handler) pollResumedJob(ctx context.Context, job *store.ImageJob) {
 		slog.Warn("[image] 更新作业进度失败", "job", job.ID, "err", err)
 	}
 	res := PollImageTask(ctx, h.imageClient, ch, job.ChannelKey, ch.ImageConfig(),
-		job.UpstreamTaskID, job.ResponseFormat, nil, h.jobPersist(job), h.jobProgress(job.ID))
+		job.UpstreamTaskID, nil, h.jobProgress(job.ID))
 	h.finishFromResult(job.ID, ch.ID, job.ChannelKey, res, h.coolerConfig())
 }
 
@@ -489,6 +471,8 @@ func (h *Handler) recordJobUsage(job *store.ImageJob) {
 		row.ChannelName = ch.Name
 		row.UpstreamKeyHint = model.KeyHint(job.ChannelKey)
 	}
+	// 上游响应里若有 usage（部分服务商返回），照实记入 token；没有则保持 0
+	ExtractUsage(&row, job.Result)
 	RecordUsage(h.store, h.pricer, row)
 }
 

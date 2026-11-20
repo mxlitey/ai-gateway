@@ -30,8 +30,6 @@ type ImageJob struct {
 	AllowedChannelIDs []string
 	ChannelID         string
 	ChannelKey        string
-	BaseURL           string
-	ResponseFormat    string
 	UpstreamTaskID    string
 	Result            []byte
 	Error             string
@@ -44,7 +42,7 @@ type ImageJob struct {
 }
 
 const imageJobCols = `id, api_key_id, request_id, model, status, stage, payload,
-	allowed_channels, channel_id, channel_key, base_url, response_format,
+	allowed_channels, channel_id, channel_key,
 	upstream_task_id, result, error, error_code, poll_count, cancel_requested,
 	created_at, updated_at, expires_at`
 
@@ -54,7 +52,7 @@ func scanImageJob(sc scanner) (*ImageJob, error) {
 	var cancel int
 	if err := sc.Scan(
 		&j.ID, &j.APIKeyID, &j.RequestID, &j.Model, &j.Status, &j.Stage, &payload,
-		&allowed, &j.ChannelID, &j.ChannelKey, &j.BaseURL, &j.ResponseFormat,
+		&allowed, &j.ChannelID, &j.ChannelKey,
 		&j.UpstreamTaskID, &result, &j.Error, &j.ErrorCode, &j.PollCount, &cancel,
 		&j.CreatedAt, &j.UpdatedAt, &j.ExpiresAt,
 	); err != nil {
@@ -83,9 +81,9 @@ func (s *Store) CreateImageJob(j *ImageJob) error {
 		cancel = 1
 	}
 	_, err = s.db.Exec(`INSERT INTO image_jobs(`+imageJobCols+`)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		j.ID, j.APIKeyID, j.RequestID, j.Model, j.Status, j.Stage, string(j.Payload),
-		allowed, j.ChannelID, j.ChannelKey, j.BaseURL, j.ResponseFormat,
+		allowed, j.ChannelID, j.ChannelKey,
 		j.UpstreamTaskID, string(j.Result), j.Error, j.ErrorCode, j.PollCount, cancel,
 		j.CreatedAt, j.UpdatedAt, j.ExpiresAt,
 	)

@@ -418,6 +418,9 @@ export default function V2Dashboard() {
 function StatusStrip() {
   const runtime = useQuery({ queryKey: ['runtime'], queryFn: api.runtimeInfo })
   const now = useTick(1000)
+  // 直接显示地址栏里的地址：反代或隧道下就是外部域名，
+  // 比后端按监听配置推导出的 127.0.0.1 / 局域网 IP 更贴近「我该怎么访问」
+  const origin = window.location.origin
   return (
     <div className="strip">
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
@@ -435,7 +438,9 @@ function StatusStrip() {
       <span className="sep" />
       <span className="num">{bjFmtTime(now)}</span>
       <span className="sep hide-xs" />
-      <span className="hide-xs mono">{runtime.data?.access_url ?? '—'}</span>
+      <span className="hide-xs mono" title="当前访问地址">
+        {origin}
+      </span>
       <span className="sep hide-xs" />
       <span className="hide-xs">v{runtime.data?.version ?? '—'}</span>
     </div>

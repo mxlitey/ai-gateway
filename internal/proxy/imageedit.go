@@ -16,6 +16,40 @@ import (
 // 参考图本身按 referenceMaxBytes 逐张限制，这里只兜住恶意超大请求。
 const imageEditMaxBytes = 32 << 20
 
+// 参考图限制：与上游 base64 限制对齐（单张 3 MB、合计 7 M 字符）。
+const (
+	referenceMaxBytes = 3 << 20
+	referenceMaxChars = 7 << 20
+)
+
+// 参考图相关的错误：调用方按错误类型映射状态码。
+var (
+	errInvalidReference  = errors.New("参考图不合法")
+	errReferenceTooLarge = errors.New("参考图过大")
+)
+
+// imageRefErrorStatus 把参考图错误映射成 HTTP 状态码与稳定的错误码。
+func imageRefErrorStatus(err error) (int, string) {
+	switch {
+	case errors.Is(err, errReferenceTooLarge):
+		return http.StatusRequestEntityTooLarge, "reference_exceeds_base64_limit"
+	case errors.Is(err, errInvalidReference):
+		return http.StatusBadRequest, "invalid_reference"
+	}
+	return http.StatusBadRequest, "invalid_reference"
+}
+
+// jsonErrorCode 写出带稳定错误码的错误响应（OpenAI 兼容 + code 字段）。
+func jsonErrorCode(w http.ResponseWriter, status int, message, code string) {
+	writeJSON(w, status, map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    "invalid_request_error",
+			"code":    code,
+		},
+	})
+}
+
 // editScalarFields 从 multipart 里透传给生图流程的标量字段（OpenAI 标准 edits 参数）。
 // mask 暂不支持：渠道未配置遮罩能力，忽略即可。
 var editScalarFields = []string{

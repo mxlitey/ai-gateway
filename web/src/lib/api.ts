@@ -348,6 +348,30 @@ export type PythonSettingsResponse = {
   settings: PythonSettings
 }
 
+/** 对象存储（S3 兼容）设置；只能通过面板配置，不支持启动参数与环境变量。 */
+export type StorageSettings = {
+  /** 驱动：none 不启用 | s3 启用 S3 兼容协议 */
+  driver: string
+  endpoint: string
+  region: string
+  bucket: string
+  access_key: string
+  /** 读取时返回脱敏串，原样提交表示不修改 */
+  secret_key: string
+  prefix: string
+  /** 预签名有效期（秒），0 表示用默认值 1800 */
+  presign_ttl_seconds: number
+  public_base: string
+  /** path-style：on 使用 | off 不使用 */
+  force_path_style: string
+}
+
+/** 读取 / 保存对象存储设置的响应；enabled 表示当前预签名句柄是否已就绪。 */
+export type StorageSettingsResponse = {
+  settings: StorageSettings
+  enabled: boolean
+}
+
 /** 管理 MCP 的运行状态：开关、两档令牌是否存在、可用工具清单。 */
 export type AdminMCPState = {
   enabled: boolean
@@ -727,6 +751,14 @@ export const api = {
   pythonSettings: () => request<PythonSettingsResponse>('/admin/api/python/settings'),
   updatePythonSettings: (body: PythonSettings) =>
     request<{ success: boolean; settings: PythonSettings }>('/admin/api/python/settings', {
+      method: 'PUT',
+      ...json(body),
+    }),
+
+  // 对象存储（S3 兼容）：预签名直传配置，保存后立即生效
+  storageSettings: () => request<StorageSettingsResponse>('/admin/api/storage'),
+  updateStorageSettings: (body: StorageSettings) =>
+    request<{ success: boolean; settings: StorageSettings; enabled: boolean }>('/admin/api/storage', {
       method: 'PUT',
       ...json(body),
     }),

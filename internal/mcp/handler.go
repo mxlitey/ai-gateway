@@ -132,7 +132,7 @@ func (h *Handler) verify(r *http.Request) (*model.APIKey, string) {
 // handleInitialize 与客户端协商版本，并声明网关能力。
 //
 // instructions 不再统一替换成通用文案：直连单个服务器时原样透传上游说明书，
-// 聚合入口按服务器分段拼接，网关自身的图床说明追加在末尾。
+// 聚合入口按服务器分段拼接，网关自身的存储说明追加在末尾。
 func (h *Handler) handleInitialize(w http.ResponseWriter, r *http.Request, req request, alias string, key *model.APIKey) {
 	var params struct {
 		ProtocolVersion string `json:"protocolVersion"`
@@ -218,7 +218,7 @@ func (h *Handler) aggregateInstructions(r *http.Request, servers []model.MCPServ
 	return text
 }
 
-// instructionsFor 生成聚合入口的说明书：只讲调用方式，图床能力由工具描述承载。
+// instructionsFor 生成聚合入口的说明书：只讲调用方式，存储能力由工具描述承载。
 func instructionsFor(alias string) string {
 	text := "AI Gateway 把多个上游 MCP 服务器的工具聚合在一个入口，工具名可能带服务器前缀。" +
 		"先调用 tools/list 获取工具与参数说明，再调用 tools/call；" +
@@ -458,8 +458,8 @@ func writeRPCResult(w http.ResponseWriter, id json.RawMessage, result any) {
 
 func requestTooLargeMsg(size int64) string {
 	return fmt.Sprintf(
-		"请求体过大（%d 字节，上限 %d MB）。参考图请改用 image_host_info 取图床直传端点，"+
-			"把图片原始字节 POST 上传换取 url，再作为 image_url 传入，不要内联到 MCP 请求体里",
+		"请求体过大（%d 字节，上限 %d MB）。参考图请改用 storage_ticket 取对象存储预签名直传地址，"+
+			"把图片原始字节 PUT 上传后拿到公网 url，再作为 image_url 传入，不要内联到 MCP 请求体里",
 		size, maxRequestBody>>20)
 }
 

@@ -6,22 +6,21 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/czg95/ai-gateway-v2/internal/imagestore"
 	"github.com/czg95/ai-gateway-v2/internal/model"
 	"github.com/czg95/ai-gateway-v2/internal/store"
 )
 
-// TestGenerateImageAsyncModelScope 验证异步任务提交、带任务类型头轮询、URL 结果转换。
+// TestGenerateImageAsyncModelScope 验证异步任务提交、带任务类型头轮询、上游响应原样透传。
 func TestGenerateImageAsyncModelScope(t *testing.T) {
 	var submitCalls, pollCalls int32
 	var submitHeader, pollHeader string
+	const finalBody = `{"task_id":"task-1","task_status":"SUCCEED","output_images":["https://cdn.example.com/a.png"]}`
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -41,7 +40,7 @@ func TestGenerateImageAsyncModelScope(t *testing.T) {
 				_, _ = w.Write([]byte(`{"task_id":"task-1","task_status":"RUNNING"}`))
 				return
 			}
-			_, _ = w.Write([]byte(`{"task_id":"task-1","task_status":"SUCCEED","output_images":["https://cdn.example.com/a.png"]}`))
+			_, _ = w.Write([]byte(finalBody))
 		default:
 			http.NotFound(w, r)
 		}
@@ -65,7 +64,7 @@ func TestGenerateImageAsyncModelScope(t *testing.T) {
 		"model":  "Qwen/Qwen-Image-2.1-Turbo",
 		"prompt": "a cat",
 		"n":      1,
-	}, "Qwen/Qwen-Image-2.1-Turbo", nil, ImagePersist{})
+	}, "Qwen/Qwen-Image-2.1-Turbo", nil)
 
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
@@ -79,30 +78,23 @@ func TestGenerateImageAsyncModelScope(t *testing.T) {
 	if pollHeader != "image_generation" {
 		t.Fatalf("poll header = %q", pollHeader)
 	}
-
-	var out struct {
-		Created int64            `json:"created"`
-		Data    []map[string]any `json:"data"`
-	}
-	if err := json.Unmarshal(res.Body, &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(out.Data) != 1 || out.Data[0]["url"] != "https://cdn.example.com/a.png" {
-		t.Fatalf("unexpected data: %s", res.Body)
+	// 严格透传：上游响应体一个字段都不改
+	if string(res.Body) != finalBody {
+		t.Fatalf("body 应原样透传，got %s", res.Body)
 	}
 }
 
-// TestGenerateImageAsyncB64 验证 response_format=b64_json 时服务端下载并编码。
+// TestGenerateImageAsyncB64 验证上游给 base64 时原样透传（不转码、不改写）。
 func TestGenerateImageAsyncB64(t *testing.T) {
 	const imageContent = "fake-png-bytes"
+	b64 := base64.StdEncoding.EncodeToString([]byte(imageContent))
+	finalBody := `{"task_status":"SUCCEED","data":[{"b64_json":"data:image/png;base64,` + b64 + `"}]}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/images/generations":
 			_, _ = w.Write([]byte(`{"task_id":"t2"}`))
 		case "/tasks/t2":
-			_, _ = w.Write([]byte(`{"task_status":"SUCCEED","output_images":["` + srvURL(r) + `/img.png"]}`))
-		case "/img.png":
-			_, _ = w.Write([]byte(imageContent))
+			_, _ = w.Write([]byte(finalBody))
 		default:
 			http.NotFound(w, r)
 		}
@@ -123,19 +115,12 @@ func TestGenerateImageAsyncB64(t *testing.T) {
 		"model":           "img",
 		"prompt":          "x",
 		"response_format": "b64_json",
-	}, "img", nil, ImagePersist{})
+	}, "img", nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
 	}
-	var out struct {
-		Data []map[string]any `json:"data"`
-	}
-	if err := json.Unmarshal(res.Body, &out); err != nil {
-		t.Fatal(err)
-	}
-	want := base64.StdEncoding.EncodeToString([]byte(imageContent))
-	if len(out.Data) != 1 || out.Data[0]["b64_json"] != want {
-		t.Fatalf("unexpected b64 data: %s", res.Body)
+	if string(res.Body) != finalBody {
+		t.Fatalf("body 应原样透传，got %s", res.Body)
 	}
 }
 
@@ -165,7 +150,7 @@ func TestGenerateImageSyncOpenAIPassthrough(t *testing.T) {
 	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
 		"model":  "pub-img",
 		"prompt": "x",
-	}, "pub-img", nil, ImagePersist{})
+	}, "pub-img", nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
 	}
@@ -195,21 +180,13 @@ func TestGenerateImageTaskFailed(t *testing.T) {
 			TimeoutMS:      5000,
 		},
 	}
-	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{"model": "img", "prompt": "x"}, "img", nil, ImagePersist{})
+	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{"model": "img", "prompt": "x"}, "img", nil)
 	if res.StatusCode == http.StatusOK {
 		t.Fatalf("expected failure, got body %s", res.Body)
 	}
 	if !strings.Contains(res.Error, "content rejected") {
 		t.Fatalf("error = %s", res.Error)
 	}
-}
-
-func srvURL(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil {
-		scheme = "https"
-	}
-	return scheme + "://" + r.Host
 }
 
 // TestGenerateImageSyncTimeout 验证同步生图按渠道配置的超时终止，并返回 504。
@@ -229,7 +206,7 @@ func TestGenerateImageSyncTimeout(t *testing.T) {
 	}
 	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
 		"model": "img", "prompt": "x",
-	}, "img", nil, ImagePersist{})
+	}, "img", nil)
 	if res.StatusCode != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, body = %s", res.StatusCode, res.Body)
 	}
@@ -271,7 +248,7 @@ func TestGenerateImageEditMapping(t *testing.T) {
 		"size":            "1024x1024",
 		"image_url":       []any{"https://a/1.png"},
 		"negative_prompt": "blur",
-	}, "img", nil, ImagePersist{})
+	}, "img", nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
 	}
@@ -304,10 +281,11 @@ func TestGenerateImageEditMapping(t *testing.T) {
 	}
 }
 
-// TestGenerateImageNestedImagesPath 验证图片字段支持嵌套路径写法。
+// TestGenerateImageNestedImagesPath 验证图片字段支持嵌套路径写法（仅用于校验，不改写响应）。
 func TestGenerateImageNestedImagesPath(t *testing.T) {
+	const upstreamBody = `{"result":{"images":[{"url":"https://x/a.png"},{"url":"https://x/b.png"}]},"usage":{"total_tokens":12}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"result":{"images":[{"url":"https://x/a.png"},{"url":"https://x/b.png"}]}}`))
+		_, _ = w.Write([]byte(upstreamBody))
 	}))
 	defer srv.Close()
 
@@ -322,59 +300,22 @@ func TestGenerateImageNestedImagesPath(t *testing.T) {
 	}
 	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
 		"model": "img", "prompt": "x",
-	}, "img", nil, ImagePersist{})
+	}, "img", nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
 	}
-	var out struct {
-		Data []map[string]any `json:"data"`
-	}
-	if err := json.Unmarshal(res.Body, &out); err != nil {
-		t.Fatal(err)
-	}
-	if len(out.Data) != 2 || out.Data[1]["url"] != "https://x/b.png" {
-		t.Fatalf("unexpected data: %s", res.Body)
+	if string(res.Body) != upstreamBody {
+		t.Fatalf("body 应原样透传，got %s", res.Body)
 	}
 }
 
-// TestImagePersistPrefersPublicBase 验证显式配置的对外地址优先于请求 Host。
-func TestImagePersistPrefersPublicBase(t *testing.T) {
-	images, err := imagestore.Open(t.TempDir(), time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := &Handler{images: images}
-	h.SetPublicBaseURL("https://gw.example.com/")
-
-	p := h.imagePersist(httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8787/v1/images/generations", nil))
-	if p.BaseURL != "https://gw.example.com" {
-		t.Fatalf("BaseURL = %q", p.BaseURL)
-	}
-	if got := p.url("abc.png"); got != "https://gw.example.com/v1/images/files/abc.png" {
-		t.Fatalf("url = %q", got)
-	}
-}
-
-// TestGenerateImagePersistsURL 验证上游图片会落盘，并替换为网关自己的地址。
-func TestGenerateImagePersistsURL(t *testing.T) {
-	const imageContent = "\x89PNG\r\n\x1a\n-gateway-image"
+// TestGenerateImagePassthroughURL 验证上游返回的 url 原样透传，不再改写为网关地址。
+func TestGenerateImagePassthroughURL(t *testing.T) {
+	const upstreamBody = `{"data":[{"url":"https://cdn.example.com/origin.png"}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/images/generations":
-			_, _ = w.Write([]byte(`{"data":[{"url":"` + srvURL(r) + `/img.png"}]}`))
-		case "/img.png":
-			_, _ = w.Write([]byte(imageContent))
-		default:
-			http.NotFound(w, r)
-		}
+		_, _ = w.Write([]byte(upstreamBody))
 	}))
 	defer srv.Close()
-
-	dir := t.TempDir()
-	images, err := imagestore.Open(dir, time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	ch := &model.Channel{
 		Name:        "sync",
@@ -384,51 +325,25 @@ func TestGenerateImagePersistsURL(t *testing.T) {
 	}
 	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
 		"model": "img", "prompt": "x",
-	}, "img", nil, ImagePersist{Store: images, BaseURL: "http://gateway.local"})
+	}, "img", nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
 	}
-
-	var out struct {
-		Data []map[string]any `json:"data"`
-	}
-	if err := json.Unmarshal(res.Body, &out); err != nil {
-		t.Fatal(err)
-	}
-	if len(out.Data) != 1 {
-		t.Fatalf("unexpected data: %s", res.Body)
-	}
-	url, _ := out.Data[0]["url"].(string)
-	if !strings.HasPrefix(url, "http://gateway.local"+imagestore.URLPrefix) {
-		t.Fatalf("url 未替换为网关地址: %q", url)
-	}
-	if _, ok := out.Data[0]["b64_json"]; ok {
-		t.Fatalf("未请求 b64_json 时不应返回: %s", res.Body)
-	}
-
-	name := strings.TrimPrefix(url, "http://gateway.local"+imagestore.URLPrefix)
-	stored, err := os.ReadFile(filepath.Join(dir, name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(stored) != imageContent {
-		t.Fatalf("落盘内容不一致: %q", stored)
+	if string(res.Body) != upstreamBody {
+		t.Fatalf("body 应原样透传（含 usage），got %s", res.Body)
 	}
 }
 
-// TestGenerateImagePersistKeepsBase64 验证显式要求 b64_json 时同时返回 b64 与网关地址。
-func TestGenerateImagePersistKeepsBase64(t *testing.T) {
+// TestGenerateImageKeepsUpstreamBase64 验证上游给 b64_json 时连 data URI 前缀都原样透传。
+func TestGenerateImageKeepsUpstreamBase64(t *testing.T) {
 	const imageContent = "raw-image-bytes"
 	b64 := base64.StdEncoding.EncodeToString([]byte(imageContent))
+	upstreamBody := `{"data":[{"b64_json":"data:image/png;base64,` + b64 + `"}]}`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"data":[{"b64_json":"data:image/png;base64,` + b64 + `"}]}`))
+		_, _ = w.Write([]byte(upstreamBody))
 	}))
 	defer srv.Close()
 
-	images, err := imagestore.Open(t.TempDir(), time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
 	ch := &model.Channel{
 		Name:        "sync",
 		BaseURL:     srv.URL,
@@ -437,26 +352,36 @@ func TestGenerateImagePersistKeepsBase64(t *testing.T) {
 	}
 	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
 		"model": "img", "prompt": "x", "response_format": "b64_json",
-	}, "img", nil, ImagePersist{Store: images, BaseURL: "http://gateway.local/"})
+	}, "img", nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
 	}
+	if string(res.Body) != upstreamBody {
+		t.Fatalf("body 应原样透传，got %s", res.Body)
+	}
+}
 
-	var out struct {
-		Data []map[string]any `json:"data"`
+// TestGenerateImageRejectsEmptyResult 验证上游 200 但没有图片时按失败处理。
+func TestGenerateImageRejectsEmptyResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"created":123,"data":[]}`))
+	}))
+	defer srv.Close()
+
+	ch := &model.Channel{
+		Name:        "sync",
+		BaseURL:     srv.URL,
+		ImageModels: []string{"img"},
+		ImageGen:    model.ImageGenConfig{Mode: model.ImageGenSync},
 	}
-	if err := json.Unmarshal(res.Body, &out); err != nil {
-		t.Fatal(err)
+	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
+		"model": "img", "prompt": "x",
+	}, "img", nil)
+	if res.StatusCode == http.StatusOK {
+		t.Fatalf("无图不应返回 200，body = %s", res.Body)
 	}
-	if len(out.Data) != 1 {
-		t.Fatalf("unexpected data: %s", res.Body)
-	}
-	if out.Data[0]["b64_json"] != b64 {
-		t.Fatalf("b64_json = %v", out.Data[0]["b64_json"])
-	}
-	url, _ := out.Data[0]["url"].(string)
-	if !strings.HasPrefix(url, "http://gateway.local"+imagestore.URLPrefix) {
-		t.Fatalf("缺少网关地址: %q", url)
+	if !strings.Contains(res.Error, "未返回图片") {
+		t.Fatalf("error = %s", res.Error)
 	}
 }
 
@@ -497,7 +422,7 @@ func TestImageJobAsyncLifecycle(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
-		_, _ = w.Write([]byte(`{"created":1,"data":[{"url":"https://cdn.example.com/a.png"}]}`))
+		_, _ = w.Write([]byte(`{"created":1,"data":[{"url":"https://cdn.example.com/a.png"}],"usage":{"total_tokens":3}}`))
 	}))
 	defer upstream.Close()
 
@@ -561,7 +486,10 @@ func TestImageJobAsyncLifecycle(t *testing.T) {
 		}
 		var view struct {
 			Status string           `json:"status"`
+			ID     string           `json:"id"`
+			Object string           `json:"object"`
 			Data   []map[string]any `json:"data"`
+			Usage  map[string]any   `json:"usage"`
 			Error  map[string]any   `json:"error"`
 		}
 		if err := json.Unmarshal(pw.Body.Bytes(), &view); err != nil {
@@ -570,6 +498,13 @@ func TestImageJobAsyncLifecycle(t *testing.T) {
 		if view.Status == store.ImageJobSucceeded {
 			if len(view.Data) != 1 || view.Data[0]["url"] != "https://cdn.example.com/a.png" {
 				t.Fatalf("data = %s", pw.Body.String())
+			}
+			// 方案 A：上游顶层字段平铺进作业视图，网关字段同名优先
+			if view.Usage["total_tokens"] != float64(3) {
+				t.Fatalf("usage 应原样平铺: %s", pw.Body.String())
+			}
+			if view.ID != submitted.ID || view.Object != "image.generation.job" {
+				t.Fatalf("网关字段应覆盖同名上游字段: %s", pw.Body.String())
 			}
 			break
 		}
@@ -670,8 +605,7 @@ func TestImageJobResumePolling(t *testing.T) {
 		ID: "imgjob_resume", APIKeyID: "key-1", Model: "img",
 		Status: store.ImageJobRunning, Stage: "polling",
 		ChannelID: "ch-1", ChannelKey: "sk-1", UpstreamTaskID: "task-1",
-		ResponseFormat: "url",
-		CreatedAt:      now.UnixMilli(), UpdatedAt: now.UnixMilli(),
+		CreatedAt: now.UnixMilli(), UpdatedAt: now.UnixMilli(),
 		ExpiresAt: now.Add(time.Hour).UnixMilli(),
 	})
 
@@ -697,62 +631,6 @@ func TestImageJobResumePolling(t *testing.T) {
 			t.Fatalf("resume not finished, status = %s", j.Status)
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// TestGenerateImageAddsExpiresAt 验证落盘结果带上 expires_at（Unix 秒），与图床上传接口口径一致。
-func TestGenerateImageAddsExpiresAt(t *testing.T) {
-	bin, err := base64.StdEncoding.DecodeString(
-		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=")
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/images/generations":
-			_, _ = w.Write([]byte(`{"created":1,"data":[{"url":"` + srvURL(r) + `/img.png"}]}`))
-		case "/img.png":
-			w.Header().Set("Content-Type", "image/png")
-			_, _ = w.Write(bin)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	imgStore, err := imagestore.Open(t.TempDir(), time.Hour)
-	if err != nil {
-		t.Fatalf("open image store: %v", err)
-	}
-	ch := &model.Channel{
-		Name:        "sync",
-		BaseURL:     srv.URL,
-		ImageModels: []string{"img"},
-		ImageGen:    model.ImageGenConfig{Mode: model.ImageGenSync},
-	}
-	res := GenerateImage(context.Background(), srv.Client(), ch, "k", map[string]any{
-		"model": "img", "prompt": "x",
-	}, "img", nil, ImagePersist{Store: imgStore, BaseURL: "https://gw.example"})
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, error = %s", res.StatusCode, res.Error)
-	}
-
-	var out struct {
-		Data []map[string]any `json:"data"`
-	}
-	if err := json.Unmarshal(res.Body, &out); err != nil {
-		t.Fatal(err)
-	}
-	if len(out.Data) != 1 {
-		t.Fatalf("data = %s", res.Body)
-	}
-	if got, _ := out.Data[0]["url"].(string); !strings.HasPrefix(got, "https://gw.example/v1/images/files/") {
-		t.Fatalf("url = %q", got)
-	}
-	expires, _ := out.Data[0]["expires_at"].(float64)
-	now := time.Now().Unix()
-	if int64(expires) < now+50*60 || int64(expires) > now+70*60 {
-		t.Fatalf("expires_at = %v, now = %d", expires, now)
 	}
 }
 
@@ -788,7 +666,7 @@ func TestGenerateImageAsyncCanceled(t *testing.T) {
 
 	res := GenerateImage(ctx, srv.Client(), ch, "k", map[string]any{
 		"model": "img", "prompt": "x",
-	}, "img", nil, ImagePersist{})
+	}, "img", nil)
 	if !res.Canceled {
 		t.Fatalf("canceled = false, status = %d, error = %s", res.StatusCode, res.Error)
 	}

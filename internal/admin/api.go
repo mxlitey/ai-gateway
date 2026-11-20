@@ -25,6 +25,7 @@ import (
 	"github.com/czg95/ai-gateway-v2/internal/plugin"
 	"github.com/czg95/ai-gateway-v2/internal/pricing"
 	"github.com/czg95/ai-gateway-v2/internal/proxy"
+	"github.com/czg95/ai-gateway-v2/internal/storage"
 	"github.com/czg95/ai-gateway-v2/internal/store"
 	"github.com/czg95/ai-gateway-v2/internal/version"
 )
@@ -43,6 +44,16 @@ type API struct {
 	mcp *mcp.Service
 	// adminMCP 管理 MCP 注册表（由 app 层注入），用于开关、令牌与工具清单。
 	adminMCP *adminmcp.Server
+	// applyStorage 对象存储设置保存后回调（由 app 层注入），用于热替换预签名句柄。
+	applyStorage func() error
+	// storageActive 查询当前对象存储是否可用（由 app 层注入），用于面板展示状态。
+	storageActive func() bool
+}
+
+// SetStorageApplier 注入对象存储热生效回调（保存设置后立即重建预签名句柄）。
+func (a *API) SetStorageApplier(apply func() error, active func() bool) {
+	a.applyStorage = apply
+	a.storageActive = active
 }
 
 // NewAPI 创建管理接口处理器。host / pricer 可为 nil；cfg 提供监听地址与数据目录等运行信息。
@@ -156,6 +167,12 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 		a.getPythonSettings(w)
 	case path == "/python/settings" && method == http.MethodPut:
 		a.updatePythonSettings(w, r)
+
+	// ---- 对象存储（S3 兼容）----
+	case path == "/storage" && method == http.MethodGet:
+		a.getStorageSettings(w)
+	case path == "/storage" && method == http.MethodPut:
+		a.updateStorageSettings(w, r)
 
 	// ---- 渠道 ----
 	case path == "/channels" && method == http.MethodGet:
@@ -940,6 +957,109 @@ func (a *API) updatePythonSettings(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
+// ---------- 对象存储设置 ----------
+
+// getStorageSettings 返回对象存储设置。
+// SecretKey 只回显脱敏形式，前端原样提交时按掩码还原为已存值。
+func (a *API) getStorageSettings(w http.ResponseWriter) {
+	ss, err := a.store.LoadStorageSettings()
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ss.SecretKey = model.MaskKey(ss.SecretKey)
+	jsonOK(w, map[string]any{
+		"settings": ss,
+		"enabled":  a.storageConfigured(),
+	})
+}
+
+// updateStorageSettings 保存对象存储设置并立即生效。
+func (a *API) updateStorageSettings(w http.ResponseWriter, r *http.Request) {
+	var body store.StorageSettings
+	if !decodeBody(w, r, &body) {
+		return
+	}
+	// 校验驱动 / path-style / TTL，并确认启用时必填项齐全
+	ov := storage.Config{
+		Driver:         body.Driver,
+		Endpoint:       body.Endpoint,
+		Region:         body.Region,
+		Bucket:         body.Bucket,
+		AccessKey:      body.AccessKey,
+		SecretKey:      body.SecretKey,
+		Prefix:         body.Prefix,
+		PublicBase:     body.PublicBase,
+		ForcePathStyle: body.ForcePathStyle,
+		TTLSeconds:     body.PresignTTLSeconds,
+	}
+	if err := ov.Validate(); err != nil {
+		jsonErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 提交的是掩码串时保留原值，避免面板把脱敏结果写回数据库
+	prev, err := a.store.LoadStorageSettings()
+	if err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if body.SecretKey == "" || strings.Contains(body.SecretKey, "...") {
+		ov.SecretKey = prev.SecretKey
+	}
+	if strings.ToLower(strings.TrimSpace(body.Driver)) == "s3" &&
+		(strings.TrimSpace(body.Endpoint) == "" || strings.TrimSpace(body.Bucket) == "" ||
+			strings.TrimSpace(body.AccessKey) == "" || strings.TrimSpace(ov.SecretKey) == "") {
+		jsonErr(w, http.StatusBadRequest, "启用 S3 需同时填写 Endpoint、Bucket、Access Key、Secret Key")
+		return
+	}
+
+	driver := strings.ToLower(strings.TrimSpace(body.Driver))
+	if driver == "" {
+		driver = "none"
+	}
+	pathStyle := strings.ToLower(strings.TrimSpace(body.ForcePathStyle))
+	if pathStyle == "" {
+		pathStyle = "off"
+	}
+	saved := store.StorageSettings{
+		Driver:            driver,
+		Endpoint:          strings.TrimRight(strings.TrimSpace(body.Endpoint), "/"),
+		Region:            strings.TrimSpace(body.Region),
+		Bucket:            strings.TrimSpace(body.Bucket),
+		AccessKey:         strings.TrimSpace(body.AccessKey),
+		SecretKey:         strings.TrimSpace(ov.SecretKey),
+		Prefix:            strings.Trim(strings.TrimSpace(body.Prefix), "/"),
+		PresignTTLSeconds: body.PresignTTLSeconds,
+		PublicBase:        strings.TrimRight(strings.TrimSpace(body.PublicBase), "/"),
+		ForcePathStyle:    pathStyle,
+	}
+	if err := a.store.SaveStorageSettings(saved); err != nil {
+		jsonErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// 立即重建预签名句柄；配置不完整时保留已保存的设置但接口继续 501
+	if a.applyStorage != nil {
+		if err := a.applyStorage(); err != nil {
+			slog.Warn("对象存储设置已保存但未生效", "err", err)
+		}
+	}
+	saved.SecretKey = model.MaskKey(saved.SecretKey)
+	jsonOK(w, map[string]any{
+		"success":  true,
+		"settings": saved,
+		"enabled":  a.storageConfigured(),
+	})
+}
+
+// storageConfigured 判断当前是否存在可用的对象存储句柄。
+func (a *API) storageConfigured() bool {
+	if a.applyStorage == nil {
+		return false
+	}
+	return a.storageActive != nil && a.storageActive()
+}
+
 // ---------- 上游辅助 ----------
 
 func (a *API) fetchModels(w http.ResponseWriter, r *http.Request) {
@@ -1269,7 +1389,7 @@ func (a *API) probeImageUpstream(ch *model.Channel, key, upstreamModel, publicMo
 		client.Transport = a.client.Transport
 	}
 	start := time.Now()
-	out := proxy.GenerateImage(context.Background(), client, ch, key, payload, publicModel, nil, proxy.ImagePersist{})
+	out := proxy.GenerateImage(context.Background(), client, ch, key, payload, publicModel, nil)
 	res.DurationMS = time.Since(start).Milliseconds()
 	if out.StatusCode >= 200 && out.StatusCode < 300 {
 		res.Status = http.StatusOK

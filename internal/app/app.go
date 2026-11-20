@@ -1,4 +1,4 @@
-// Package app 把网关的装配与生命周期封装成可反复启停的实例，
+﻿// Package app 把网关的装配与生命周期封装成可反复启停的实例，
 // 供命令行 serve（含 Windows 服务）与桌面窗口共用。
 package app
 
@@ -9,11 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
-	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -21,11 +17,11 @@ import (
 	"github.com/czg95/ai-gateway-v2/internal/adminmcp"
 	"github.com/czg95/ai-gateway-v2/internal/config"
 	"github.com/czg95/ai-gateway-v2/internal/httpapi"
-	"github.com/czg95/ai-gateway-v2/internal/imagestore"
 	"github.com/czg95/ai-gateway-v2/internal/mcp"
 	"github.com/czg95/ai-gateway-v2/internal/plugin"
 	"github.com/czg95/ai-gateway-v2/internal/pricing"
 	"github.com/czg95/ai-gateway-v2/internal/proxy"
+	"github.com/czg95/ai-gateway-v2/internal/storage"
 	"github.com/czg95/ai-gateway-v2/internal/store"
 	"github.com/czg95/ai-gateway-v2/internal/version"
 )
@@ -150,40 +146,42 @@ func (a *App) Start() error {
 	api := admin.NewAPI(st, host, pricer, a.cfg)
 	proxyHandler := proxy.New(st, pricer)
 
-	// 生图结果统一落盘，对外返回网关自己的地址；失败时退回上游原始结果。
-	images, err := imagestore.Open(filepath.Join(a.cfg.DataDir, "images"), a.cfg.ImageTTL())
-	if err != nil {
-		slog.Error("初始化生图结果目录失败，生图将返回上游原始地址", "err", err)
-		images = nil
-	}
-	proxyHandler.SetImageStore(images)
-	proxyHandler.SetPublicBaseURL(a.cfg.PublicBaseURL)
+	// 对象存储：网关只签预签名 URL，文件字节由客户端直传/直读对象存储。
+	// 配置只来自面板「设置 → 对象存储」，保存后由 SetStorageApplier 触发热替换；未配置时返回 501。
+	storageAPI := httpapi.NewStorage(nil, st)
 
-	// 内置图床：独立目录与保留期，默认关闭。
-	var uploads *imagestore.Store
-	var imageHost *httpapi.ImageHost
-	if a.cfg.ImageHost {
-		uploads, err = imagestore.OpenWith(
-			filepath.Join(a.cfg.DataDir, "uploads"),
-			imagestore.UploadURLPrefix,
-			a.cfg.UploadTTL(),
-			a.cfg.ImageUploadMaxBytes(),
-		)
+	// reloadStorage 按面板当前保存的设置重建预签名句柄。
+	reloadStorage := func() error {
+		ss, err := st.LoadStorageSettings()
 		if err != nil {
-			slog.Error("初始化图床目录失败，图床不可用", "err", err)
-			uploads = nil
-		} else {
-			public := imageHostPubliclyReachable(a.cfg.ImageHostPublicMode(), a.cfg.PublicBaseURL)
-			imageHost = httpapi.NewImageHost(uploads, images, st, a.cfg.PublicBaseURL, public)
-			proxyHandler.SetImageUploads(uploads, public)
-			if public {
-				slog.Info("内置图床已开启，上传链接可直接交给上游", "public_base_url", a.cfg.PublicBaseURL)
-			} else {
-				slog.Warn("内置图床未声明公网可达，上游取不到上传链接，网关会把参考图转成 base64",
-					"public_base_url", a.cfg.PublicBaseURL, "mode", a.cfg.ImageHostPublicMode())
-			}
+			return err
 		}
+		cfg := storage.Config{
+			Driver:         ss.Driver,
+			Endpoint:       ss.Endpoint,
+			Region:         ss.Region,
+			Bucket:         ss.Bucket,
+			AccessKey:      ss.AccessKey,
+			SecretKey:      ss.SecretKey,
+			Prefix:         ss.Prefix,
+			PublicBase:     ss.PublicBase,
+			ForcePathStyle: ss.ForcePathStyle,
+			TTLSeconds:     ss.PresignTTLSeconds,
+		}
+		s := storage.New(cfg.Options())
+		storageAPI.Set(s)
+		if s == nil {
+			slog.Warn("对象存储未启用，/v1/storage/tickets 将返回 501")
+		} else {
+			slog.Info("对象存储预签名已启用", "endpoint", ss.Endpoint,
+				"bucket", ss.Bucket, "presign_ttl", s.TTL())
+		}
+		return nil
 	}
+	if err := reloadStorage(); err != nil {
+		slog.Error("读取对象存储设置失败，按未配置处理", "err", err)
+	}
+	api.SetStorageApplier(reloadStorage, func() bool { return storageAPI.Enabled() })
 
 	// 管理端可查询/重置上游密钥冷却状态
 	api.SetCooler(proxyHandler.Cooler())
@@ -223,24 +221,15 @@ func (a *App) Start() error {
 	}
 
 	router := httpapi.NewRouter(httpapi.Deps{
-		Proxy:     proxyHandler,
-		Admin:     api,
-		MCP:       mcpHandler,
-		AdminMCP:  adminMCPHandler,
-		Images:    images,
-		Uploads:   uploads,
-		ImageHost: imageHost,
+		Proxy:    proxyHandler,
+		Admin:    api,
+		MCP:      mcpHandler,
+		AdminMCP: adminMCPHandler,
+		Storage:  storageAPI,
 	})
 	srv := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: 15 * time.Second}
 
 	ctx, cancel := context.WithCancel(context.Background())
-
-	if images != nil {
-		go images.CleanupLoop(ctx)
-	}
-	if uploads != nil {
-		go uploads.CleanupLoop(ctx)
-	}
 
 	// 恢复上次未完成的生图作业：异步任务继续轮询，排队任务重新执行。
 	go proxyHandler.ResumeImageJobs()
@@ -281,51 +270,6 @@ func (a *App) Start() error {
 	host.StartAutoCheckin(ctx)
 
 	return nil
-}
-
-// imageHostPubliclyReachable 按声明判断图床是否公网可达。
-//
-// auto 只做字面量判断：没有对外地址、或地址是内网/回环，就认为上游取不到。
-// 这是声明而不是探测，无法证明 NAT / 防火墙真的放行。
-func imageHostPubliclyReachable(mode, base string) bool {
-	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "on":
-		return true
-	case "off":
-		return false
-	}
-	u, err := url.Parse(strings.TrimSpace(base))
-	if err != nil || u.Hostname() == "" {
-		return false
-	}
-	return !isPrivateHost(u.Hostname())
-}
-
-// isPrivateHost 判断常见的内网/回环/链路本地地址。
-func isPrivateHost(host string) bool {
-	host = strings.ToLower(strings.TrimSpace(host))
-	if host == "" {
-		return true
-	}
-	if host == "localhost" || strings.HasSuffix(host, ".local") ||
-		strings.HasPrefix(host, "127.") || strings.HasPrefix(host, "10.") ||
-		strings.HasPrefix(host, "192.168.") || strings.HasPrefix(host, "169.254.") ||
-		isPrivate172(host) {
-		return true
-	}
-	// IPv6 回环与链路本地/唯一本地地址
-	return host == "::1" || strings.HasPrefix(host, "fe80:") ||
-		strings.HasPrefix(host, "fc") || strings.HasPrefix(host, "fd")
-}
-
-// isPrivate172 判断 172.16.0.0/12。
-func isPrivate172(host string) bool {
-	parts := strings.Split(host, ".")
-	if len(parts) != 4 || parts[0] != "172" {
-		return false
-	}
-	n, err := strconv.Atoi(parts[1])
-	return err == nil && n >= 16 && n <= 31
 }
 
 // loadRuntimeSettings 读取运行期设置；失败时回退为默认值。

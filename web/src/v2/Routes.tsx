@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   api,
@@ -130,7 +130,7 @@ export default function V2Routes() {
     return m
   }, [metaQuery.data])
 
-  // 顺序即优先级：上移/下移后把整组重写成 n-1..0，只提交真正变化的行
+  // 顺序即优先级：拖动落位后把整组重写成 n-1..0，只提交真正变化的行
   const reorder = useMutation({
     mutationFn: async (p: { model: string; routes: RouteGroup['routes']; from: number; to: number }) => {
       const next = [...p.routes]
@@ -150,6 +150,16 @@ export default function V2Routes() {
     },
     onError: (err: Error) => toast('err', err.message),
   })
+
+  // 拖动状态只记「哪个模型的哪一行正被拖到第几行」，跨模型不生效
+  const [drag, setDrag] = useState<{ model: string; from: number; over: number } | null>(null)
+  const dropAt = (model: string, routes: RouteGroup['routes'], index: number) => {
+    const from = drag && drag.model === model ? drag.from : -1
+    setDrag(null)
+    if (from >= 0 && from !== index) {
+      reorder.mutate({ model, routes, from, to: index })
+    }
+  }
 
   const runProbe = useMutation({
     mutationFn: (tasks: { channel_id: string; model: string }[]) => api.testUpstream({ tasks }),
@@ -317,112 +327,142 @@ export default function V2Routes() {
               <div className="tbl-wrap">
                 <table className="tbl route-tbl">
                   <colgroup>
-                    {/* 渠道 6 个汉字宽；状态列只容一个开关、顺序列只容两个小箭头，
+                    {/* 手柄单独一列且无列名；渠道列只放渠道名，
                         宽度写在 CSS 里，窄屏可以把渠道列再收一档 */}
+                    <col className="c-grip" />
                     <col className="c-ch" />
                     <col />
                     <col className="c-state" />
-                    <col className="c-order" />
                   </colgroup>
                   <thead>
                     <tr>
+                      <th className="grip-th" aria-label="拖动排序" />
                       <th>渠道</th>
                       <th>上游模型</th>
                       <th>状态</th>
-                      <th style={{ textAlign: 'left' }}>顺序</th>
                     </tr>
                   </thead>
                   <tbody>
                     {group.routes.map((route, index) => {
-                      const last = group.routes.length - 1
-                      return (
-                        <tr key={route.channel_id}>
-                          <td>
-                            <div className="ch-name-cell">
-                              {/* 渠道名最多 6 个汉字，超出截断不换行 */}
-                              <span className="ch-name">{route.channel_name}</span>
-                            </div>
-                          </td>
-                          <td>
-                            {/* 模型名尽量占满，超长截断；徽章紧跟其后 */}
-                            <div className="up-cell">
-                              <code className="up-name mono" style={{ fontSize: 11 }}>
-                                {route.upstream_model}
-                              </code>
-                              {route.direct ? (
-                                <Badge tone="info">透传</Badge>
-                              ) : (
-                                <Badge tone="warn">映射</Badge>
-                              )}
-                            </div>
-                          </td>
-                          <td>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-                              <Switch
-                                checked={!route.model_disabled}
-                                disabled={saveModel.isPending}
-                                title={
-                                  route.model_disabled
-                                    ? '该模型在此渠道已停用，点击启用'
-                                    : '该模型在此渠道已启用，点击停用'
-                                }
-                                onChange={(v) =>
-                                  saveModel.mutate({
-                                    channelId: route.channel_id,
-                                    model: group.model,
-                                    enabled: v,
-                                  })
-                                }
-                              />
-                              {/* 模型启用但渠道停用 / 无可用密钥：用一个小圆点提示，
-                                  文字说明放 title，避免状态列被撑宽 */}
-                              {!route.model_disabled && !route.enabled ? (
-                                <span title="渠道不可用（已停用或无可用密钥）">
-                                  <Dot tone="warn" />
-                                </span>
-                              ) : null}
-                            </div>
-                          </td>
-                          <td>
-                            {/* 只保留上下移箭头，不显示优先级数值；两箭头上下堆叠 */}
-                            <div className="order-cell">
-                              <button
-                                type="button"
-                                className="btn ghost order-btn"
-                                title="上移，提升优先级"
-                                aria-label="上移，提升优先级"
-                                disabled={index === 0 || reorder.isPending}
-                                onClick={() =>
-                                  reorder.mutate({
-                                    model: group.model,
-                                    routes: group.routes,
-                                    from: index,
-                                    to: index - 1,
-                                  })
-                                }
-                              >
-                                ▲
-                              </button>
-                              <button
-                                type="button"
-                                className="btn ghost order-btn"
-                                title="下移，降低优先级"
-                                aria-label="下移，降低优先级"
-                                disabled={index === last || reorder.isPending}
-                                onClick={() =>
-                                  reorder.mutate({
-                                    model: group.model,
-                                    routes: group.routes,
-                                    from: index,
-                                    to: index + 1,
-                                  })
-                                }
-                              >
-                                ▼
-                              </button>
-                            </div>
+                      const active = drag?.model === group.model
+                      const dragging = active && drag.from === index
+                      const over = active && drag.from !== index && drag.over === index
+                      // 落点方向：向下拖插到目标之后，向上拖插到目标之前，
+                      // 与 dropAt 里 splice 后的实际落位保持一致
+                      const dropBefore = over && drag.from > index
+                      const dropAfter = over && drag.from < index
+                      // 虚拟行本身就代表「放在 index 处」，光标落在它上面时保持落点不变
+                      const placeholder = (
+                        <tr
+                          className="row-placeholder"
+                          aria-hidden="true"
+                          onDragOver={(e) => {
+                            if (!active) return
+                            e.preventDefault()
+                            e.dataTransfer.dropEffect = 'move'
+                            if (drag.over !== index) setDrag({ ...drag, over: index })
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault()
+                            dropAt(group.model, group.routes, index)
+                          }}
+                        >
+                          <td colSpan={4}>
+                            <div className="ph-slot" />
                           </td>
                         </tr>
+                      )
+                      return (
+                        <Fragment key={route.channel_id}>
+                          {dropBefore ? placeholder : null}
+                          <tr
+                            className={
+                              dragging ? 'row-dragging' : over ? 'row-drag-swept' : undefined
+                            }
+                            onDragOver={(e) => {
+                              // 只接受同一模型内部的拖动，跨模型不响应
+                              if (!active) return
+                              e.preventDefault()
+                              e.dataTransfer.dropEffect = 'move'
+                              if (drag.over !== index) setDrag({ ...drag, over: index })
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault()
+                              dropAt(group.model, group.routes, index)
+                            }}
+                          >
+                            <td className="grip-cell">
+                              <span
+                                className="order-grip"
+                                role="button"
+                                tabIndex={-1}
+                                draggable={!reorder.isPending}
+                                title="按住拖动可调整优先级，从上到下即优先级由高到低"
+                                onDragStart={(e) => {
+                                  // Firefox 必须写入数据才会真正开始拖动
+                                  e.dataTransfer.effectAllowed = 'move'
+                                  e.dataTransfer.setData('text/plain', String(index))
+                                  setDrag({ model: group.model, from: index, over: index })
+                                }}
+                                onDragEnd={() => setDrag(null)}
+                              >
+                                <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor">
+                                  <circle cx="3" cy="3" r="1.1" />
+                                  <circle cx="7" cy="3" r="1.1" />
+                                  <circle cx="3" cy="7" r="1.1" />
+                                  <circle cx="7" cy="7" r="1.1" />
+                                  <circle cx="3" cy="11" r="1.1" />
+                                  <circle cx="7" cy="11" r="1.1" />
+                                </svg>
+                              </span>
+                            </td>
+                            <td>
+                              {/* 渠道名最多 6 个汉字，超出截断不换行 */}
+                              <span className="ch-name">{route.channel_name}</span>
+                            </td>
+                            <td>
+                              {/* 模型名尽量占满，超长截断；徽章紧跟其后 */}
+                              <div className="up-cell">
+                                <code className="up-name mono" style={{ fontSize: 11 }}>
+                                  {route.upstream_model}
+                                </code>
+                                {route.direct ? (
+                                  <Badge tone="info">透传</Badge>
+                                ) : (
+                                  <Badge tone="warn">映射</Badge>
+                                )}
+                              </div>
+                            </td>
+                            <td>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                                <Switch
+                                  checked={!route.model_disabled}
+                                  disabled={saveModel.isPending}
+                                  title={
+                                    route.model_disabled
+                                      ? '该模型在此渠道已停用，点击启用'
+                                      : '该模型在此渠道已启用，点击停用'
+                                  }
+                                  onChange={(v) =>
+                                    saveModel.mutate({
+                                      channelId: route.channel_id,
+                                      model: group.model,
+                                      enabled: v,
+                                    })
+                                  }
+                                />
+                                {/* 模型启用但渠道停用 / 无可用密钥：用一个小圆点提示，
+                                    文字说明放 title，避免状态列被撑宽 */}
+                                {!route.model_disabled && !route.enabled ? (
+                                  <span title="渠道不可用（已停用或无可用密钥）">
+                                    <Dot tone="warn" />
+                                  </span>
+                                ) : null}
+                              </div>
+                            </td>
+                          </tr>
+                          {dropAfter ? placeholder : null}
+                        </Fragment>
                       )
                     })}
                   </tbody>

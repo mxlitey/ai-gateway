@@ -386,7 +386,7 @@ func (h *Handler) finishJob(jobID, status string, result []byte, errMsg, errCode
 		return
 	}
 	if status == store.ImageJobSucceeded && jobErr == nil && job != nil {
-		h.recordJobUsage(job)
+		h.recordJobUsage(job, result)
 	}
 }
 
@@ -453,7 +453,10 @@ func (h *Handler) recordJobFailure(jobID, channelID, key string, upstreamStatus 
 }
 
 // recordJobUsage 作业成功时补写一条用量，按一次请求计费。
-func (h *Handler) recordJobUsage(job *store.ImageJob) {
+//
+// result 是本次作业刚写入终态的上游响应体：取作业时它还没落库，
+// 因此不能读 job.Result，否则会漏掉上游返回的 usage。
+func (h *Handler) recordJobUsage(job *store.ImageJob, result []byte) {
 	row := model.RequestLog{
 		CreatedAt:   job.CreatedAt,
 		APIKeyID:    job.APIKeyID,
@@ -472,7 +475,7 @@ func (h *Handler) recordJobUsage(job *store.ImageJob) {
 		row.UpstreamKeyHint = model.KeyHint(job.ChannelKey)
 	}
 	// 上游响应里若有 usage（部分服务商返回），照实记入 token；没有则保持 0
-	ExtractUsage(&row, job.Result)
+	ExtractUsage(&row, result)
 	RecordUsage(h.store, h.pricer, row)
 }
 

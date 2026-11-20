@@ -561,6 +561,7 @@ func (a *API) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		ChannelIDs   []string `json:"channel_ids"`
 		MCPScope     string   `json:"mcp_scope"`
 		MCPServerIDs []string `json:"mcp_server_ids"`
+		StorageScope string   `json:"storage_scope"`
 	}
 	if !decodeBody(w, r, &body) {
 		return
@@ -579,6 +580,7 @@ func (a *API) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		ChannelIDs:   channelIDs,
 		MCPScope:     mcpScope,
 		MCPServerIDs: mcpIDs,
+		StorageScope: normalizeStorageScope(body.StorageScope),
 		Enabled:      true,
 		CreatedAt:    time.Now().UnixMilli(),
 	}
@@ -626,6 +628,7 @@ func (a *API) apiKeySubroutes(w http.ResponseWriter, r *http.Request, path, meth
 			ChannelIDs   *[]string `json:"channel_ids"`
 			MCPScope     *string   `json:"mcp_scope"`
 			MCPServerIDs *[]string `json:"mcp_server_ids"`
+			StorageScope *string   `json:"storage_scope"`
 		}
 		if !decodeBody(w, r, &body) {
 			return
@@ -638,6 +641,9 @@ func (a *API) apiKeySubroutes(w http.ResponseWriter, r *http.Request, path, meth
 		}
 		k.ChannelScope, k.ChannelIDs = applyScope(k.ChannelScope, k.ChannelIDs, body.ChannelScope, body.ChannelIDs)
 		k.MCPScope, k.MCPServerIDs = applyScope(k.MCPScope, k.MCPServerIDs, body.MCPScope, body.MCPServerIDs)
+		if body.StorageScope != nil {
+			k.StorageScope = normalizeStorageScope(*body.StorageScope)
+		}
 		if err := a.store.UpdateAPIKey(k); err != nil {
 			jsonErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -2384,6 +2390,14 @@ func applyScope(curScope string, curIDs []string, scope *string, ids *[]string) 
 		return normalizeScope("", list)
 	}
 	return normalizeScope(*scope, list)
+}
+
+// normalizeStorageScope 归一化对象存储权限：只有显式 none 才禁止，其余按允许处理。
+func normalizeStorageScope(scope string) string {
+	if strings.EqualFold(strings.TrimSpace(scope), model.ScopeNone) {
+		return model.ScopeNone
+	}
+	return model.ScopeAll
 }
 
 func normalizeModelMap(in map[string]string) map[string]string {

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/czg95/ai-gateway-v2/internal/model"
 	"github.com/czg95/ai-gateway-v2/internal/storage"
 	"github.com/czg95/ai-gateway-v2/internal/store"
 )
@@ -53,9 +54,16 @@ type ticketRequest struct {
 
 // Ticket 处理 POST /v1/storage/tickets：签发上传/下载预签名 URL。
 func (h *Storage) Ticket(w http.ResponseWriter, r *http.Request) {
-	if _, ok := h.authorize(r); !ok {
+	k, ok := h.authorize(r)
+	if !ok {
 		writeJSON(w, http.StatusUnauthorized, errorBody("unauthorized",
 			"缺少或无效的 API Key（Authorization: Bearer sk-...）"))
+		return
+	}
+	// 对象存储是需要单独授权的写能力：密钥的 storage_scope 为 none 时直接拒绝
+	if k.StorageScope == model.ScopeNone {
+		writeJSON(w, http.StatusForbidden, errorBody("storage_forbidden",
+			"该 API Key 未被授予对象存储权限，请到面板「API 密钥」中开启"))
 		return
 	}
 	st := h.store.Load()
@@ -95,7 +103,7 @@ func (h *Storage) Ticket(w http.ResponseWriter, r *http.Request) {
 }
 
 // authorize 校验 API Key；对象存储凭证等同于写能力，必须持有效密钥。
-func (h *Storage) authorize(r *http.Request) (string, bool) {
+func (h *Storage) authorize(r *http.Request) (*model.APIKey, bool) {
 	key := strings.TrimSpace(r.Header.Get("Authorization"))
 	if strings.HasPrefix(key, "Bearer ") {
 		key = strings.TrimSpace(strings.TrimPrefix(key, "Bearer "))
@@ -103,13 +111,13 @@ func (h *Storage) authorize(r *http.Request) (string, bool) {
 		key = strings.TrimSpace(r.Header.Get("x-api-key"))
 	}
 	if key == "" || h.keys == nil {
-		return "", false
+		return nil, false
 	}
 	k, err := h.keys.FindEnabledAPIKeyByValue(key)
 	if err != nil || k == nil {
-		return "", false
+		return nil, false
 	}
-	return key, true
+	return k, true
 }
 
 // extOf 从文件名推断扩展名（含点号，不含则返回空）。

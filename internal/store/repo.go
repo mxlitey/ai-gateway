@@ -251,13 +251,13 @@ func (s *Store) DeleteChannel(id string) error {
 
 // ---------- 客户端密钥 ----------
 
-const apiKeyCols = `id, name, key, channel_scope, channel_ids, mcp_scope, mcp_server_ids, enabled, created_at`
+const apiKeyCols = `id, name, key, channel_scope, channel_ids, mcp_scope, mcp_server_ids, storage_scope, enabled, created_at`
 
 func scanAPIKey(sc scanner) (*model.APIKey, error) {
 	k := &model.APIKey{ChannelIDs: []string{}, MCPServerIDs: []string{}}
 	var chS, mcpS string
 	var enabled int
-	if err := sc.Scan(&k.ID, &k.Name, &k.Key, &k.ChannelScope, &chS, &k.MCPScope, &mcpS, &enabled, &k.CreatedAt); err != nil {
+	if err := sc.Scan(&k.ID, &k.Name, &k.Key, &k.ChannelScope, &chS, &k.MCPScope, &mcpS, &k.StorageScope, &enabled, &k.CreatedAt); err != nil {
 		return nil, err
 	}
 	k.Enabled = enabled != 0
@@ -279,6 +279,9 @@ func scanAPIKey(sc scanner) (*model.APIKey, error) {
 	}
 	if k.MCPScope == "" {
 		k.MCPScope = model.ScopeAll
+	}
+	if k.StorageScope == "" {
+		k.StorageScope = model.ScopeAll
 	}
 	return k, nil
 }
@@ -339,13 +342,13 @@ func (s *Store) CreateAPIKey(k *model.APIKey) error {
 		return err
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO api_keys (id, name, key, channel_scope, channel_ids, mcp_scope, mcp_server_ids, enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?)`,
-		k.ID, k.Name, k.Key, k.ChannelScope, ch, k.MCPScope, mcpIDs, boolToInt(k.Enabled), k.CreatedAt,
+		`INSERT INTO api_keys (id, name, key, channel_scope, channel_ids, mcp_scope, mcp_server_ids, storage_scope, enabled, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		k.ID, k.Name, k.Key, k.ChannelScope, ch, k.MCPScope, mcpIDs, k.StorageScope, boolToInt(k.Enabled), k.CreatedAt,
 	)
 	return err
 }
 
-// UpdateAPIKey 更新密钥（名称 / 渠道权限 / MCP 权限 / 启停）。
+// UpdateAPIKey 更新密钥（名称 / 渠道权限 / MCP 权限 / 对象存储权限 / 启停）。
 func (s *Store) UpdateAPIKey(k *model.APIKey) error {
 	ch, err := marshalJSON(k.ChannelIDs)
 	if err != nil {
@@ -356,8 +359,8 @@ func (s *Store) UpdateAPIKey(k *model.APIKey) error {
 		return err
 	}
 	_, err = s.db.Exec(
-		`UPDATE api_keys SET name = ?, channel_scope = ?, channel_ids = ?, mcp_scope = ?, mcp_server_ids = ?, enabled = ? WHERE id = ?`,
-		k.Name, k.ChannelScope, ch, k.MCPScope, mcpIDs, boolToInt(k.Enabled), k.ID,
+		`UPDATE api_keys SET name = ?, channel_scope = ?, channel_ids = ?, mcp_scope = ?, mcp_server_ids = ?, storage_scope = ?, enabled = ? WHERE id = ?`,
+		k.Name, k.ChannelScope, ch, k.MCPScope, mcpIDs, k.StorageScope, boolToInt(k.Enabled), k.ID,
 	)
 	return err
 }

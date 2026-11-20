@@ -246,7 +246,8 @@ IMAGE_TOOLS = [
             "成功后把 public_url（私有桶则为 download_url）作为 image_url 使用。"
             "预签名地址有时效，过期后重新调用本工具签发。"
             "参考图在本机读不到、或超过单张 base64 上限时，优先走这里。"
-            "网关未配置对象存储时返回 enabled=false（HTTP 501）。"
+            "网关未配置对象存储（501）或该密钥没有对象存储权限（403）时，"
+            "返回 enabled=false 并在 reason / hint 里说明原因。"
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
@@ -846,13 +847,15 @@ def _fetch_reference(url, index):
 
 
 def _storage_ticket(key, filename=""):
-    """向网关申请对象存储预签名直传凭证；网关未配置对象存储时返回 None。
+    """向网关申请对象存储预签名直传凭证，返回 (ticket, reason)。
 
+    ticket 为 None 时 reason 说明原因：disabled=网关未配置对象存储，
+    forbidden=该密钥没有对象存储权限，unauthorized=密钥无效，failed=其它失败。
     网关只签 URL，不接收图片字节：客户端拿到 upload_url 后自己 PUT 到对象存储。
     """
     key = (key or "").strip() or _api_key()
     if not key:
-        return None
+        return None, "unauthorized"
     body = json.dumps({"filename": filename}, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(_base_url() + "/v1/storage/tickets", data=body, method="POST")
     req.add_header("Content-Type", "application/json")
@@ -862,14 +865,18 @@ def _storage_ticket(key, filename=""):
         with _LOCAL_OPENER.open(req, timeout=15) as resp:
             data = json.loads(resp.read(1 << 20).decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            return None, "unauthorized"
+        if exc.code == 403:
+            return None, "forbidden"
         if exc.code == 501:
-            return None
-        return None
+            return None, "disabled"
+        return None, "failed"
     except Exception:
-        return None
+        return None, "failed"
     if not isinstance(data, dict) or not data.get("upload_url"):
-        return None
-    return data
+        return None, "failed"
+    return data, ""
 
 
 def _image_host_info(key=""):
@@ -878,16 +885,26 @@ def _image_host_info(key=""):
     只返回「预签名 URL + 方法」，文件本体由客户端 HTTP 直传对象存储，
     不进 MCP 的 JSON body。
     """
-    ticket = _storage_ticket(key)
+    ticket, reason = _storage_ticket(key)
     if not ticket:
-        return {
-            "enabled": False,
-            "hint": (
+        if reason == "forbidden":
+            hint = (
+                "当前 API 密钥没有对象存储权限（storage_scope=禁用）。"
+                "请到网关面板「API 密钥」里为该密钥开启对象存储权限，"
+                "或改用公网 http(s) 图片链接作为参考图。"
+            )
+        elif reason == "unauthorized":
+            hint = (
+                "网关鉴权失败：检查「MCP 服务器 → 生图 → 密钥」或 mcp.json 的 "
+                "AIGW_IMAGE_API_KEY 是否为有效密钥。"
+            )
+        else:
+            hint = (
                 "网关未配置对象存储，无法签发直传地址。"
                 "请在网关面板「设置 → 对象存储」中填写并保存。"
                 "参考图请用公网 http(s) 链接，或压缩到单张 3 MB 以内转 base64。"
-            ),
-        }
+            )
+        return {"enabled": False, "reason": reason, "hint": hint}
     out = {
         "enabled": True,
         "mode": "presigned_put",
@@ -919,8 +936,14 @@ def _image_host_info(key=""):
 
 def _upload_reference(raw, mime, index, key):
     """超预算参考图直传对象存储，返回可作为 image_url 的链接。"""
-    ticket = _storage_ticket(key, "ref-%d.%s" % (index, _ext_from_mime(mime)))
+    ticket, reason = _storage_ticket(key, "ref-%d.%s" % (index, _ext_from_mime(mime)))
     if not ticket:
+        if reason == "forbidden":
+            raise ToolError(
+                "第 %d 张参考图超过内联上限，且当前 API 密钥没有对象存储权限" % index,
+                code="storage_forbidden",
+                hint="请到网关面板「API 密钥」中开启对象存储权限，或压缩图片后重试。",
+            )
         raise ToolError(
             "第 %d 张参考图超过内联上限，且网关未配置对象存储（无法换取公网链接）" % index,
             code="reference_exceeds_base64_limit",

@@ -387,6 +387,7 @@ func registerIssueAPIKeyTool(s *Server, d WriteDeps) {
 				"channel_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "channel_scope=selected 时生效"},
 				"mcp_scope":      map[string]any{"type": "string", "enum": []string{"all", "selected", "none"}, "description": "可用 MCP 范围，默认 all"},
 				"mcp_server_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "mcp_scope=selected 时生效"},
+				"storage_scope":  map[string]any{"type": "string", "enum": []string{"all", "none"}, "description": "对象存储权限（签发预签名上传/下载地址），默认 all"},
 			},
 		}, true, func(args map[string]any) (any, error) {
 			name := argString(args, "name")
@@ -395,6 +396,10 @@ func registerIssueAPIKeyTool(s *Server, d WriteDeps) {
 			}
 			channelScope, channelIDs := normalizeScope(argString(args, "channel_scope"), argStrings(args, "channel_ids"))
 			mcpScope, mcpIDs := normalizeScope(argString(args, "mcp_scope"), argStrings(args, "mcp_server_ids"))
+			storageScope := model.ScopeAll
+			if strings.EqualFold(argString(args, "storage_scope"), model.ScopeNone) {
+				storageScope = model.ScopeNone
+			}
 
 			k := &model.APIKey{
 				ID:           id.UUID(),
@@ -404,6 +409,7 @@ func registerIssueAPIKeyTool(s *Server, d WriteDeps) {
 				ChannelIDs:   channelIDs,
 				MCPScope:     mcpScope,
 				MCPServerIDs: mcpIDs,
+				StorageScope: storageScope,
 				Enabled:      true,
 				CreatedAt:    time.Now().UnixMilli(),
 			}
@@ -418,6 +424,7 @@ func registerIssueAPIKeyTool(s *Server, d WriteDeps) {
 				"channel_ids":    k.ChannelIDs,
 				"mcp_scope":      k.MCPScope,
 				"mcp_server_ids": k.MCPServerIDs,
+				"storage_scope":  k.StorageScope,
 				"notice":         "明文密钥只返回这一次，请立即保存",
 			}, nil
 		})

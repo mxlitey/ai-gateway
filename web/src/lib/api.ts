@@ -67,6 +67,8 @@ export type APIKey = {
   channel_ids: string[]
   mcp_scope: 'all' | 'selected' | 'none'
   mcp_server_ids: string[]
+  // 对象存储权限：all=可签发预签名 URL，none=禁止
+  storage_scope: 'all' | 'none'
   enabled: boolean
   created_at: number
 }
@@ -822,6 +824,7 @@ export const api = {
     channel_ids: string[]
     mcp_scope: APIKey['mcp_scope']
     mcp_server_ids: string[]
+    storage_scope: APIKey['storage_scope']
   }) => request<APIKey>('/admin/api/apikeys', { method: 'POST', ...json(body) }),
   updateApiKey: (
     id: string,
@@ -832,6 +835,7 @@ export const api = {
       channel_ids?: string[]
       mcp_scope?: APIKey['mcp_scope']
       mcp_server_ids?: string[]
+      storage_scope?: APIKey['storage_scope']
     },
   ) => request<APIKey>(`/admin/api/apikeys/${id}`, { method: 'PATCH', ...json(body) }),
   deleteApiKey: (id: string) =>

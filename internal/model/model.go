@@ -338,8 +338,10 @@ type APIKey struct {
 	ChannelIDs   []string `json:"channel_ids"`
 	MCPScope     string   `json:"mcp_scope"`
 	MCPServerIDs []string `json:"mcp_server_ids"`
-	Enabled      bool     `json:"enabled"`
-	CreatedAt    int64    `json:"created_at"`
+	// StorageScope 对象存储权限：all=可签发预签名 URL，none=禁止（/v1/storage/* 返回 403）。
+	StorageScope string `json:"storage_scope"`
+	Enabled      bool   `json:"enabled"`
+	CreatedAt    int64  `json:"created_at"`
 }
 
 // ErrorLog 一条上游错误记录。

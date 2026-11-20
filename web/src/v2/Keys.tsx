@@ -17,6 +17,7 @@ import {
 } from './ui'
 
 type Scope = APIKey['channel_scope']
+type StorageScope = APIKey['storage_scope']
 
 function isPluginChannel(ch: Channel): boolean {
   return ch.source.startsWith('plugin:')
@@ -35,6 +36,7 @@ export default function V2Keys() {
   const [channelIds, setChannelIds] = useState<string[]>([])
   const [mcpScope, setMcpScope] = useState<Scope>('all')
   const [mcpServerIds, setMcpServerIds] = useState<string[]>([])
+  const [storageScope, setStorageScope] = useState<StorageScope>('all')
   const [created, setCreated] = useState<APIKey | null>(null)
   const [editing, setEditing] = useState<APIKey | null>(null)
   const [editName, setEditName] = useState('')
@@ -42,6 +44,7 @@ export default function V2Keys() {
   const [editChannelIds, setEditChannelIds] = useState<string[]>([])
   const [editMcpScope, setEditMcpScope] = useState<Scope>('all')
   const [editMcpServerIds, setEditMcpServerIds] = useState<string[]>([])
+  const [editStorageScope, setEditStorageScope] = useState<StorageScope>('all')
   const [flippedId, setFlippedId] = useState<string | null>(null)
 
   const copyKey = async (text: string) => {
@@ -59,6 +62,7 @@ export default function V2Keys() {
         channel_ids: channelScope === 'selected' ? channelIds : [],
         mcp_scope: mcpScope,
         mcp_server_ids: mcpScope === 'selected' ? mcpServerIds : [],
+        storage_scope: storageScope,
       }),
     onSuccess: async (key) => {
       setCreated(key)
@@ -68,6 +72,7 @@ export default function V2Keys() {
       setChannelIds([])
       setMcpScope('all')
       setMcpServerIds([])
+      setStorageScope('all')
       await invalidate()
     },
     onError: (err: Error) => toast('err', err.message),
@@ -87,6 +92,7 @@ export default function V2Keys() {
         channel_ids: editChannelScope === 'selected' ? editChannelIds : [],
         mcp_scope: editMcpScope,
         mcp_server_ids: editMcpScope === 'selected' ? editMcpServerIds : [],
+        storage_scope: editStorageScope,
       }),
     onSuccess: async () => {
       toast('ok', '密钥已更新')
@@ -112,6 +118,7 @@ export default function V2Keys() {
     setEditChannelIds(key.channel_ids)
     setEditMcpScope(key.mcp_scope ?? 'all')
     setEditMcpServerIds(key.mcp_server_ids ?? [])
+    setEditStorageScope(key.storage_scope ?? 'all')
   }
 
   if (keys.isLoading || channels.isLoading || plugins.isLoading || mcpServers.isLoading) {
@@ -166,6 +173,7 @@ export default function V2Keys() {
                 : key.mcp_scope === 'selected'
                   ? (key.mcp_server_ids ?? []).map(mcpName).join('、')
                   : '全部 MCP 服务器'
+            const storageScopeText = key.storage_scope === 'none' ? '未授权' : '允许'
             const toggleFlip = () => setFlippedId(flipped ? null : key.id)
             return (
               <div
@@ -192,6 +200,9 @@ export default function V2Keys() {
                       </span>
                       <span title={mcpScopeText}>
                         可用 MCP <b>{mcpScopeText}</b>
+                      </span>
+                      <span title={storageScopeText}>
+                        对象存储 <b>{storageScopeText}</b>
                       </span>
                     </div>
                   </div>
@@ -305,6 +316,9 @@ export default function V2Keys() {
                 ) : null}
               </div>
             </Field>
+            <Field label="对象存储权限">
+              <StorageScopePicker value={storageScope} onChange={setStorageScope} />
+            </Field>
           </div>
         </Modal>
       ) : null}
@@ -395,6 +409,9 @@ export default function V2Keys() {
                 ) : null}
               </div>
             </Field>
+            <Field label="对象存储权限">
+              <StorageScopePicker value={editStorageScope} onChange={setEditStorageScope} />
+            </Field>
           </div>
         </Modal>
       ) : null}
@@ -458,6 +475,25 @@ function ScopePicker({ value, onChange }: { value: Scope; onChange: (v: Scope) =
       options={[
         { value: 'all', label: '全部' },
         { value: 'selected', label: '仅勾选' },
+        { value: 'none', label: '禁用' },
+      ]}
+    />
+  )
+}
+
+function StorageScopePicker({
+  value,
+  onChange,
+}: {
+  value: StorageScope
+  onChange: (v: StorageScope) => void
+}) {
+  return (
+    <Segmented
+      value={value}
+      onChange={onChange}
+      options={[
+        { value: 'all', label: '允许（可签发上传/下载地址）' },
         { value: 'none', label: '禁用' },
       ]}
     />

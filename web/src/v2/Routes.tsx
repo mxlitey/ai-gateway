@@ -39,6 +39,7 @@ type MetaDraft = {
   min_height_px: string
   max_width_px: string
   max_height_px: string
+  size_multiple: string
 }
 
 const META_FORMATS: { value: string; label: string }[] = [
@@ -63,6 +64,7 @@ function emptyMetaDraft(): MetaDraft {
     min_height_px: '',
     max_width_px: '',
     max_height_px: '',
+    size_multiple: '',
   }
 }
 
@@ -84,6 +86,7 @@ function metaDraftOf(m?: ModelMeta): MetaDraft {
     min_height_px: str(m.min_height_px),
     max_width_px: str(m.max_width_px),
     max_height_px: str(m.max_height_px),
+    size_multiple: str(m.size_multiple),
   }
 }
 
@@ -105,6 +108,7 @@ function metaPayloadOf(model: string, d: MetaDraft) {
     min_height_px: num(d.min_height_px),
     max_width_px: num(d.max_width_px),
     max_height_px: num(d.max_height_px),
+    size_multiple: num(d.size_multiple),
   }
 }
 
@@ -829,6 +833,13 @@ function MetaEditor({
                   <span className="tiny faint">×</span>
                   {sizeBox('max_height_px', '高')}
                 </div>
+              </div>
+              <div style={{ marginTop: 8, width: 140 }}>
+                {numField(
+                  '尺寸倍数',
+                  '宽高必须是该值的正整数倍，常见 16 或 32；留空不声明',
+                  'size_multiple',
+                )}
               </div>
             </div>
           </div>

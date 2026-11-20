@@ -230,7 +230,7 @@ IMAGE_TOOLS = [
             "列出当前密钥可用的生图模型（来自网关 /v1/models?type=image）。"
             "首次调用 generate_image 前用它确定 model 取值；返回 default_model 表示服务端已配置默认模型。"
             "若网关侧为该模型声明过约束，还会返回 specs[模型名]：参考图上限、出图张数、"
-            "输出格式与分辨率区间、是否支持中文等。传参前先看 specs；未出现的字段表示未声明（未知），"
+            "输出格式与分辨率区间、尺寸倍数（宽高需为 16/32 等的正整数倍）、是否支持中文等。传参前先看 specs；未出现的字段表示未声明（未知），"
             "不代表不限制，用常规取值即可。"
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": []},
@@ -1178,7 +1178,8 @@ def _list_models(key=""):
         # 只保留有人工声明的字段，避免把一堆默认值塞给客户端
         payload["specs"] = specs
         payload["specs_hint"] = (
-            "specs 里是网关侧声明的模型约束（参考图上限、出图张数、输出格式与分辨率、能否写中文等）；"
+            "specs 里是网关侧声明的模型约束（参考图上限、出图张数、输出格式与分辨率、"
+            "尺寸倍数（宽高需为其正整数倍）、能否写中文等）； "
             "未出现的字段表示未声明（未知），不代表不限制——请使用常规取值，不要推到极端。"
         )
     default = _default_model()
@@ -1250,6 +1251,7 @@ def _model_spec(raw):
         ("min_height_px", "min_height"),
         ("max_width_px", "max_width"),
         ("max_height_px", "max_height"),
+        ("size_multiple", "size_multiple"),
     ):
         n = _as_int(raw.get(key))
         if n > 0:

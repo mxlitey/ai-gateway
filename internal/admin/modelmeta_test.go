@@ -8,13 +8,14 @@ import (
 
 func TestSanitizeModelMetaClampsNumbers(t *testing.T) {
 	got := sanitizeModelMeta("m", model.ModelMeta{
-		MaxRefCount: -5,
-		MaxN:        999,
-		MaxNRef:     -8,
-		MinWidthPx:  99999,
-		MaxWidthPx:  -1,
-		MinHeightPx: 99999,
-		MaxHeightPx: -1,
+		MaxRefCount:  -5,
+		MaxN:         999,
+		MaxNRef:      -8,
+		MinWidthPx:   99999,
+		MaxWidthPx:   -1,
+		MinHeightPx:  99999,
+		MaxHeightPx:  -1,
+		SizeMultiple: 99999,
 	})
 	if got.MaxRefCount != 0 {
 		t.Fatalf("负数应归零，实际 %d", got.MaxRefCount)
@@ -30,6 +31,9 @@ func TestSanitizeModelMetaClampsNumbers(t *testing.T) {
 	}
 	if got.MaxWidthPx != 0 || got.MaxHeightPx != 0 {
 		t.Fatalf("负数应归零，实际 %d/%d", got.MaxWidthPx, got.MaxHeightPx)
+	}
+	if got.SizeMultiple != 1024 {
+		t.Fatalf("尺寸倍数超上限应截断到 1024，实际 %d", got.SizeMultiple)
 	}
 }
 

@@ -26,6 +26,7 @@ func TestModelMetaRoundTrip(t *testing.T) {
 		MinHeightPx:    768,
 		MaxWidthPx:     4096,
 		MaxHeightPx:    6144,
+		SizeMultiple:   16,
 	}
 	if err := s.UpsertModelMeta(in); err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -56,6 +57,9 @@ func TestModelMetaRoundTrip(t *testing.T) {
 	if got.MinWidthPx != 512 || got.MinHeightPx != 768 ||
 		got.MaxWidthPx != 4096 || got.MaxHeightPx != 6144 {
 		t.Fatalf("分辨率区间不符: %+v", got)
+	}
+	if got.SizeMultiple != 16 {
+		t.Fatalf("尺寸倍数不符: %+v", got)
 	}
 	if got.UpdatedAt == 0 {
 		t.Fatal("应写入保存时间")

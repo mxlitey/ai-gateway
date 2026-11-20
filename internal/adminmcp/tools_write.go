@@ -648,6 +648,7 @@ func registerSetModelMetaTool(s *Server, d WriteDeps) {
 				"min_height_px":   map[string]any{"type": "integer", "description": "输出高度下限（像素），0 表示不声明"},
 				"max_width_px":    map[string]any{"type": "integer", "description": "输出宽度上限（像素），0 表示不声明"},
 				"max_height_px":   map[string]any{"type": "integer", "description": "输出高度上限（像素），0 表示不声明"},
+				"size_multiple":   map[string]any{"type": "integer", "description": "宽高必须是该值的正整数倍（常见 16 或 32），0 表示不声明"},
 			},
 			"required": []string{"model"},
 		}, true, func(args map[string]any) (any, error) {
@@ -670,6 +671,7 @@ func registerSetModelMetaTool(s *Server, d WriteDeps) {
 				MinHeightPx:    argInt(args, "min_height_px", 0),
 				MaxWidthPx:     argInt(args, "max_width_px", 0),
 				MaxHeightPx:    argInt(args, "max_height_px", 0),
+				SizeMultiple:   argInt(args, "size_multiple", 0),
 			}
 			meta := model.SanitizeModelMeta(name, in)
 			if err := d.Store.UpsertModelMeta(&meta); err != nil {

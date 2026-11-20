@@ -491,6 +491,8 @@ export type ModelMeta = {
   max_width_px: number
   /** 输出高度上限（像素），0 表示不声明 */
   max_height_px: number
+  /** 宽高必须是该值的正整数倍（常见 16 或 32），0 表示不声明 */
+  size_multiple: number
   updated_at: number
   /** 当前是否仍有渠道承载该模型名（服务端计算） */
   has_channel: boolean

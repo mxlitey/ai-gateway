@@ -422,7 +422,7 @@ func registerPriceTool(s *Server, d ReadDeps) {
 
 func registerModelMetaTool(s *Server, d ReadDeps) {
 	s.Tools("get_model_meta",
-		"查询生图模型的能力与约束声明：支持的输出格式与分辨率区间、参考图张数上限、文生图/图生图出图张数上限、能否写中文等。这些是面板里手工填写的声明，未出现的字段表示未声明（未知），不代表不限制。用于在调用生图接口前确定该传什么参数。",
+		"查询生图模型的能力与约束声明：支持的输出格式与分辨率区间、尺寸倍数（宽高需为 16/32 等的正整数倍）、参考图张数上限、文生图/图生图出图张数上限、能否写中文等。这些是面板里手工填写的声明，未出现的字段表示未声明（未知），不代表不限制。用于在调用生图接口前确定该传什么参数。",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{

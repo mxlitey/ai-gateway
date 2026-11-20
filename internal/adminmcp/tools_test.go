@@ -70,6 +70,7 @@ func TestSetModelMetaTool(t *testing.T) {
 		"min_height_px":  float64(512),
 		"max_width_px":   float64(4096),
 		"max_height_px":  float64(4096),
+		"size_multiple":  float64(16),
 		"output_formats": []any{"PNG", "gif"},
 	}, true)
 	if res["isError"] == true {
@@ -89,6 +90,9 @@ func TestSetModelMetaTool(t *testing.T) {
 	if got.MinWidthPx != 512 || got.MaxWidthPx != 4096 ||
 		got.MinHeightPx != 512 || got.MaxHeightPx != 4096 {
 		t.Fatalf("分辨率区间不符: %+v", got)
+	}
+	if got.SizeMultiple != 16 {
+		t.Fatalf("尺寸倍数不符: %+v", got)
 	}
 	if len(got.OutputFormats) != 1 || got.OutputFormats[0] != "png" {
 		t.Fatalf("格式应只留 png，实际 %v", got.OutputFormats)

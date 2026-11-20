@@ -482,6 +482,9 @@ type ModelMeta struct {
 	// MaxWidthPx / MaxHeightPx 输出图片宽高的上限（像素），0 表示不声明。
 	MaxWidthPx  int `json:"max_width_px"`
 	MaxHeightPx int `json:"max_height_px"`
+	// SizeMultiple 宽高必须是该值的正整数倍（常见 16 或 32），0 表示不声明。
+	// 只对请求里的尺寸做约束，与 MinWidthPx/MaxWidthPx 并行生效。
+	SizeMultiple int `json:"size_multiple"`
 
 	// UpdatedAt 最后保存时间（Unix 毫秒）。
 	UpdatedAt int64 `json:"updated_at"`

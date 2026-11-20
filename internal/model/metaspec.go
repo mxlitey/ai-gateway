@@ -27,6 +27,8 @@ func SanitizeModelMeta(name string, in ModelMeta) ModelMeta {
 	out.MinHeightPx = ClampInt(out.MinHeightPx, 0, 16384)
 	out.MaxWidthPx = ClampInt(out.MaxWidthPx, 0, 16384)
 	out.MaxHeightPx = ClampInt(out.MaxHeightPx, 0, 16384)
+	// 尺寸倍数只约束「宽高取整的粒度」，超过常见分辨率上限时已无意义
+	out.SizeMultiple = ClampInt(out.SizeMultiple, 0, 1024)
 	// 下限大于上限时以上限为准，避免在响应里给出自相矛盾的区间
 	if out.MaxWidthPx > 0 && out.MinWidthPx > out.MaxWidthPx {
 		out.MinWidthPx = out.MaxWidthPx

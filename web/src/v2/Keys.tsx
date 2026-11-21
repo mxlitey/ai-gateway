@@ -493,7 +493,7 @@ function StorageScopePicker({
       value={value}
       onChange={onChange}
       options={[
-        { value: 'all', label: '允许（可签发上传/下载地址）' },
+        { value: 'all', label: '启用' },
         { value: 'none', label: '禁用' },
       ]}
     />

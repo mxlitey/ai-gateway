@@ -352,29 +352,46 @@ func registerResetCooldownTool(s *Server, d ReadDeps) {
 
 func registerErrorLogsTool(s *Server, d ReadDeps) {
 	s.Tools("get_error_logs",
-		"查询上游错误日志（按渠道、时间区间）：HTTP 状态、错误信息、发生时间。用于排查最近的失败原因。",
+		"查询错误日志（按来源、渠道、时间区间）：HTTP 状态、错误信息、发生时间。source=gateway 表示客户端→网关（转发前被拒绝，未请求上游），source=upstream 表示网关→上游（渠道返回失败）。",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"channel_id": map[string]any{"type": "string", "description": "渠道 ID；留空返回所有渠道"},
-				"days":       map[string]any{"type": "integer", "description": "查询最近多少天，默认 7"},
+				"source": map[string]any{
+					"type":        "string",
+					"enum":        []string{"", "gateway", "upstream"},
+					"description": "错误来源：gateway=客户端→网关，upstream=网关→上游；留空返回全部",
+				},
+				"days": map[string]any{"type": "integer", "description": "查询最近多少天，默认 7"},
 			},
 		}, false, func(args map[string]any) (any, error) {
 			days := clampInt(argInt(args, "days", 7), 1, 365)
 			to := time.Now().UnixMilli()
 			from := to - int64(days)*86400000
 			channelID := argString(args, "channel_id")
+			source := strings.TrimSpace(argString(args, "source"))
+			if source != "" && source != model.ErrorSourceGateway && source != model.ErrorSourceUpstream {
+				return nil, fmt.Errorf("source 需为 gateway 或 upstream")
+			}
+			var logs []model.ErrorLog
+			var err error
 			if channelID == "" {
 				// 不按现存渠道遍历：渠道删除后，它产生的历史错误仍需可查
-				logs, err := d.Store.ListErrorLogs(from, to)
-				if err != nil {
-					return nil, err
-				}
-				return map[string]any{"from": from, "to": to, "count": len(logs), "items": logs}, nil
+				logs, err = d.Store.ListErrorLogs(from, to)
+			} else {
+				logs, err = d.Store.ListErrorLogsByChannel(channelID, from, to)
 			}
-			logs, err := d.Store.ListErrorLogsByChannel(channelID, from, to)
 			if err != nil {
 				return nil, err
+			}
+			if source != "" {
+				filtered := logs[:0]
+				for _, e := range logs {
+					if e.Source == source {
+						filtered = append(filtered, e)
+					}
+				}
+				logs = filtered
 			}
 			return map[string]any{"from": from, "to": to, "count": len(logs), "items": logs}, nil
 		})

@@ -254,6 +254,12 @@ type Channel struct {
 	ImageModels []string `json:"image_models"`
 	// ImageGen 渠道级生图配置（同步/异步）。
 	ImageGen ImageGenConfig `json:"image_generation"`
+	// ParamMap 对话请求体的参数改名：客户端参数名 -> 上游参数名。
+	ParamMap map[string]string `json:"param_map"`
+	// StaticParams 对话请求体的补齐参数：客户端未传时填入这些字段。
+	StaticParams map[string]any `json:"static_params"`
+	// DropParams 对话请求体里要删除的参数名。
+	DropParams []string `json:"drop_params"`
 	// KeyStrategy 多密钥选用策略，见 KeyStrategy* 常量；空值按轮询处理。
 	KeyStrategy string `json:"key_strategy"`
 	Enabled     bool   `json:"enabled"`
@@ -344,9 +350,17 @@ type APIKey struct {
 	CreatedAt    int64  `json:"created_at"`
 }
 
-// ErrorLog 一条上游错误记录。
+// 错误来源：gateway 表示请求在转发前被网关拒绝（未请求上游），
+// upstream 表示已实际请求上游、由渠道返回失败。
+const (
+	ErrorSourceGateway  = "gateway"
+	ErrorSourceUpstream = "upstream"
+)
+
+// ErrorLog 一条错误记录。
 type ErrorLog struct {
 	ID            int64  `json:"id"`
+	Source        string `json:"source"`
 	ChannelID     string `json:"channel_id"`
 	ChannelName   string `json:"channel_name"`
 	BaseURL       string `json:"base_url"`
@@ -363,6 +377,8 @@ type ErrorLog struct {
 type RequestLog struct {
 	ID               int64   `json:"id"`
 	CreatedAt        int64   `json:"created_at"`
+	RequestID        string  `json:"request_id"`
+	AttemptNo        int     `json:"attempt_no"`
 	APIKeyID         string  `json:"api_key_id"`
 	APIKeyName       string  `json:"api_key_name"`
 	ChannelID        string  `json:"channel_id"`
@@ -388,6 +404,9 @@ type RequestLog struct {
 	PriceModel       string  `json:"price_model"`
 	PriceSource      string  `json:"price_source"`
 	Error            string  `json:"error"`
+	// 以下字段仅在查询明细时派生，不落库：同一条 request_id 的总尝试次数与是否最终成功。
+	AttemptTotal int  `json:"attempt_total"`
+	ChainSuccess bool `json:"chain_success"`
 }
 
 // 价格单位。

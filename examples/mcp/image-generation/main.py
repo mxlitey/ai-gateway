@@ -241,15 +241,28 @@ IMAGE_TOOLS = [
             "向网关申请一个对象存储预签名直传地址（mode=presigned_put），"
             "用途：把本地图片换成可作为 image_url 的短链接。"
             "返回 upload_url / method / headers / public_url / download_url / expires_at；"
-            "网关只签 URL、不接收字节，客户端把图片原始字节按 method PUT 到 upload_url 即完成上传。"
+            "网关只签 URL、不接收字节，客户端把图片原始字节按 method PUT 到 upload_url 即完成上传；"
+            "上传时必须设置 Content-Type（如 image/png、image/jpeg），否则对象存储会按二进制流保存，"
+            "链接在浏览器里容易变成下载。"
             "上传是普通 HTTP（不经过 MCP，不受 8 MB 请求体限制），"
             "成功后把 public_url（私有桶则为 download_url）作为 image_url 使用。"
             "预签名地址有时效，过期后重新调用本工具签发。"
             "参考图在本机读不到、或超过单张 base64 上限时，优先走这里。"
+            "建议传 filename（如 ref.png），网关会按扩展名生成带后缀的对象键；"
+            "不传则对象键没有后缀，部分场景下浏览器会按下载处理而不是直接预览。"
             "网关未配置对象存储（501）或该密钥没有对象存储权限（403）时，"
             "返回 enabled=false 并在 reason / hint 里说明原因。"
         ),
-        "inputSchema": {"type": "object", "properties": {}, "required": []},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "filename": {
+                    "type": "string",
+                    "description": "可选，带扩展名的文件名（如 ref.png），仅用于生成对象键后缀；支持 png/jpg/jpeg/webp/gif",
+                },
+            },
+            "required": [],
+        },
     },
 ]
 
@@ -271,8 +284,9 @@ INSTRUCTIONS = (
     "7) 需要放弃时调用 cancel_image_job(job_id)：只停止网关侧等待与轮询，"
     "不保证终止上游任务，异步渠道可能继续执行并已产生费用；"
     "8) 参考图三种来源：公网 http(s) 链接直接作为 image_url；本机文件用 image_path（仅同机可用）；"
-    "对话里粘贴的图片、或本机读不到的文件，先调用 image_host_info 取对象存储预签名 upload_url，"
-    "把图片原始字节 PUT 上去换取 url，再作为 image_url 传入——"
+    "对话里粘贴的图片、或本机读不到的文件，先调用 image_host_info（传 filename，如 ref.png）"
+    "取对象存储预签名 upload_url，"
+    "把图片原始字节 PUT 上去换取 url（记得设置 Content-Type，如 image/png），再作为 image_url 传入——"
     "该请求不经过 MCP，不受 8 MB 请求体限制。"
     "image_path 报文件不存在时不要换路径反复试，直接改走直传。"
 )
@@ -879,13 +893,13 @@ def _storage_ticket(key, filename=""):
     return data, ""
 
 
-def _image_host_info(key=""):
+def _image_host_info(key="", filename=""):
     """返回对象存储直传说明 + 一张可直接使用的预签名上传凭证。
 
     只返回「预签名 URL + 方法」，文件本体由客户端 HTTP 直传对象存储，
-    不进 MCP 的 JSON body。
+    不进 MCP 的 JSON body。filename 仅用于让网关生成带后缀的对象键。
     """
-    ticket, reason = _storage_ticket(key)
+    ticket, reason = _storage_ticket(key, filename)
     if not ticket:
         if reason == "forbidden":
             hint = (
@@ -919,8 +933,10 @@ def _image_host_info(key=""):
         "expires_at": int(ticket.get("expires_at") or 0),
         "ttl_seconds": int(ticket.get("expires_in") or 0),
         "hint": (
-            "把图片原始字节 PUT 到 upload_url 即完成上传（签名在 URL 里，不需要额外请求头）。"
-            "示例：curl -sS -X PUT '<upload_url>' --data-binary @/本地/图片.png 。"
+            "把图片原始字节 PUT 到 upload_url 即完成上传（签名在 URL 里，不需要额外的鉴权头）。"
+            "务必设置 Content-Type，例如 image/png / image/jpeg / image/webp，且要与文件真实类型一致；"
+            "不设置的话对象存储会按 application/octet-stream 保存，链接容易被浏览器当成下载。"
+            "示例：curl -sS -X PUT '<upload_url>' -H 'Content-Type: image/png' --data-binary @/本地/图片.png 。"
             "上传成功后把 public_url（若为空则用 download_url）作为 generate_image 的 image_url。"
             "该请求是普通 HTTP，不经过 MCP，因此不受 8 MB 请求体限制。"
             "预签名地址有有效期（expires_at 为 Unix 秒），过期后重新调用本工具签发。"
@@ -1361,7 +1377,7 @@ def call_tool(name, arguments, key=""):
         elif name == "list_image_models":
             payload = _list_models(key)
         elif name == "image_host_info":
-            payload = _image_host_info(key)
+            payload = _image_host_info(key, str(arguments.get("filename") or ""))
         else:
             return _error_result("未知工具: %s" % name, code="unknown_tool")
     except ToolError as exc:

@@ -12,32 +12,42 @@ import (
 
 // ---------- 请求用量 ----------
 
-const requestLogCols = `id, created_at, api_key_id, api_key_name, channel_id, channel_name,
+const requestLogCols = `id, created_at, request_id, attempt_no, api_key_id, api_key_name, channel_id, channel_name,
 	endpoint, stream, model, upstream_model, upstream_key_hint, status, success, attempts, duration_ms, first_token_ms,
 	prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens,
 	cost_prompt, cost_completion, cost, price_model, price_source, error`
 
+// requestLogChainCols 查询时派生调用链信息：同一条 request_id 的总尝试次数与是否最终成功。
+// 旧记录 request_id 为空，按单次请求处理（返回 0，前端不展示链标记）。
+const requestLogChainCols = `,
+	CASE WHEN request_id = '' THEN 0
+		ELSE (SELECT COUNT(1) FROM request_logs c WHERE c.request_id = request_logs.request_id) END AS attempt_total,
+	CASE WHEN request_id = '' THEN 0
+		ELSE (SELECT MAX(c.success) FROM request_logs c WHERE c.request_id = request_logs.request_id) END AS chain_success`
+
 // 插入时不带 id：INTEGER PRIMARY KEY 显式写入 0 会被当成合法 rowid
-const requestLogInsertCols = `created_at, api_key_id, api_key_name, channel_id, channel_name,
+const requestLogInsertCols = `created_at, request_id, attempt_no, api_key_id, api_key_name, channel_id, channel_name,
 	endpoint, stream, model, upstream_model, upstream_key_hint, status, success, attempts, duration_ms, first_token_ms,
 	prompt_tokens, completion_tokens, total_tokens, cached_tokens, reasoning_tokens,
 	cost_prompt, cost_completion, cost, price_model, price_source, error`
 
 func scanRequestLog(sc scanner) (*model.RequestLog, error) {
 	r := &model.RequestLog{}
-	var stream, success int
+	var stream, success, chainSuccess int
 	if err := sc.Scan(
-		&r.ID, &r.CreatedAt, &r.APIKeyID, &r.APIKeyName, &r.ChannelID, &r.ChannelName,
+		&r.ID, &r.CreatedAt, &r.RequestID, &r.AttemptNo, &r.APIKeyID, &r.APIKeyName, &r.ChannelID, &r.ChannelName,
 		&r.Endpoint, &stream, &r.Model, &r.UpstreamModel, &r.UpstreamKeyHint,
 		&r.Status, &success, &r.Attempts, &r.DurationMS, &r.FirstTokenMS,
 		&r.PromptTokens, &r.CompletionTokens, &r.TotalTokens, &r.CachedTokens, &r.ReasoningTokens,
 		&r.CostPrompt, &r.CostCompletion, &r.Cost,
 		&r.PriceModel, &r.PriceSource, &r.Error,
+		&r.AttemptTotal, &chainSuccess,
 	); err != nil {
 		return nil, err
 	}
 	r.Stream = stream != 0
 	r.Success = success != 0
+	r.ChainSuccess = chainSuccess != 0
 	return r, nil
 }
 
@@ -48,8 +58,9 @@ func (s *Store) InsertRequestLog(r *model.RequestLog) error {
 	}
 	res, err := s.db.Exec(
 		`INSERT INTO request_logs (`+requestLogInsertCols+`)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		r.CreatedAt, r.APIKeyID, r.APIKeyName, r.ChannelID, r.ChannelName,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		r.CreatedAt, r.RequestID, r.AttemptNo, r.APIKeyID, r.APIKeyName,
+		r.ChannelID, r.ChannelName,
 		r.Endpoint, boolToInt(r.Stream), r.Model, r.UpstreamModel, r.UpstreamKeyHint,
 		r.Status, boolToInt(r.Success), r.Attempts, r.DurationMS, r.FirstTokenMS,
 		r.PromptTokens, r.CompletionTokens, r.TotalTokens, r.CachedTokens, r.ReasoningTokens,
@@ -118,7 +129,7 @@ func (s *Store) ListRequestLogs(f RequestLogFilter) ([]model.RequestLog, error) 
 	args = append(args, f.Limit, f.Offset)
 
 	rows, err := s.db.Query(
-		`SELECT `+requestLogCols+` FROM request_logs`+where+` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
+		`SELECT `+requestLogCols+requestLogChainCols+` FROM request_logs`+where+` ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`,
 		args...,
 	)
 	if err != nil {

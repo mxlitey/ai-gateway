@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/czg95/ai-gateway-v2/internal/id"
 	"github.com/czg95/ai-gateway-v2/internal/model"
 	"github.com/czg95/ai-gateway-v2/internal/pricing"
 	"github.com/czg95/ai-gateway-v2/internal/routing"
@@ -33,6 +34,8 @@ type Recorder struct {
 func newRecorder(s *store.Store, pricer *pricing.Resolver, k *model.APIKey, endpoint string, stream bool, modelName string) *Recorder {
 	r := &Recorder{store: s, pricer: pricer, start: time.Now()}
 	r.row.CreatedAt = r.start.UnixMilli()
+	r.row.RequestID = id.UUID()
+	r.row.AttemptNo = 1
 	r.row.Endpoint = endpoint
 	r.row.Stream = stream
 	r.row.Model = modelName
@@ -83,12 +86,16 @@ func (r *Recorder) nextAttempt(t routing.Target) *Recorder {
 	// 快照要沿用的字段，避免在锁外读取
 	endpoint, stream, modelName := r.row.Endpoint, r.row.Stream, r.row.Model
 	apiKeyID, apiKeyName := r.row.APIKeyID, r.row.APIKeyName
+	requestID, attemptNo := r.row.RequestID, r.row.AttemptNo
 	r.mu.Unlock()
 	// Commit 内部有 done 幂等保护，已结算过的不会重复写
 	r.Commit()
 
 	n := newRecorder(r.store, r.pricer, nil, endpoint, stream, modelName)
 	n.row.CreatedAt = time.Now().UnixMilli()
+	// 同一次客户端请求的故障转移共用 request_id，序号递增，便于在明细里还原调用链
+	n.row.RequestID = requestID
+	n.row.AttemptNo = attemptNo + 1
 	n.row.APIKeyID = apiKeyID
 	n.row.APIKeyName = apiKeyName
 	n.Served(t)

@@ -184,12 +184,14 @@ func (h *Handler) VerifyAPIKey(r *http.Request) (*model.APIKey, string) {
 
 // fwdSpec 描述一次转发流程。
 type fwdSpec struct {
-	targets            []routing.Target
-	publicModel        string
-	body               map[string]any
-	rawQuery           string
-	buildPath          func(t routing.Target) string
-	applyModel         func(t routing.Target)
+	targets     []routing.Target
+	publicModel string
+	body        map[string]any
+	rawQuery    string
+	buildPath   func(t routing.Target) string
+	applyModel  func(t routing.Target)
+	// applyBody 覆盖本次尝试的请求体（例如按渠道配置改写参数）；nil 表示直接用 body。
+	applyBody          func(t routing.Target) map[string]any
 	isStream           bool
 	acceptStreamHeader bool
 	// handleUpstream 处理「上游有响应且 <500」的情况；返回 retry=true 表示继续下一个目标。
@@ -233,7 +235,11 @@ func (h *Handler) forward(ctx context.Context, clientReq *http.Request, spec fwd
 		if spec.applyModel != nil {
 			spec.applyModel(t)
 		}
-		payload, err := json.Marshal(spec.body)
+		payloadBody := spec.body
+		if spec.applyBody != nil {
+			payloadBody = spec.applyBody(t)
+		}
+		payload, err := json.Marshal(payloadBody)
 		if err != nil {
 			lastErr = "marshal body: " + err.Error()
 			continue
@@ -539,6 +545,9 @@ func (h *Handler) handleOpenAI(w http.ResponseWriter, r *http.Request, body map[
 			if t.UpstreamModel != "" {
 				body["model"] = t.UpstreamModel
 			}
+		},
+		applyBody: func(t routing.Target) map[string]any {
+			return applyChatParams(body, t.Channel)
 		},
 		isStream:           isStream,
 		acceptStreamHeader: false,

@@ -4,19 +4,32 @@ import { api, type ErrorLog } from '../lib/api'
 import { bjDateString, bjFmtDateTime } from '../lib/tz'
 import { toast } from '../lib/toast'
 import DatePicker from '../components/DatePicker'
-import { Button, Empty, ErrorText, Loading, PageHead } from './ui'
+import { Button, Empty, ErrorText, Loading, PageHead, Segmented } from './ui'
 
 // 明细行采用「表格行 + 点击展开详情」；窄屏由 CSS 切换为堆叠行
+
+type SourceFilter = 'all' | 'gateway' | 'upstream'
 
 export default function V2Errors() {
   const [date, setDate] = useState(bjDateString())
   const [openId, setOpenId] = useState<number | null>(null)
+  const [source, setSource] = useState<SourceFilter>('all')
 
   const errors = useQuery({ queryKey: ['errors', date], queryFn: () => api.errors(date) })
 
   const groups = errors.data?.channels ?? []
-  const items = groups.flatMap((g) => g.errors).sort((a, b) => b.created_at - a.created_at)
-  const channelCount = new Set(items.map((e) => e.channel_id)).size
+  const all = groups.flatMap((g) => g.errors).sort((a, b) => b.created_at - a.created_at)
+  const gatewayItems = all.filter((e) => e.source === 'gateway')
+  const upstreamItems = all.filter((e) => e.source === 'upstream')
+  const items = source === 'all' ? all : source === 'gateway' ? gatewayItems : upstreamItems
+  const channelCount = new Set(items.filter((e) => e.channel_id).map((e) => e.channel_id)).size
+
+  const summary =
+    source === 'gateway'
+      ? `${date} ${items.length} 条，均在转发前被网关拒绝，未请求上游`
+      : source === 'upstream'
+        ? `${date} ${items.length} 条，来自 ${channelCount} 个渠道`
+        : `${date} 共 ${all.length} 条：客户端→网关 ${gatewayItems.length} 条，网关→上游 ${upstreamItems.length} 条`
 
   return (
     <div className="stack">
@@ -38,38 +51,47 @@ export default function V2Errors() {
         </div>
       ) : errors.isError ? (
         <ErrorText text={(errors.error as Error).message} />
-      ) : items.length === 0 ? (
-        <div className="panel">
-          <div className="panel-h">
-            <h2>{date} 的错误日志</h2>
-          </div>
-          <Empty text={`${date} 没有错误记录`} />
-        </div>
       ) : (
         <>
-          <p className="tiny faint" style={{ margin: 0 }}>
-            {date} 共 {items.length} 条错误，来自 {channelCount} 个渠道
-          </p>
-          <div className="panel">
-            {/* 宽屏表头 */}
-            <div className="err-head">
-              <span />
-              <span>时间</span>
-              <span>渠道</span>
-              <span>模型</span>
-              <span>状态</span>
-              <span>错误信息</span>
-              <span />
-            </div>
-            {items.map((e) => (
-              <ErrorRow
-                key={e.id}
-                e={e}
-                open={openId === e.id}
-                onToggle={() => setOpenId(openId === e.id ? null : e.id)}
-              />
-            ))}
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+            <Segmented
+              value={source}
+              onChange={setSource}
+              options={[
+                { value: 'all', label: `全部 ${all.length}` },
+                { value: 'gateway', label: `客户端→网关 ${gatewayItems.length}` },
+                { value: 'upstream', label: `网关→上游 ${upstreamItems.length}` },
+              ]}
+            />
+            <span className="tiny faint">{summary}</span>
           </div>
+
+          {items.length === 0 ? (
+            <div className="panel">
+              <Empty text={`${date} 没有该来源的错误记录`} />
+            </div>
+          ) : (
+            <div className="panel">
+              {/* 宽屏表头 */}
+              <div className="err-head">
+                <span />
+                <span>时间</span>
+                <span>渠道</span>
+                <span>模型</span>
+                <span>状态</span>
+                <span>错误信息</span>
+                <span />
+              </div>
+              {items.map((e) => (
+                <ErrorRow
+                  key={e.id}
+                  e={e}
+                  open={openId === e.id}
+                  onToggle={() => setOpenId(openId === e.id ? null : e.id)}
+                />
+              ))}
+            </div>
+          )}
         </>
       )}
     </div>
@@ -163,7 +185,8 @@ function ErrorRow({ e, open, onToggle }: { e: ErrorLog; open: boolean; onToggle:
           {(
             [
               ['时间', fmtTime(e.created_at)],
-              ['渠道', `${e.channel_name}（${e.channel_id}）`],
+              ['来源', sourceText(e)],
+              ['渠道', e.channel_id ? `${e.channel_name}（${e.channel_id}）` : e.channel_name || '-'],
               ['上游地址', e.base_url || '-'],
               ['模型', e.model || '-'],
               ['上游模型', e.upstream_model || '-'],
@@ -201,7 +224,8 @@ function StatusBadge({ status, text }: { status: number; text: string }) {
 async function copyRecord(e: ErrorLog) {
   const text = [
     `时间: ${fmtTime(e.created_at)}`,
-    `渠道: ${e.channel_name}（${e.channel_id}）`,
+    `来源: ${sourceText(e)}`,
+    `渠道: ${e.channel_id ? `${e.channel_name}（${e.channel_id}）` : e.channel_name || '-'}`,
     `上游地址: ${e.base_url || '-'}`,
     `模型: ${e.model || '-'}`,
     `上游模型: ${e.upstream_model || '-'}`,
@@ -230,4 +254,8 @@ async function copyRecord(e: ErrorLog) {
 
 function fmtTime(ms: number): string {
   return bjFmtDateTime(ms)
+}
+
+function sourceText(e: ErrorLog): string {
+  return e.source === 'gateway' ? '客户端 → 网关' : '网关 → 上游'
 }

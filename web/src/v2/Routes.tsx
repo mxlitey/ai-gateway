@@ -816,25 +816,35 @@ function MetaEditor({
               </div>
             </div>
 
-            <div style={{ marginTop: 8 }} title="输出图片的最小与最大宽高，单位像素">
-              <div className="tiny muted" style={{ marginBottom: 4 }}>
-                分辨率
-              </div>
-              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span className="tiny muted">最小</span>
-                  {sizeBox('min_width_px', '宽')}
-                  <span className="tiny faint">×</span>
-                  {sizeBox('min_height_px', '高')}
+            <div
+              style={{
+                marginTop: 8,
+                display: 'flex',
+                gap: 24,
+                flexWrap: 'wrap',
+                alignItems: 'flex-start',
+              }}
+            >
+              <div title="输出图片的最小与最大宽高，单位像素">
+                <div className="tiny muted" style={{ marginBottom: 4 }}>
+                  分辨率
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span className="tiny muted">最大</span>
-                  {sizeBox('max_width_px', '宽')}
-                  <span className="tiny faint">×</span>
-                  {sizeBox('max_height_px', '高')}
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span className="tiny muted">最小</span>
+                    {sizeBox('min_width_px', '宽')}
+                    <span className="tiny faint">×</span>
+                    {sizeBox('min_height_px', '高')}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span className="tiny muted">最大</span>
+                    {sizeBox('max_width_px', '宽')}
+                    <span className="tiny faint">×</span>
+                    {sizeBox('max_height_px', '高')}
+                  </div>
                 </div>
               </div>
-              <div style={{ marginTop: 8, width: 140 }}>
+              <div style={{ width: 140 }}>
                 {numField(
                   '尺寸倍数',
                   '宽高必须是该值的正整数倍，常见 16 或 32；留空不声明',

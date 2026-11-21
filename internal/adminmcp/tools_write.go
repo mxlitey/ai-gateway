@@ -438,14 +438,17 @@ func registerCreateChannelTool(s *Server, d WriteDeps) {
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"name":         map[string]any{"type": "string", "description": "渠道名称"},
-				"base_url":     map[string]any{"type": "string", "description": "上游 Base URL，如 https://api.openai.com/v1"},
-				"path":         map[string]any{"type": "string", "description": "聊天补全路径，留空用默认 /chat/completions"},
-				"keys":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "上游密钥列表"},
-				"models":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "该渠道支持的公开模型名"},
-				"model_map":    map[string]any{"type": "object", "description": "公开模型名到上游模型名的映射"},
-				"key_strategy": map[string]any{"type": "string", "enum": []string{"rotate", "ordered"}, "description": "多密钥策略，默认 rotate"},
-				"enabled":      map[string]any{"type": "boolean", "description": "是否立即启用，默认 true"},
+				"name":          map[string]any{"type": "string", "description": "渠道名称"},
+				"base_url":      map[string]any{"type": "string", "description": "上游 Base URL，如 https://api.openai.com/v1"},
+				"path":          map[string]any{"type": "string", "description": "聊天补全路径，留空用默认 /chat/completions"},
+				"keys":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "上游密钥列表"},
+				"models":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "该渠道支持的公开模型名"},
+				"model_map":     map[string]any{"type": "object", "description": "公开模型名到上游模型名的映射"},
+				"param_map":     map[string]any{"type": "object", "description": "对话请求体参数改名：客户端参数名 → 上游参数名"},
+				"static_params": map[string]any{"type": "object", "description": "对话请求体补齐参数：客户端未传这些字段时填入"},
+				"drop_params":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "对话请求体里要删除的参数名"},
+				"key_strategy":  map[string]any{"type": "string", "enum": []string{"rotate", "ordered"}, "description": "多密钥策略，默认 rotate"},
+				"enabled":       map[string]any{"type": "boolean", "description": "是否立即启用，默认 true"},
 			},
 			"required": []string{"name", "base_url"},
 		}, true, func(args map[string]any) (any, error) {
@@ -470,6 +473,9 @@ func registerCreateChannelTool(s *Server, d WriteDeps) {
 				Keys:          toChannelKeys(argStrings(args, "keys")),
 				Models:        argStrings(args, "models"),
 				ModelMap:      argStringMap(args, "model_map"),
+				ParamMap:      argStringMap(args, "param_map"),
+				StaticParams:  argObjectMap(args, "static_params"),
+				DropParams:    argStrings(args, "drop_params"),
 				ModelPriority: map[string]int{},
 				KeyStrategy:   model.NormalizeKeyStrategy(argString(args, "key_strategy")),
 				Enabled:       enabled,
@@ -492,15 +498,18 @@ func registerUpdateChannelTool(s *Server, d WriteDeps) {
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"channel_id":   map[string]any{"type": "string", "description": "渠道 ID"},
-				"name":         map[string]any{"type": "string", "description": "新名称"},
-				"base_url":     map[string]any{"type": "string", "description": "新 Base URL"},
-				"path":         map[string]any{"type": "string", "description": "新聊天补全路径"},
-				"keys":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "完整的密钥列表（会整体替换）"},
-				"models":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "完整的模型列表（会整体替换）"},
-				"model_map":    map[string]any{"type": "object", "description": "完整的模型映射（会整体替换）"},
-				"key_strategy": map[string]any{"type": "string", "enum": []string{"rotate", "ordered"}, "description": "多密钥策略"},
-				"enabled":      map[string]any{"type": "boolean", "description": "是否启用"},
+				"channel_id":    map[string]any{"type": "string", "description": "渠道 ID"},
+				"name":          map[string]any{"type": "string", "description": "新名称"},
+				"base_url":      map[string]any{"type": "string", "description": "新 Base URL"},
+				"path":          map[string]any{"type": "string", "description": "新聊天补全路径"},
+				"keys":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "完整的密钥列表（会整体替换）"},
+				"models":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "完整的模型列表（会整体替换）"},
+				"model_map":     map[string]any{"type": "object", "description": "完整的模型映射（会整体替换）"},
+				"param_map":     map[string]any{"type": "object", "description": "完整的对话参数改名映射（整体替换）"},
+				"static_params": map[string]any{"type": "object", "description": "完整的对话补齐参数（整体替换）"},
+				"drop_params":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "完整的对话参数剥离列表（整体替换）"},
+				"key_strategy":  map[string]any{"type": "string", "enum": []string{"rotate", "ordered"}, "description": "多密钥策略"},
+				"enabled":       map[string]any{"type": "boolean", "description": "是否启用"},
 				"image_models": map[string]any{
 					"type": "array", "items": map[string]any{"type": "string"},
 					"description": "生图模型列表（整体替换）；标记后这些模型只走 /v1/images/generations",
@@ -551,6 +560,15 @@ func registerUpdateChannelTool(s *Server, d WriteDeps) {
 			}
 			if _, ok := args["model_map"]; ok {
 				next.ModelMap = argStringMap(args, "model_map")
+			}
+			if _, ok := args["param_map"]; ok {
+				next.ParamMap = argStringMap(args, "param_map")
+			}
+			if _, ok := args["static_params"]; ok {
+				next.StaticParams = argObjectMap(args, "static_params")
+			}
+			if _, ok := args["drop_params"]; ok {
+				next.DropParams = argStrings(args, "drop_params")
 			}
 			if v := argString(args, "key_strategy"); v != "" {
 				next.KeyStrategy = model.NormalizeKeyStrategy(v)
@@ -835,6 +853,18 @@ func argStrings(args map[string]any, key string) []string {
 		}
 	}
 	return out
+}
+
+func argObjectMap(args map[string]any, key string) map[string]any {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return nil
+	}
+	raw, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	return raw
 }
 
 func argStringMap(args map[string]any, key string) map[string]string {

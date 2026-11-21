@@ -51,6 +51,12 @@ export type Channel = {
   /** 本渠道上被标记为生图的公开模型名 */
   image_models: string[]
   image_generation: ImageGenConfig
+  /** 对话请求体参数改名：客户端参数名 → 上游参数名 */
+  param_map: Record<string, string>
+  /** 对话请求体补齐参数：客户端未传时填入 */
+  static_params: Record<string, unknown>
+  /** 对话请求体里要删除的参数名 */
+  drop_params: string[]
   key_strategy: string
   enabled: boolean
   source: string
@@ -75,6 +81,8 @@ export type APIKey = {
 
 export type ErrorLog = {
   id: number
+  /** gateway=客户端→网关（转发前被拒绝）；upstream=网关→上游（渠道返回失败） */
+  source: 'gateway' | 'upstream'
   channel_id: string
   channel_name: string
   base_url: string
@@ -194,6 +202,10 @@ export type PluginLoginResponse = {
 export type RequestLogItem = {
   id: number
   created_at: number
+  /** 同一次客户端请求的故障转移尝试共享该 ID */
+  request_id: string
+  /** 尝试序号，从 1 开始 */
+  attempt_no: number
   api_key_id: string
   api_key_name: string
   channel_id: string
@@ -220,6 +232,10 @@ export type RequestLogItem = {
   price_model: string
   price_source: string
   error: string
+  /** 同一条请求链的总尝试次数（0 表示旧记录/无调用链） */
+  attempt_total: number
+  /** 该请求链最终是否有一次尝试成功 */
+  chain_success: boolean
 }
 
 export type UsageBucket = {
@@ -516,6 +532,9 @@ export type ChannelInput = {
   headers: HeaderItem[]
   image_models: string[]
   image_generation: ImageGenConfig
+  param_map: Record<string, string>
+  static_params: Record<string, unknown>
+  drop_params: string[]
   key_strategy: string
   enabled: boolean
 }

@@ -32,6 +32,9 @@ type FormState = {
   modelsText: string
   modelMap: MapRow[]
   headers: HeaderRow[]
+  paramMap: HeaderRow[]
+  staticParamsText: string
+  dropParamsText: string
   imageModelsText: string
   imageMode: '' | 'sync' | 'async'
   imagePath: string
@@ -93,6 +96,9 @@ const emptyForm: FormState = {
   modelsText: '',
   modelMap: [],
   headers: [],
+  paramMap: [],
+  staticParamsText: '',
+  dropParamsText: '',
   imageModelsText: '',
   imageMode: '',
   imagePath: '',
@@ -165,6 +171,13 @@ export default function V2Channels() {
             .filter(([pub]) => pub !== ''),
         ),
         headers: toHeaders(state.headers),
+        param_map: Object.fromEntries(
+          state.paramMap
+            .map((r) => [r.name.trim(), r.value.trim()] as const)
+            .filter(([from, to]) => from !== '' && to !== ''),
+        ),
+        static_params: parseJSONObject(state.staticParamsText),
+        drop_params: splitLines(state.dropParamsText),
         image_models: splitLines(state.imageModelsText),
         image_generation: {
           mode: state.imageMode,
@@ -814,6 +827,39 @@ export default function V2Channels() {
                 </div>
               </div>
             </Field>
+
+            <details>
+              <summary className="tiny faint" style={{ cursor: 'pointer' }}>
+                高级：请求体参数适配
+              </summary>
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 9 }}>
+                <Field label="参数映射（客户端参数 → 上游参数）">
+                  <HeaderRows
+                    rows={form.paramMap}
+                    onChange={(rows) => setForm({ ...form, paramMap: rows })}
+                    namePlaceholder="max_tokens"
+                    valuePlaceholder="max_completion_tokens"
+                    addLabel="添加映射"
+                  />
+                </Field>
+                <div className="v2grid g2">
+                  <Field label="参数改写" hint="客户端未传时补充这些字段">
+                    <Textarea
+                      value={form.staticParamsText}
+                      onChange={(e) => setForm({ ...form, staticParamsText: e.target.value })}
+                      placeholder='{"thinking": {"type": "disabled"}}'
+                    />
+                  </Field>
+                  <Field label="参数剥离" hint="每行一个，发往该渠道前删除">
+                    <Textarea
+                      value={form.dropParamsText}
+                      onChange={(e) => setForm({ ...form, dropParamsText: e.target.value })}
+                      placeholder="thinking"
+                    />
+                  </Field>
+                </div>
+              </div>
+            </details>
           </div>
         </Modal>
       ) : null}
@@ -927,7 +973,7 @@ function ImageSection({
 
           <details>
             <summary className="tiny faint" style={{ cursor: 'pointer' }}>
-              高级：通用适配（字段映射、编辑接口、结果格式）
+              高级：通用适配
             </summary>
             <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 9 }}>
               <div className="v2grid g2">
@@ -982,14 +1028,14 @@ function ImageSection({
               </Field>
 
               <div className="v2grid g2">
-                <Field label="固定参数（JSON）">
+                <Field label="参数改写">
                   <Textarea
                     value={form.imageStaticParamsText}
                     onChange={(e) => setForm({ ...form, imageStaticParamsText: e.target.value })}
                     placeholder='{"watermark": false}'
                   />
                 </Field>
-                <Field label="删除参数（一行一个）">
+                <Field label="参数剥离">
                   <Textarea
                     value={form.imageDropParamsText}
                     onChange={(e) => setForm({ ...form, imageDropParamsText: e.target.value })}
@@ -1018,7 +1064,7 @@ function ImageSection({
 
               <details>
                 <summary className="tiny faint" style={{ cursor: 'pointer' }}>
-                  高级：任务字段映射（留空使用 ModelScope 异步任务协议默认值）
+                  高级：任务字段映射
                 </summary>
                 <div className="v2grid g2" style={{ marginTop: 8 }}>
                   <Field label="任务 ID 字段">
@@ -1134,6 +1180,12 @@ function openEdit(ch: Channel, setForm: (f: FormState) => void) {
     modelsText: ch.models.join('\n'),
     modelMap: Object.entries(ch.model_map).map(([pub, upstream]) => ({ pub, upstream })),
     headers: ch.headers.map((h) => ({ name: h.name, value: h.value })),
+    paramMap: Object.entries(ch.param_map ?? {}).map(([name, value]) => ({ name, value })),
+    staticParamsText:
+      ch.static_params && Object.keys(ch.static_params).length > 0
+        ? JSON.stringify(ch.static_params, null, 2)
+        : '',
+    dropParamsText: (ch.drop_params ?? []).join('\n'),
     imageModelsText: (ch.image_models ?? []).join('\n'),
     imageMode: (ch.image_generation?.mode ?? '') as FormState['imageMode'],
     imagePath: ch.image_generation?.path ?? '',
@@ -1204,10 +1256,10 @@ function parseJSONObject(text: string): Record<string, unknown> {
   try {
     value = JSON.parse(raw)
   } catch {
-    throw new Error('固定参数不是合法 JSON')
+    throw new Error('参数改写不是合法 JSON')
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('固定参数必须是 JSON 对象，例如 {"watermark": false}')
+    throw new Error('参数改写必须是 JSON 对象，例如 {"watermark": false}')
   }
   return value as Record<string, unknown>
 }

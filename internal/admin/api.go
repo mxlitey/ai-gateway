@@ -316,6 +316,9 @@ func (a *API) createChannel(w http.ResponseWriter, r *http.Request) {
 		Headers:        channel.NormalizeHeaders(in.Headers),
 		ImageModels:    sanitizeStrings(in.ImageModels),
 		ImageGen:       normalizeImageGen(in.ImageGen),
+		ParamMap:       normalizeParamMap(in.ParamMap),
+		StaticParams:   normalizeStaticParams(in.StaticParams),
+		DropParams:     sanitizeStrings(in.DropParams),
 		KeyStrategy:    model.NormalizeKeyStrategy(in.KeyStrategy),
 		Enabled:        in.Enabled == nil || *in.Enabled,
 		Source:         "manual",
@@ -421,6 +424,15 @@ func (a *API) updateChannel(w http.ResponseWriter, r *http.Request, channelID st
 	}
 	if in.ImageGen != nil {
 		next.ImageGen = normalizeImageGen(in.ImageGen)
+	}
+	if in.ParamMap != nil {
+		next.ParamMap = normalizeParamMap(in.ParamMap)
+	}
+	if in.StaticParams != nil {
+		next.StaticParams = normalizeStaticParams(in.StaticParams)
+	}
+	if in.DropParams != nil {
+		next.DropParams = sanitizeStrings(in.DropParams)
 	}
 	if s := strings.TrimSpace(in.KeyStrategy); s != "" {
 		next.KeyStrategy = model.NormalizeKeyStrategy(s)
@@ -2250,17 +2262,20 @@ func sanitizeModelMeta(name string, in model.ModelMeta) model.ModelMeta {
 // ---------- 输入模型与工具 ----------
 
 type channelInput struct {
-	Name        string                `json:"name"`
-	BaseURL     string                `json:"base_url"`
-	Path        string                `json:"path"`
-	Keys        []model.ChannelKey    `json:"keys"`
-	Models      []string              `json:"models"`
-	ModelMap    map[string]string     `json:"model_map"`
-	Headers     []model.Header        `json:"headers"`
-	ImageModels []string              `json:"image_models"`
-	ImageGen    *model.ImageGenConfig `json:"image_generation"`
-	KeyStrategy string                `json:"key_strategy"`
-	Enabled     *bool                 `json:"enabled"`
+	Name         string                `json:"name"`
+	BaseURL      string                `json:"base_url"`
+	Path         string                `json:"path"`
+	Keys         []model.ChannelKey    `json:"keys"`
+	Models       []string              `json:"models"`
+	ModelMap     map[string]string     `json:"model_map"`
+	Headers      []model.Header        `json:"headers"`
+	ImageModels  []string              `json:"image_models"`
+	ImageGen     *model.ImageGenConfig `json:"image_generation"`
+	ParamMap     map[string]string     `json:"param_map"`
+	StaticParams map[string]any        `json:"static_params"`
+	DropParams   []string              `json:"drop_params"`
+	KeyStrategy  string                `json:"key_strategy"`
+	Enabled      *bool                 `json:"enabled"`
 }
 
 // normalizeImageGen 规范化渠道生图配置：补齐默认值并清洗请求头。
@@ -2412,6 +2427,30 @@ func normalizeModelMap(in map[string]string) map[string]string {
 			um = pub
 		}
 		out[pub] = um
+	}
+	return out
+}
+
+// normalizeParamMap 清洗对话请求体的参数改名：空名、空值、同名映射都丢弃。
+func normalizeParamMap(in map[string]string) map[string]string {
+	out := map[string]string{}
+	for from, to := range in {
+		from, to = strings.TrimSpace(from), strings.TrimSpace(to)
+		if from == "" || to == "" || from == to {
+			continue
+		}
+		out[from] = to
+	}
+	return out
+}
+
+// normalizeStaticParams 清洗对话请求体的补齐参数：去掉空字段名。
+func normalizeStaticParams(in map[string]any) map[string]any {
+	out := map[string]any{}
+	for k, v := range in {
+		if k = strings.TrimSpace(k); k != "" {
+			out[k] = v
+		}
 	}
 	return out
 }

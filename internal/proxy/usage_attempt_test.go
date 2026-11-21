@@ -67,6 +67,20 @@ func TestRecorderPerAttemptRecoversFailover(t *testing.T) {
 	if b := byChannel["B"]; !b.Success || b.Status != http.StatusOK {
 		t.Fatalf("B 应为成功，实际 %+v", b)
 	}
+	// 两次尝试属于同一次客户端请求：共享 request_id，序号递增，且链路上有一次成功
+	a, b := byChannel["A"], byChannel["B"]
+	if a.RequestID == "" || a.RequestID != b.RequestID {
+		t.Fatalf("故障转移的尝试应共享 request_id：A=%q B=%q", a.RequestID, b.RequestID)
+	}
+	if a.AttemptNo != 1 || b.AttemptNo != 2 {
+		t.Fatalf("尝试序号不符：A=%d B=%d", a.AttemptNo, b.AttemptNo)
+	}
+	if a.AttemptTotal != 2 || b.AttemptTotal != 2 {
+		t.Fatalf("链路总尝试次数不符：A=%d B=%d", a.AttemptTotal, b.AttemptTotal)
+	}
+	if !a.ChainSuccess || !b.ChainSuccess {
+		t.Fatalf("链路上有一次成功，两条记录都应标记最终成功：A=%v B=%v", a.ChainSuccess, b.ChainSuccess)
+	}
 
 	sum, err := st.UsageSummary(from, to, "", "", "")
 	if err != nil {

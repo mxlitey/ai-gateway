@@ -186,7 +186,11 @@ export default function V2Dashboard() {
   const modelBuckets = s?.by_model ?? []
   const totalModelCost = modelBuckets.reduce((sum, b) => sum + b.cost, 0)
   const totalModelReq = modelBuckets.reduce((sum, b) => sum + b.requests, 0)
-  const errorGroups = errors.data?.channels ?? []
+  // 仪表盘只统计「网关 → 上游」的错误：客户端请求在转发前被网关拒绝的记录
+  // 不代表上游可用性，统一去错误日志页查看。
+  const errorGroups = (errors.data?.channels ?? [])
+    .map((g) => ({ ...g, errors: g.errors.filter((e) => e.source === 'upstream') }))
+    .filter((g) => g.errors.length > 0)
 
   return (
     <div className="stack">

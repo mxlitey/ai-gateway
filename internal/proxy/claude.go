@@ -58,6 +58,9 @@ func (h *Handler) handleClaude(w http.ResponseWriter, r *http.Request, claudeBod
 				openaiBody["model"] = t.UpstreamModel
 			}
 		},
+		applyBody: func(t routing.Target) map[string]any {
+			return applyChatParams(openaiBody, t.Channel)
+		},
 		isStream:           isStream,
 		acceptStreamHeader: true,
 		handleUpstream: func(up *http.Response, t routing.Target, rec *Recorder) (*http.Response, bool, string) {

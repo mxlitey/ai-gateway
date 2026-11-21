@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api } from '../lib/api'
+import { api, type RequestLogItem } from '../lib/api'
 import { fmtCost } from '../lib/money'
 import { bjDayStart, bjFmtDateTime, bjStartOfHour } from '../lib/tz'
 import RangePicker, { type RangeValue } from '../components/RangePicker'
@@ -236,7 +236,7 @@ export default function V2Usage() {
         ) : (
           <>
             <div className="tbl-wrap">
-              <table className="tbl" style={{ minWidth: '50rem' }}>
+              <table className="tbl" style={{ minWidth: '54rem' }}>
                 <thead>
                   <tr>
                     <th>时间</th>
@@ -244,6 +244,7 @@ export default function V2Usage() {
                     <th>渠道</th>
                     <th>端点</th>
                     <th>状态</th>
+                    <th>尝试</th>
                     <th className="r">未缓存输入</th>
                     <th className="r">缓存输入</th>
                     <th className="r">输出</th>
@@ -288,6 +289,7 @@ export default function V2Usage() {
                           {r.status === 0 ? '网络' : r.status}
                         </Badge>
                       </td>
+                      <AttemptCell r={r} />
                       <td className="r num tiny">{fmtInt(Math.max(0, r.prompt_tokens - r.cached_tokens))}</td>
                       <td className="r num tiny">{fmtInt(r.cached_tokens)}</td>
                       <td className="r num tiny">{fmtInt(r.completion_tokens)}</td>
@@ -335,6 +337,32 @@ export default function V2Usage() {
         )}
       </Panel>
     </div>
+  )
+}
+
+/** 故障转移链标记：同一次客户端请求的多次上游尝试共用一个 request_id */
+function AttemptCell({ r }: { r: RequestLogItem }) {
+  if (r.attempt_total < 2) {
+    return <td className="tiny faint">—</td>
+  }
+  const final = r.attempt_no === r.attempt_total
+  const label = final
+    ? r.chain_success
+      ? '最终成功'
+      : '全部失败'
+    : r.attempt_no === 1
+      ? '源请求'
+      : '已切换'
+  const color = final ? (r.chain_success ? 'var(--ok)' : 'var(--danger)') : 'var(--text-3)'
+  return (
+    <td className="tiny" style={{ whiteSpace: 'nowrap' }} title={`请求 ID ${r.request_id}`}>
+      <span className="num">
+        {r.attempt_no}/{r.attempt_total}
+      </span>
+      <span className="faint" style={{ display: 'block', fontSize: 10, color }}>
+        {label}
+      </span>
+    </td>
   )
 }
 

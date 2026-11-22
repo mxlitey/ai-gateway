@@ -11,7 +11,7 @@
 为什么用作业模型：
   生图实测可达数分钟，而 MCP 工具调用与 HTTP 等待响应头都有超时限制。
   因此 generate_image 只负责提交：立即返回 job_id 与 status，
-  由客户端每 5 秒调用 get_image_job 轮询。
+  由客户端轮询 get_image_job 直到终态。
   作业记录保存在网关 SQLite 中（保留 24 小时），网关或本服务重启都不会丢：
   已提交到上游的异步任务会继续轮询，同步任务会标记为 gateway_restarted 提示重新提交。
 
@@ -97,7 +97,6 @@ MAX_INLINE_BYTES = max(1, _env_int("AIGW_IMAGE_INLINE_MB", 4)) << 20
 # 一次响应内联图片的原始字节总预算。网关读取 MCP 响应的上限是 32 MB，
 # base64 膨胀 4/3 后必须留余量，否则响应会被截断成非法 JSON。
 MAX_INLINE_TOTAL_BYTES = max(1, _env_int("AIGW_IMAGE_INLINE_TOTAL_MB", 10)) << 20
-LINK_TTL_HINT = "链接由上游直接签发，有效期不受网关控制"
 # 参考图下载（内网 http/https）的边界：只转发，不落盘持久保存
 IMAGE_FETCH_MAX_BYTES = 32 << 20
 IMAGE_FETCH_TIMEOUT = 30
@@ -118,19 +117,12 @@ IMAGE_TOOLS = [
     {
         "name": "generate_image",
         "description": (
-            "调用网关的 /v1/images/generations 生成图片，支持文生图与参考图编辑（image_url）。"
-            "模型名不确定时先调用 list_image_models 查询，再显式传 model。"
-            "本工具只负责提交，立即返回 job_id 与 status（通常为 queued），不等待出图；"
-            "请每 5 秒调用 get_image_job(job_id)。作业状态共 5 种："
-            "queued / running / succeeded / failed / canceled，只有 succeeded 才有图片，"
-            "failed / canceled 会直接以错误返回。"
-            "success 时返回的 url 是上游直接签发的链接，"
-            + LINK_TTL_HINT + "，可直接下载或给用户；"
-            "get_image_job 默认会把图片数据与直链一起返回，不必再单独下载。"
-            "参考图用公网 http(s) URL（image_url）或本机文件路径（image_path）；"
-            "内网 URL 由本服务下载后转发。"
-            "对话里粘贴的图片、或本机读不到的文件，先调 image_host_info 取预签名直传地址，"
-            "把图片原始字节 PUT 上去换成 url，再作为 image_url 传入。"
+            "调用网关的 /v1/images/generations 生成图片，支持文生图与参考图编辑。"
+            "只负责提交：立即返回 job_id 与 status（通常 queued），不等待出图，"
+            "用 get_image_job 轮询直到终态；成功时的 url 由上游直接签发，可直接下载或给用户。"
+            "模型名不确定时先调用 list_image_models 查询，再显式传 model；"
+            "模型的能力与约束（参考图张数上限、出图张数、输出格式与分辨率、尺寸倍数、是否支持中文等）"
+            "一律见 list_image_models 返回的 specs，未出现的字段表示未声明（未知），不代表不限制。"
         ),
         "inputSchema": {
             "type": "object",
@@ -151,7 +143,8 @@ IMAGE_TOOLS = [
                         "公网 http(s) 地址直接传；内网地址由本服务下载后转 base64。"
                         "对话里粘贴的图片、或本机读不到的文件，先调 image_host_info 拿直传端点，"
                         "把图片原始字节 PUT 上去换取 url，再传到这里。"
-                        "建议最多 4 张。"
+                        "张数上限以 list_image_models 的 specs[模型].reference.max_count 为准；"
+                        "与 image_path 合并计数。"
                     ),
                 },
                 "image_path": {
@@ -164,10 +157,11 @@ IMAGE_TOOLS = [
                         "读不到时不要反复试其它路径，直接用 image_host_info 取预签名地址直传换 url。"
                         "支持 PNG/JPEG/WebP/GIF；"
                         f"超过 {MAX_REFERENCE_MB} MB 时自动直传对象存储换链接（需网关配置 S3）。"
+                        "与 image_url 合并计数，同受模型参考图上限约束。"
                     ),
                 },
                 "size": {"type": "string", "description": "图片尺寸，例如 1024x1024、1328x1328"},
-                "n": {"type": "integer", "description": "生成数量，1-4，默认 1"},
+                "n": {"type": "integer", "default": 1, "description": "生成数量，默认 1；上限以 list_image_models 的 specs[模型].n.max 为准"},
                 "negative_prompt": {"type": "string", "description": "反向提示词（上游支持时生效）"},
                 "seed": {"type": "integer", "description": "随机种子（上游支持时生效）"},
                 "loras": {"type": "object", "description": "LoRA 配置对象，原样透传给上游"},
@@ -175,6 +169,7 @@ IMAGE_TOOLS = [
                 "response_format": {
                     "type": "string",
                     "enum": ["url", "b64_json"],
+                    "default": "url",
                     "description": "默认 url；b64_json 会返回很大的 base64 文本，一般不建议",
                 },
                 "request_id": {
@@ -191,10 +186,11 @@ IMAGE_TOOLS = [
     {
         "name": "get_image_job",
         "description": (
-            "查询 generate_image 创建的作业；status 为 queued / running / succeeded / failed / canceled。"
-            "作业保存在网关 SQLite 中，网关或本服务重启都不会丢失（保留 24 小时）。"
+            "查询 generate_image 创建的作业；请轮询本工具直到终态。"
+            "状态共 5 种：queued / running / succeeded / failed / canceled，只有 succeeded 才有图片，"
+            "failed / canceled 会以错误返回。作业保存在网关 SQLite 中，网关或本服务重启都不会丢（保留 24 小时）。"
             "出图成功时一次返回两样东西：images[].url（上游直链）与 image 内容块（图片字节），"
-            "客户端可直接保存/显示，不必再按链接下载。"
+            "客户端可直接保存/显示，不必再按链接下载；只想拿直链时传 inline=false。"
         ),
         "inputSchema": {
             "type": "object",
@@ -214,9 +210,9 @@ IMAGE_TOOLS = [
     {
         "name": "cancel_image_job",
         "description": (
-            "放弃仍在排队或执行中的作业：立即停止网关侧的等待与轮询，作业标记为 canceled。"
-            "注意它不保证终止上游任务——异步渠道可能继续执行且已产生费用（不退还）；"
-            "同步渠道若已提交，同样可能已经计费。"
+            "放弃仍在排队或执行中的作业：立即停止网关侧等待与轮询，作业标记为 canceled。"
+            "注意不保证终止上游任务——异步渠道可能继续执行且已产生费用（不退还）；"
+            "同步渠道若已提交同样可能已经计费。"
         ),
         "inputSchema": {
             "type": "object",
@@ -229,9 +225,10 @@ IMAGE_TOOLS = [
         "description": (
             "列出当前密钥可用的生图模型（来自网关 /v1/models?type=image）。"
             "首次调用 generate_image 前用它确定 model 取值；返回 default_model 表示服务端已配置默认模型。"
-            "若网关侧为该模型声明过约束，还会返回 specs[模型名]：参考图上限、出图张数、"
-            "输出格式与分辨率区间、尺寸倍数（宽高需为 16/32 等的正整数倍）、是否支持中文等。传参前先看 specs；未出现的字段表示未声明（未知），"
-            "不代表不限制，用常规取值即可。"
+            "模型的能力与约束以本工具返回的 specs 为唯一权威：specs[模型名] 可能含"
+            "参考图上限（reference.max_count）、出图张数（n.max / n.max_with_reference）、"
+            "输出格式与分辨率区间、尺寸倍数（宽高需为其正整数倍）、能力开关（reference / negative_prompt / "
+            "seed / 中文提示词 / 画面写中文）等；未出现的字段表示未声明（未知），不代表不限制，用常规取值即可。"
         ),
         "inputSchema": {"type": "object", "properties": {}, "required": []},
     },
@@ -241,15 +238,12 @@ IMAGE_TOOLS = [
             "向网关申请一个对象存储预签名直传地址（mode=presigned_put），"
             "用途：把本地图片换成可作为 image_url 的短链接。"
             "返回 upload_url / method / headers / public_url / download_url / expires_at；"
-            "网关只签 URL、不接收字节，客户端把图片原始字节按 method PUT 到 upload_url 即完成上传；"
-            "上传时必须设置 Content-Type（如 image/png、image/jpeg），否则对象存储会按二进制流保存，"
-            "链接在浏览器里容易变成下载。"
-            "上传是普通 HTTP（不经过 MCP，不受 8 MB 请求体限制），"
+            "网关只签 URL、不接收字节，客户端按 method 把图片原始字节 PUT 到 upload_url 即完成上传"
+            "（务必设置 Content-Type，如 image/png，否则对象存储按二进制流保存，链接容易被当成下载）。"
+            "上传是普通 HTTP，不经过 MCP，不受 8 MB 请求体限制；"
             "成功后把 public_url（私有桶则为 download_url）作为 image_url 使用。"
             "预签名地址有时效，过期后重新调用本工具签发。"
             "参考图在本机读不到、或超过单张 base64 上限时，优先走这里。"
-            "建议传 filename（如 ref.png），网关会按扩展名生成带后缀的对象键；"
-            "不传则对象键没有后缀，部分场景下浏览器会按下载处理而不是直接预览。"
             "网关未配置对象存储（501）或该密钥没有对象存储权限（403）时，"
             "返回 enabled=false 并在 reason / hint 里说明原因。"
         ),
@@ -268,26 +262,18 @@ IMAGE_TOOLS = [
 
 # initialize 返回的说明书：客户端不依赖外部技能包也能完成第一次调用。
 INSTRUCTIONS = (
-    "本服务把生图请求转发到 AI Gateway，作业由网关持久化（SQLite，保留 24 小时）。推荐流程："
-    "1) 不确定模型时先调用 list_image_models，拿到 models 列表与 default_model；"
+    "本服务把生图请求转发到 AI Gateway，作业由网关持久化（SQLite，保留 24 小时），"
+    "网关或本服务重启都不会丢。推荐流程："
+    "1) 不确定模型、或想确认某模型的能力与约束时，先调用 list_image_models，"
+    "拿到 models 列表、default_model 与 specs——参考图张数上限、出图张数、输出格式与分辨率、"
+    "尺寸倍数、是否支持中文等都以 specs 为准，未出现的字段表示未声明（未知），不代表不限制；"
     "2) 调用 generate_image，至少传 prompt；没有 default_model 时必须显式传 model；"
-    "它立即返回 job_id 与 status，不等待出图；"
-    "3) 每 5 秒调用 get_image_job(job_id)；"
-    "作业状态共 queued/running/succeeded/failed/canceled 五种，只有 succeeded 才有图片，"
-    "failed/canceled 会以 isError 返回；"
-    "   网关或本服务重启不会丢作业：异步任务会继续轮询，同步任务会标记为 gateway_restarted 让你重提；"
-    "4) 成功时一次拿到两样东西：images[].url 是上游直接签发的链接（有效期不受网关控制），"
-    "同一次响应里还会带上 image 内容块（图片字节），客户端可直接保存/显示，不必再按链接下载；"
-    "只想要直链、不要图片数据时传 inline=false；"
-    "5) 失败时 isError=true，structuredContent.error 含 code/message/retryable；"
-    "6) 超时重试请带上同一个 request_id，网关会复用已有作业，不会重复生图；"
-    "7) 需要放弃时调用 cancel_image_job(job_id)：只停止网关侧等待与轮询，"
-    "不保证终止上游任务，异步渠道可能继续执行并已产生费用；"
-    "8) 参考图三种来源：公网 http(s) 链接直接作为 image_url；本机文件用 image_path（仅同机可用）；"
+    "它只负责提交，立即返回 job_id 与 status，不等待出图；"
+    "3) 调用 get_image_job(job_id) 轮询直到终态（状态与轮询细节见该工具说明）；"
+    "4) 参考图三种来源：公网 http(s) 链接直接作为 image_url；本机文件用 image_path（仅同机可用）；"
     "对话里粘贴的图片、或本机读不到的文件，先调用 image_host_info（传 filename，如 ref.png）"
-    "取对象存储预签名 upload_url，"
-    "把图片原始字节 PUT 上去换取 url（记得设置 Content-Type，如 image/png），再作为 image_url 传入——"
-    "该请求不经过 MCP，不受 8 MB 请求体限制。"
+    "取对象存储预签名 upload_url，把图片原始字节 PUT 上去换取 url（记得设置 Content-Type，如 image/png），"
+    "再作为 image_url 传入——该请求不经过 MCP，不受 8 MB 请求体限制；"
     "image_path 报文件不存在时不要换路径反复试，直接改走直传。"
 )
 
@@ -1086,7 +1072,9 @@ def _build_payload(args, key=""):
     payload = {
         "model": model,
         "prompt": prompt,
-        "n": _int_arg(args, "n", 1, 1, 4),
+        # 出图张数：只保下限 1，不设 4 上限硬裁剪——真实上限由模型 specs（n.max）
+        # 声明、由网关/上游执行，避免这里误杀 specs 声明了更大张数的模型。
+        "n": _int_arg(args, "n", 1, 1, 2 ** 31 - 1),
         "response_format": response_format,
     }
 
@@ -1307,7 +1295,7 @@ def _generate(args, key=""):
         "stage": view.get("stage") or "",
         "reused": reused,
         "hint": (
-            "作业已提交，请每 5 秒调用 get_image_job(job_id=\"%s\") 获取结果；"
+            "作业已提交，请轮询 get_image_job(job_id=\"%s\") 直到终态；"
             "成功时直链与图片数据会一起返回" % job_id
         ),
     }
@@ -1345,7 +1333,7 @@ def _job_status(args, key=""):
         "stage": view.get("stage") or "",
         "poll_count": view.get("poll_count") or 0,
         "elapsed_ms": _job_elapsed_ms(view),
-        "hint": "继续每 5 秒调用 get_image_job；作业保存在网关，重启不会丢失",
+        "hint": "继续轮询 get_image_job 直到终态；作业保存在网关，重启不会丢失",
     }
 
 

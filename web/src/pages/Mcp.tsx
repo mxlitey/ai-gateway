@@ -17,7 +17,7 @@ import {
   Segmented,
   Switch,
   Textarea,
-} from './ui'
+} from '../components/AdminUI'
 
 type KeyRow = { key: string; label: string; enabled: boolean; daily_limit: string }
 type HeaderRow = { name: string; value: string }
@@ -89,7 +89,7 @@ function limitValue(input: string): number {
 const PAGE_SIZE = 50
 const DAY = 24 * 60 * 60 * 1000
 
-export default function V2Mcp() {
+export default function Mcp() {
   const queryClient = useQueryClient()
   const servers = useQuery({ queryKey: ['mcp-servers'], queryFn: api.mcpServers })
   const [form, setForm] = useState<FormState | null>(null)
@@ -363,7 +363,7 @@ export default function V2Mcp() {
           }
         >
           <div className="stack">
-            <div className="v2grid g2">
+            <div className="admingrid g2">
               <Field label="名称">
                 <Input
                   value={form.name}

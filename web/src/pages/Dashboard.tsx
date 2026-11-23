@@ -21,7 +21,7 @@ import {
   useTick,
   type MiniSeries,
   type Tone,
-} from './ui'
+} from '../components/AdminUI'
 
 function isPluginChannel(ch: Channel): boolean {
   return ch.source.startsWith('plugin:')
@@ -60,7 +60,7 @@ function countChannelModels(c: Channel): number {
   return names.size
 }
 
-export default function V2Dashboard() {
+export default function Dashboard() {
   // active = 点选固定的小时；悬停只用于图表内预览，不影响读数
   const [active, setActive] = useState<number | null>(null)
 
@@ -289,7 +289,7 @@ export default function V2Dashboard() {
       </div>
 
       {/* 异常与熔断 + 按模型 */}
-      <div className="v2grid g2">
+      <div className="admingrid g2">
         <Panel
           title="异常与熔断"
           action={
@@ -377,7 +377,7 @@ export default function V2Dashboard() {
       </div>
 
       {/* 按渠道 + 快速开始 */}
-      <div className="v2grid g2">
+      <div className="admingrid g2">
         <Panel title="按渠道">
           {!s || s.by_channel.length === 0 ? (
             <Empty text="今天没有调用记录" />
@@ -578,12 +578,12 @@ function Sparkline({
       <div className="spark-canvas">
         <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
           <defs>
-            <linearGradient id="v2spark" x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id="sparkgrad" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0%" className="spark-stop-0" />
               <stop offset="100%" className="spark-stop-1" />
             </linearGradient>
           </defs>
-          <path d={area} fill="url(#v2spark)" />
+          <path d={area} fill="url(#sparkgrad)" />
           <path d={line} className="spark-now" fill="none" />
           {/* 虚线最后画，避免被实线（起始段重合）盖住 */}
           {prevPath ? (

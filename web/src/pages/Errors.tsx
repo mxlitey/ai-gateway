@@ -4,13 +4,13 @@ import { api, type ErrorLog } from '../lib/api'
 import { bjDateString, bjFmtDateTime } from '../lib/tz'
 import { toast } from '../lib/toast'
 import DatePicker from '../components/DatePicker'
-import { Button, Empty, ErrorText, Loading, PageHead, Segmented } from './ui'
+import { Button, Empty, ErrorText, Loading, PageHead, Segmented } from '../components/AdminUI'
 
 // 明细行采用「表格行 + 点击展开详情」；窄屏由 CSS 切换为堆叠行
 
 type SourceFilter = 'all' | 'gateway' | 'upstream'
 
-export default function V2Errors() {
+export default function Errors() {
   const [date, setDate] = useState(bjDateString())
   const [openId, setOpenId] = useState<number | null>(null)
   const [source, setSource] = useState<SourceFilter>('all')

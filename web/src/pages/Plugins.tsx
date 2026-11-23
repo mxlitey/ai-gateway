@@ -14,7 +14,7 @@ import {
   Modal,
   PageHead,
   Textarea,
-} from './ui'
+} from '../components/AdminUI'
 
 const statusTone: Record<string, 'ok' | 'off' | 'warn' | 'info'> = {
   running: 'ok',
@@ -47,7 +47,7 @@ type LoginFlow = {
   message: string
 }
 
-export default function V2Plugins() {
+export default function Plugins() {
   const queryClient = useQueryClient()
   const [openId, setOpenId] = useState<string | null>(null)
 
@@ -139,7 +139,7 @@ export default function V2Plugins() {
           <Empty text="尚未发现插件" />
         </div>
       ) : (
-        <div className="v2grid g2">
+        <div className="admingrid g2">
           {list.map((plugin) => {
             const busy = action.isPending || setFlags.isPending
             const running = plugin.last_status === 'running'

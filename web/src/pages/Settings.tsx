@@ -12,9 +12,9 @@ import {
   PageHead,
   Panel,
   Segmented,
-} from './ui'
+} from '../components/AdminUI'
 
-export default function V2Settings() {
+export default function Settings() {
   const queryClient = useQueryClient()
   const { signIn } = useAuth()
   const [oldPassword, setOldPassword] = useState('')
@@ -417,7 +417,7 @@ export default function V2Settings() {
               />
             </Field>
 
-            <div className="v2grid g2">
+            <div className="admingrid g2">
               <Field label="插件探活间隔（秒）" hint={`默认 ${defaults?.plugin_probe_interval_seconds ?? 2}`}>
                 <Input
                   type="number"
@@ -449,7 +449,7 @@ export default function V2Settings() {
               />
             </Field>
 
-            <div className="v2grid g2">
+            <div className="admingrid g2">
               <Field
                 label="初始熔断时长（秒）"
                 hint={`首次失败的熔断时长，默认 ${defaults?.key_cooldown_base_seconds ?? 60}`}
@@ -476,7 +476,7 @@ export default function V2Settings() {
               </Field>
             </div>
 
-            <div className="v2grid g2">
+            <div className="admingrid g2">
               <Field
                 label="不健康阈值（次）"
                 hint={`连续探活失败达到该次数即重启，默认 ${defaults?.plugin_unhealthy_threshold ?? 3}`}
@@ -557,7 +557,7 @@ export default function V2Settings() {
                 />
               </Field>
 
-              <div className="v2grid g2">
+              <div className="admingrid g2">
                 <Field label="Region" hint="签名区域，留空按 us-east-1；R2 填 auto">
                   <Input
                     value={stDraft.region}
@@ -574,7 +574,7 @@ export default function V2Settings() {
                 </Field>
               </div>
 
-              <div className="v2grid g2">
+              <div className="admingrid g2">
                 <Field label="Access Key" hint="预签名凭证（必填）">
                   <Input
                     value={stDraft.access_key}
@@ -592,7 +592,7 @@ export default function V2Settings() {
                 </Field>
               </div>
 
-              <div className="v2grid g2">
+              <div className="admingrid g2">
                 <Field label="对象键前缀" hint="留空则直接写在桶根目录下">
                   <Input
                     value={stDraft.prefix}

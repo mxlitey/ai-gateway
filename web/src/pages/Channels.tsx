@@ -17,7 +17,7 @@ import {
   Segmented,
   Switch,
   Textarea,
-} from './ui'
+} from '../components/AdminUI'
 
 type KeyRow = { key: string; enabled: boolean; label?: string }
 type MapRow = { pub: string; upstream: string }
@@ -130,7 +130,7 @@ function isPluginChannel(ch: Channel): boolean {
   return ch.source.startsWith('plugin:')
 }
 
-export default function V2Channels() {
+export default function Channels() {
   const queryClient = useQueryClient()
   const channels = useQuery({ queryKey: ['channels'], queryFn: api.channels })
   const plugins = useQuery({ queryKey: ['plugins'], queryFn: api.plugins })
@@ -504,7 +504,7 @@ export default function V2Channels() {
           }
         >
           <div className="stack">
-            <div className="v2grid g2">
+            <div className="admingrid g2">
               <Field label="名称">
                 <Input
                   value={form.name}
@@ -842,7 +842,7 @@ export default function V2Channels() {
                     addLabel="添加映射"
                   />
                 </Field>
-                <div className="v2grid g2">
+                <div className="admingrid g2">
                   <Field label="参数改写" hint="客户端未传时补充这些字段">
                     <Textarea
                       value={form.staticParamsText}
@@ -936,7 +936,7 @@ function ImageSection({
 
       {show ? (
         <>
-          <div className="v2grid g2">
+          <div className="admingrid g2">
             <Field label="提交路径" hint="留空默认 /images/generations">
               <Input
                 value={form.imagePath}
@@ -976,7 +976,7 @@ function ImageSection({
               高级：通用适配
             </summary>
             <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 9 }}>
-              <div className="v2grid g2">
+              <div className="admingrid g2">
                 <Field label="同步响应超时（秒）">
                   <Input
                     type="number"
@@ -1027,7 +1027,7 @@ function ImageSection({
                 />
               </Field>
 
-              <div className="v2grid g2">
+              <div className="admingrid g2">
                 <Field label="参数改写">
                   <Textarea
                     value={form.imageStaticParamsText}
@@ -1066,7 +1066,7 @@ function ImageSection({
                 <summary className="tiny faint" style={{ cursor: 'pointer' }}>
                   高级：任务字段映射
                 </summary>
-                <div className="v2grid g2" style={{ marginTop: 8 }}>
+                <div className="admingrid g2" style={{ marginTop: 8 }}>
                   <Field label="任务 ID 字段">
                     <Input
                       value={form.imageTaskIDField}

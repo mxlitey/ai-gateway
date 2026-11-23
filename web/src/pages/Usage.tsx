@@ -4,7 +4,7 @@ import { api, type RequestLogItem } from '../lib/api'
 import { fmtCost } from '../lib/money'
 import { bjDayStart, bjFmtDateTime, bjStartOfHour } from '../lib/tz'
 import RangePicker, { type RangeValue } from '../components/RangePicker'
-import { Badge, Button, Empty, ErrorText, fmtCompact, fmtInt, Loading, PageHead, Panel } from './ui'
+import { Badge, Button, Empty, ErrorText, fmtCompact, fmtInt, Loading, PageHead, Panel } from '../components/AdminUI'
 
 const PAGE_SIZE = 50
 const HOUR = 60 * 60 * 1000
@@ -55,7 +55,7 @@ function lastHoursRange(now: number): RangeValue {
   return { from: cur - 23 * HOUR, to: cur + HOUR }
 }
 
-export default function V2Usage() {
+export default function Usage() {
   const stored = useMemo(loadFilters, [])
   const [granularity, setGranularity] = useState<'day' | 'hour'>(stored?.granularity ?? 'day')
   const [range, setRange] = useState<RangeValue>(() =>
@@ -223,7 +223,7 @@ export default function V2Usage() {
         </div>
       ) : null}
 
-      <div className="v2grid g4">
+      <div className="admingrid g4">
         <Kpi label="上游请求" value={fmtInt(s.requests)} />
         <Kpi label="总 Token" value={fmtCompact(s.total_tokens)} />
         <Kpi label="缓存命中率" value={cacheHitRate} />

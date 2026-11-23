@@ -11,7 +11,7 @@ import {
 } from '../lib/api'
 import { toast } from '../lib/toast'
 import { currencySymbol, fmtPrice } from '../lib/money'
-import { Badge, Button, Empty, Field, Input, Loading, PageHead, Panel, Segmented } from './ui'
+import { Badge, Button, Empty, Field, Input, Loading, PageHead, Panel, Segmented } from '../components/AdminUI'
 
 type Draft = {
   unit: string
@@ -90,7 +90,7 @@ function payloadOf(model: string, d: Draft): PriceInput {
   }
 }
 
-export default function V2Prices() {
+export default function Prices() {
   const prices = useQuery({ queryKey: ['prices'], queryFn: api.prices })
 
   const savePrice = useMutation({
@@ -354,7 +354,7 @@ function PriceForm({
       </div>
 
       {perRequest ? (
-        <div className="v2grid g3">
+        <div className="admingrid g3">
           <Field label="每次请求单价" hint="生图等按次收费的端点，与返回几张图无关">
             <Input
               value={draft.request}
@@ -401,7 +401,7 @@ function PriceForm({
               </div>
             </div>
           ))}
-          <div className="v2grid g3">
+          <div className="admingrid g3">
             <Field label="缓存命中价 / 百万" hint="留空或 0 表示按输入价计">
               <Input
                 value={draft.cache}

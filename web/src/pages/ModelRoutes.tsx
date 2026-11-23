@@ -21,7 +21,7 @@ import {
   Segmented,
   Switch,
   Textarea,
-} from './ui'
+} from '../components/AdminUI'
 
 /** 元数据表单草稿：数字全部用字符串，留空即「未声明」。 */
 type MetaDraft = {
@@ -117,7 +117,7 @@ function num(s: string): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0
 }
 
-export default function V2Routes() {
+export default function ModelRoutes() {
   const queryClient = useQueryClient()
   const routes = useQuery({ queryKey: ['routes'], queryFn: api.routes })
   const metaQuery = useQuery({ queryKey: ['model-meta'], queryFn: api.modelMeta })

@@ -14,7 +14,7 @@ import {
   PageHead,
   Segmented,
   Switch,
-} from './ui'
+} from '../components/AdminUI'
 
 type Scope = APIKey['channel_scope']
 type StorageScope = APIKey['storage_scope']
@@ -23,7 +23,7 @@ function isPluginChannel(ch: Channel): boolean {
   return ch.source.startsWith('plugin:')
 }
 
-export default function V2Keys() {
+export default function Keys() {
   const queryClient = useQueryClient()
   const keys = useQuery({ queryKey: ['apikeys'], queryFn: api.apiKeys })
   const channels = useQuery({ queryKey: ['channels'], queryFn: api.channels })

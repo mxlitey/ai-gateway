@@ -6,18 +6,18 @@ import { setCurrencySymbol } from './lib/money'
 import { Loading, Toaster } from './components/ui'
 import Login from './pages/Login'
 import Setup from './pages/Setup'
-import V2Layout from './v2/V2Layout'
-import V2Dashboard from './v2/Dashboard'
-import V2Usage from './v2/Usage'
-import V2Channels from './v2/Channels'
-import V2Routes from './v2/Routes'
-import V2Keys from './v2/Keys'
-import V2Mcp from './v2/Mcp'
-import V2Plugins from './v2/Plugins'
-import V2Prices from './v2/Prices'
-import V2Errors from './v2/Errors'
-import V2Settings from './v2/Settings'
-import './v2/v2.css'
+import Layout from './pages/Layout'
+import Dashboard from './pages/Dashboard'
+import Usage from './pages/Usage'
+import Channels from './pages/Channels'
+import ModelRoutes from './pages/ModelRoutes'
+import Keys from './pages/Keys'
+import Mcp from './pages/Mcp'
+import Plugins from './pages/Plugins'
+import Prices from './pages/Prices'
+import Errors from './pages/Errors'
+import Settings from './pages/Settings'
+import './admin.css'
 
 export default function App() {
   const { token } = useAuth()
@@ -64,22 +64,22 @@ export default function App() {
         <Route
           path="/*"
           element={
-            <V2Layout>
+            <Layout>
               <Routes>
-                <Route index element={<V2Dashboard />} />
-                <Route path="/usage" element={<V2Usage />} />
-                <Route path="/channels" element={<V2Channels />} />
-                <Route path="/routes" element={<V2Routes />} />
-                <Route path="/keys" element={<V2Keys />} />
+                <Route index element={<Dashboard />} />
+                <Route path="/usage" element={<Usage />} />
+                <Route path="/channels" element={<Channels />} />
+                <Route path="/routes" element={<ModelRoutes />} />
+                <Route path="/keys" element={<Keys />} />
                 {/* /mcp 是 MCP 协议端点，管理页必须用别的路径，否则刷新会被协议处理器拦截 */}
-                <Route path="/mcp-servers" element={<V2Mcp />} />
-                <Route path="/plugins" element={<V2Plugins />} />
-                <Route path="/prices" element={<V2Prices />} />
-                <Route path="/errors" element={<V2Errors />} />
-                <Route path="/settings" element={<V2Settings />} />
+                <Route path="/mcp-servers" element={<Mcp />} />
+                <Route path="/plugins" element={<Plugins />} />
+                <Route path="/prices" element={<Prices />} />
+                <Route path="/errors" element={<Errors />} />
+                <Route path="/settings" element={<Settings />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
-            </V2Layout>
+            </Layout>
           }
         />
       </Routes>

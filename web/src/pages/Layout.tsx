@@ -25,7 +25,7 @@ const navGroups: { title: string; items: typeof navItems }[] = [
   { title: '系统', items: navItems.slice(9) },
 ]
 
-export default function V2Layout({ children }: { children: ReactNode }) {
+export default function Layout({ children }: { children: ReactNode }) {
   const { signOut } = useAuth()
   const runtime = useQuery({ queryKey: ['runtime'], queryFn: api.runtimeInfo })
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -85,7 +85,7 @@ export default function V2Layout({ children }: { children: ReactNode }) {
   )
 
   return (
-    <div className="v2">
+    <div className="admin">
       <div className="app">
         {/* 侧栏：>=941 常驻带文字；641~940 收成 54px 图标条 */}
         <aside className="side">

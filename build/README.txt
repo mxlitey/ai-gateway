@@ -3,7 +3,7 @@ AI Gateway 绿色版
 
 新版本拆成两个压缩包，可分别升级：
   ai-gateway-v<版本号>-windows-amd64.zip   网关本体（exe + README）
-  ai-gateway-v<版本号>-plugins-mcp.zip     插件与 MCP 扩展包（plugins/ mcp/ skills/，可能含 Python 安装包）
+  ai-gateway-v<版本号>-plugins-mcp.zip     插件与 MCP 扩展包（plugins/ mcp/，可能含 Python 安装包）
 
 只想要一个能跑的网关，解压第一个包双击 exe 即可；需要内置插件或本地 MCP，
 再把第二个包解压到**同一个目录**（与 exe 同级），重启网关就会自动扫描到。
@@ -38,7 +38,6 @@ mcp/       本地 MCP 服务器目录；来自扩展包，每个子目录一个�
            网关启动时自动登记到「MCP 服务器」页，删除目录后重启即移除
            扩展包内置 mcp\github-search（GitHub 搜索）与 mcp\image-generation（生图）；
            最小实现可参考仓库 examples/mcp/local-demo
-skills/    扩展包附带的技能文档（可选，不影响网关运行）
 
 本地 MCP 服务器
 ---------------

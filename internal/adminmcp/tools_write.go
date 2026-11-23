@@ -28,10 +28,10 @@ type WriteDeps struct {
 	Pricer *pricing.Resolver
 }
 
-// RegisterWriteTools 注册第二梯队：3 个只读 + 9 个会触达或改动网关的工具。
+// RegisterWriteTools 注册第二梯队：4 个只读 + 10 个会触达或改动网关的工具。
 //
-// 其中 reset_key_cooldown / issue_api_key / create_channel / update_channel / restart_plugin /
-// set_model_meta / delete_model_meta / set_price / delete_price 属于写操作，
+// 其中 reset_key_cooldown / issue_api_key / delete_api_key / create_channel / update_channel /
+// restart_plugin / set_model_meta / delete_model_meta / set_price / delete_price 属于写操作，
 // 只在读写令牌下可见可调用；只读令牌调用会直接报错。
 func RegisterWriteTools(s *Server, d WriteDeps) {
 	registerListPluginsTool(s, d)
@@ -40,6 +40,7 @@ func RegisterWriteTools(s *Server, d WriteDeps) {
 	registerDiagnoseUpstreamTool(s, d)
 	registerTestMCPServerTool(s, d)
 	registerIssueAPIKeyTool(s, d)
+	registerDeleteAPIKeyTool(s, d)
 	registerCreateChannelTool(s, d)
 	registerUpdateChannelTool(s, d)
 	registerRestartPluginTool(s, d)
@@ -378,7 +379,7 @@ func registerTestMCPServerTool(s *Server, d WriteDeps) {
 
 func registerIssueAPIKeyTool(s *Server, d WriteDeps) {
 	s.Tools("issue_api_key",
-		"签发一个客户端 API 密钥（sk- 开头）。注意：明文密钥只在本响应中返回一次，请立即保存。",
+		"签发一个客户端 API 密钥（sk- 开头）。默认不返回明文，只在响应里给出密钥 ID、名称与脱敏值，明文请到面板「API 密钥」页复制——这样密钥不会进入对话记录。确实需要在本轮调用中直接拿到明文时，显式传 return_key=true，明文只在该响应中出现一次。",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -388,6 +389,7 @@ func registerIssueAPIKeyTool(s *Server, d WriteDeps) {
 				"mcp_scope":      map[string]any{"type": "string", "enum": []string{"all", "selected", "none"}, "description": "可用 MCP 范围，默认 all"},
 				"mcp_server_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "mcp_scope=selected 时生效"},
 				"storage_scope":  map[string]any{"type": "string", "enum": []string{"all", "none"}, "description": "对象存储权限（签发预签名上传/下载地址），默认 all"},
+				"return_key":     map[string]any{"type": "boolean", "description": "是否在响应中返回明文密钥，默认 false；明文会留在对话记录里，仅在确需自动配置客户端时开启"},
 			},
 		}, true, func(args map[string]any) (any, error) {
 			name := argString(args, "name")
@@ -416,16 +418,57 @@ func registerIssueAPIKeyTool(s *Server, d WriteDeps) {
 			if err := d.Store.CreateAPIKey(k); err != nil {
 				return nil, err
 			}
-			return map[string]any{
+			out := map[string]any{
 				"id":             k.ID,
 				"name":           k.Name,
-				"key":            k.Key,
+				"hint":           model.KeyHint(k.Key),
 				"channel_scope":  k.ChannelScope,
 				"channel_ids":    k.ChannelIDs,
 				"mcp_scope":      k.MCPScope,
 				"mcp_server_ids": k.MCPServerIDs,
 				"storage_scope":  k.StorageScope,
-				"notice":         "明文密钥只返回这一次，请立即保存",
+			}
+			if argBool(args, "return_key") {
+				out["key"] = k.Key
+				out["notice"] = "明文密钥只返回这一次，请立即保存"
+			} else {
+				out["notice"] = "密钥已签发，明文未返回；请到管理面板「API 密钥」页复制（列表中可见完整密钥）"
+			}
+			return out, nil
+		})
+}
+
+// ---------- 写：删除 API 密钥 ----------
+
+func registerDeleteAPIKeyTool(s *Server, d WriteDeps) {
+	s.Tools("delete_api_key",
+		"永久删除一个客户端 API 密钥。删除后使用该密钥的客户端会立即收到 401，无法恢复；只是临时止损请改用面板停用。密钥 ID 可通过 list_api_keys 获取。",
+		map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"key_id": map[string]any{"type": "string", "description": "要删除的客户端密钥 ID（可从 list_api_keys 获取）"},
+			},
+			"required": []string{"key_id"},
+		}, true, func(args map[string]any) (any, error) {
+			keyID := argString(args, "key_id")
+			if keyID == "" {
+				return nil, fmt.Errorf("key_id 不能为空")
+			}
+			k, err := d.Store.GetAPIKey(keyID)
+			if err != nil {
+				return nil, err
+			}
+			if k == nil {
+				return nil, fmt.Errorf("API 密钥不存在: %s", keyID)
+			}
+			if err := d.Store.DeleteAPIKey(keyID); err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"success": true,
+				"key_id":  k.ID,
+				"name":    k.Name,
+				"hint":    model.KeyHint(k.Key),
 			}, nil
 		})
 }

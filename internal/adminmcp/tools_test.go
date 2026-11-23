@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/czg95/ai-gateway-v2/internal/model"
 	"github.com/czg95/ai-gateway-v2/internal/pricing"
 	"github.com/czg95/ai-gateway-v2/internal/store"
 )
@@ -200,6 +201,165 @@ func TestDeletePriceTool(t *testing.T) {
 	if n, _ := st.CountModelPrices(); n != 0 {
 		t.Fatalf("应已清空，实际剩 %d 条", n)
 	}
+}
+
+// TestIssueAPIKeyHidesPlainByDefault 默认不回显明文，显式 return_key=true 才返回。
+func TestIssueAPIKeyHidesPlainByDefault(t *testing.T) {
+	srv, st := newTestServer(t)
+
+	res := srv.CallTool("issue_api_key", map[string]any{"name": "默认"}, true)
+	if res["isError"] == true {
+		t.Fatalf("签发失败: %v", res)
+	}
+	text := res["content"].([]map[string]any)[0]["text"].(string)
+	keys, err := st.ListAPIKeys()
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("应有 1 枚密钥: %v %v", keys, err)
+	}
+	if contains(text, keys[0].Key) {
+		t.Fatalf("默认响应不应包含明文密钥: %s", text)
+	}
+	if !contains(text, "hint") {
+		t.Fatalf("默认响应应给出脱敏值: %s", text)
+	}
+
+	res = srv.CallTool("issue_api_key", map[string]any{"name": "显式", "return_key": true}, true)
+	if res["isError"] == true {
+		t.Fatalf("签发失败: %v", res)
+	}
+	text = res["content"].([]map[string]any)[0]["text"].(string)
+	keys, _ = st.ListAPIKeys()
+	if len(keys) != 2 {
+		t.Fatalf("应有 2 枚密钥，实际 %d", len(keys))
+	}
+	var second string
+	for _, k := range keys {
+		if k.Name == "显式" {
+			second = k.Key
+		}
+	}
+	if second == "" || !contains(text, second) {
+		t.Fatalf("return_key=true 时应返回明文: %s", text)
+	}
+}
+
+// TestDeleteAPIKeyTool 只读令牌看不到删除工具；读写令牌签发后可删除，删除后查不到。
+func TestDeleteAPIKeyTool(t *testing.T) {
+	srv, st := newTestServer(t)
+
+	for _, name := range []string{"list_api_keys", "delete_api_key"} {
+		if name == "list_api_keys" && !hasTool(srv, name, false) {
+			t.Fatalf("只读令牌应能看到 %s", name)
+		}
+		if name == "delete_api_key" && hasTool(srv, name, false) {
+			t.Fatalf("只读令牌不应看到写工具 %s", name)
+		}
+		if !hasTool(srv, name, true) {
+			t.Fatalf("读写令牌应能看到 %s", name)
+		}
+	}
+
+	created := srv.CallTool("issue_api_key", map[string]any{"name": "临时密钥"}, true)
+	if created["isError"] == true {
+		t.Fatalf("签发失败: %v", created)
+	}
+	keys, err := st.ListAPIKeys()
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("应有 1 枚密钥: %v %v", keys, err)
+	}
+	keyID := keys[0].ID
+
+	if res := srv.CallTool("delete_api_key", map[string]any{"key_id": keyID}, false); res["isError"] != true {
+		t.Fatal("只读令牌调用删除应报错")
+	}
+	if res := srv.CallTool("delete_api_key", map[string]any{"key_id": "no-such-id"}, true); res["isError"] != true {
+		t.Fatal("删除不存在的密钥应报错")
+	}
+
+	if res := srv.CallTool("delete_api_key", map[string]any{"key_id": keyID}, true); res["isError"] == true {
+		t.Fatalf("删除失败: %v", res)
+	}
+	if got, _ := st.GetAPIKey(keyID); got != nil {
+		t.Fatalf("删除后应查不到，实际 %+v", got)
+	}
+}
+
+// TestGetAPIKeyTool 默认脱敏，reveal_key=true 才返回明文；不存在时报错。
+func TestGetAPIKeyTool(t *testing.T) {
+	srv, st := newTestServer(t)
+
+	srv.CallTool("issue_api_key", map[string]any{"name": "查询用", "return_key": true}, true)
+	keys, err := st.ListAPIKeys()
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("应有 1 枚密钥: %v %v", keys, err)
+	}
+	plain := keys[0].Key
+
+	res := srv.CallTool("get_api_key", map[string]any{"key_id": keys[0].ID}, false)
+	if res["isError"] == true {
+		t.Fatalf("查询失败: %v", res)
+	}
+	text := res["content"].([]map[string]any)[0]["text"].(string)
+	if contains(text, plain) {
+		t.Fatalf("默认不应返回明文: %s", text)
+	}
+	if !contains(text, "hint") {
+		t.Fatalf("默认应给出脱敏值: %s", text)
+	}
+
+	res = srv.CallTool("get_api_key", map[string]any{"key_id": keys[0].ID, "reveal_key": true}, false)
+	text = res["content"].([]map[string]any)[0]["text"].(string)
+	if !contains(text, plain) {
+		t.Fatalf("reveal_key=true 时应返回明文: %s", text)
+	}
+
+	if res := srv.CallTool("get_api_key", map[string]any{"key_id": "no-such-id"}, false); res["isError"] != true {
+		t.Fatal("查询不存在的密钥应报错")
+	}
+}
+
+// TestListAndGetKeysRevealSwitch 列表与单查都支持脱敏/明文切换。
+func TestListAndGetKeysRevealSwitch(t *testing.T) {
+	srv, st := newTestServer(t)
+	srv.CallTool("issue_api_key", map[string]any{"name": "列表用", "return_key": true}, true)
+	keys, _ := st.ListAPIKeys()
+	if len(keys) != 1 {
+		t.Fatalf("应有 1 枚密钥，实际 %d", len(keys))
+	}
+	plain := keys[0].Key
+
+	if text := toolText(srv.CallTool("list_api_keys", map[string]any{}, false)); contains(text, plain) {
+		t.Fatalf("list_api_keys 默认不应返回明文: %s", text)
+	}
+	if text := toolText(srv.CallTool("list_api_keys", map[string]any{"reveal_keys": true}, false)); !contains(text, plain) {
+		t.Fatalf("reveal_keys=true 时应返回明文: %s", text)
+	}
+
+	// 上游渠道密钥同样支持切换
+	ch := &model.Channel{
+		ID: "ch-1", Name: "测试渠道", BaseURL: "https://example.com/v1",
+		Keys: []model.ChannelKey{{Key: "sk-upstream-secret", Enabled: true}},
+		Models: []string{"m"}, Enabled: true,
+	}
+	if err := st.CreateChannel(ch); err != nil {
+		t.Fatalf("建渠道失败: %v", err)
+	}
+	if text := toolText(srv.CallTool("list_channels", map[string]any{}, false)); contains(text, "sk-upstream-secret") {
+		t.Fatalf("list_channels 默认不应返回明文: %s", text)
+	}
+	if text := toolText(srv.CallTool("list_channels", map[string]any{"reveal_keys": true}, false)); !contains(text, "sk-upstream-secret") {
+		t.Fatalf("reveal_keys=true 时应返回明文: %s", text)
+	}
+}
+
+// toolText 取出工具结果的文本内容。
+func toolText(res map[string]any) string {
+	items, ok := res["content"].([]map[string]any)
+	if !ok || len(items) == 0 {
+		return ""
+	}
+	s, _ := items[0]["text"].(string)
+	return s
 }
 
 func contains(s, sub string) bool {

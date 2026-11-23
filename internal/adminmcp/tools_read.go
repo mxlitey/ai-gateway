@@ -17,7 +17,7 @@ type ReadDeps struct {
 	Pricer *pricing.Resolver
 }
 
-// RegisterReadTools 注册第一梯队：10 个只读工具。
+// RegisterReadTools 注册只读工具。
 //
 // 全部无副作用、不改状态，用于让 AI 自查「花了多少」「哪些模型可用」
 // 「哪条密钥在冷却」「最近报了什么错」这类问题。
@@ -27,6 +27,8 @@ func RegisterReadTools(s *Server, d ReadDeps) {
 	registerUsageSeriesTool(s, d)
 	registerPublicModelsTool(s, d)
 	registerChannelsTool(s, d)
+	registerListAPIKeysTool(s, d)
+	registerGetAPIKeyTool(s, d)
 	registerCooldownsTool(s, d)
 	registerResetCooldownTool(s, d)
 	registerErrorLogsTool(s, d)
@@ -240,11 +242,12 @@ func registerPublicModelsTool(s *Server, d ReadDeps) {
 
 func registerChannelsTool(s *Server, d ReadDeps) {
 	s.Tools("list_channels",
-		"列出所有上游渠道：名称、Base URL、启用状态、密钥数量与脱敏预览、可用模型、多密钥策略。上游密钥只返回脱敏值，不含明文。",
+		"列出所有上游渠道：名称、Base URL、启用状态、密钥数量与预览、可用模型、多密钥策略。上游密钥默认只返回脱敏值；确需核对或迁移密钥时传 reveal_keys=true 才返回明文（明文会进入对话记录）。",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"enabled_only": map[string]any{"type": "boolean", "description": "只看已启用的渠道"},
+				"reveal_keys":  map[string]any{"type": "boolean", "description": "是否返回上游密钥明文，默认 false 只给脱敏值；仅在确需逐字核对密钥时开启"},
 			},
 		}, false, func(args map[string]any) (any, error) {
 			channels, err := d.Store.ListChannels()
@@ -252,9 +255,11 @@ func registerChannelsTool(s *Server, d ReadDeps) {
 				return nil, err
 			}
 			enabledOnly := argBool(args, "enabled_only")
+			reveal := argBool(args, "reveal_keys")
 
 			type keyView struct {
 				Hint    string `json:"hint"`
+				Key     string `json:"key,omitempty"`
 				Label   string `json:"label,omitempty"`
 				Enabled bool   `json:"enabled"`
 			}
@@ -282,7 +287,11 @@ func registerChannelsTool(s *Server, d ReadDeps) {
 				}
 				keys := make([]keyView, 0, len(ch.Keys))
 				for _, k := range ch.Keys {
-					keys = append(keys, keyView{Hint: model.KeyHint(k.Key), Label: k.Label, Enabled: k.Enabled})
+					kv := keyView{Hint: model.KeyHint(k.Key), Label: k.Label, Enabled: k.Enabled}
+					if reveal {
+						kv.Key = k.Key
+					}
+					keys = append(keys, kv)
 				}
 				out = append(out, channelView{
 					ID:             ch.ID,
@@ -308,7 +317,108 @@ func registerChannelsTool(s *Server, d ReadDeps) {
 		})
 }
 
-// ---------- 6. 密钥熔断 ----------
+// ---------- 6. 客户端密钥 ----------
+
+func registerListAPIKeysTool(s *Server, d ReadDeps) {
+	s.Tools("list_api_keys",
+		"列出所有客户端 API 密钥（sk- 开头）：ID、名称、密钥预览、渠道/MCP/对象存储权限范围、启用状态与创建时间。密钥默认只返回脱敏值；确需取用明文时传 reveal_keys=true（明文会进入对话记录）。删除密钥前先用它拿到密钥 ID。",
+		map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"enabled_only": map[string]any{"type": "boolean", "description": "只看已启用的密钥"},
+				"reveal_keys":  map[string]any{"type": "boolean", "description": "是否返回明文密钥，默认 false 只给脱敏值"},
+			},
+		}, false, func(args map[string]any) (any, error) {
+			keys, err := d.Store.ListAPIKeys()
+			if err != nil {
+				return nil, err
+			}
+			enabledOnly := argBool(args, "enabled_only")
+			reveal := argBool(args, "reveal_keys")
+
+			type keyView struct {
+				ID           string   `json:"id"`
+				Name         string   `json:"name"`
+				Hint         string   `json:"hint"`
+				Key          string   `json:"key,omitempty"`
+				ChannelScope string   `json:"channel_scope"`
+				ChannelIDs   []string `json:"channel_ids"`
+				MCPScope     string   `json:"mcp_scope"`
+				MCPServerIDs []string `json:"mcp_server_ids"`
+				StorageScope string   `json:"storage_scope"`
+				Enabled      bool     `json:"enabled"`
+				CreatedAt    int64    `json:"created_at"`
+			}
+			out := make([]keyView, 0, len(keys))
+			for _, k := range keys {
+				if enabledOnly && !k.Enabled {
+					continue
+				}
+				kv := keyView{
+					ID:           k.ID,
+					Name:         k.Name,
+					Hint:         model.KeyHint(k.Key),
+					ChannelScope: k.ChannelScope,
+					ChannelIDs:   k.ChannelIDs,
+					MCPScope:     k.MCPScope,
+					MCPServerIDs: k.MCPServerIDs,
+					StorageScope: k.StorageScope,
+					Enabled:      k.Enabled,
+					CreatedAt:    k.CreatedAt,
+				}
+				if reveal {
+					kv.Key = k.Key
+				}
+				out = append(out, kv)
+			}
+			return map[string]any{"count": len(out), "keys": out}, nil
+		})
+}
+
+// ---------- 6.1 单个客户端密钥 ----------
+
+func registerGetAPIKeyTool(s *Server, d ReadDeps) {
+	s.Tools("get_api_key",
+		"按 ID 查询单个客户端 API 密钥：名称、渠道/MCP/对象存储权限、启用状态与创建时间。密钥值默认返回脱敏形式，传 reveal_key=true 才返回明文（明文会进入对话记录）。ID 可从 list_api_keys 获取。",
+		map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"key_id":     map[string]any{"type": "string", "description": "客户端密钥 ID"},
+				"reveal_key": map[string]any{"type": "boolean", "description": "是否返回明文密钥，默认 false 只给脱敏值"},
+			},
+			"required": []string{"key_id"},
+		}, false, func(args map[string]any) (any, error) {
+			keyID := argString(args, "key_id")
+			if keyID == "" {
+				return nil, fmt.Errorf("key_id 不能为空")
+			}
+			k, err := d.Store.GetAPIKey(keyID)
+			if err != nil {
+				return nil, err
+			}
+			if k == nil {
+				return nil, fmt.Errorf("API 密钥不存在: %s", keyID)
+			}
+			out := map[string]any{
+				"id":             k.ID,
+				"name":           k.Name,
+				"hint":           model.KeyHint(k.Key),
+				"channel_scope":  k.ChannelScope,
+				"channel_ids":    k.ChannelIDs,
+				"mcp_scope":      k.MCPScope,
+				"mcp_server_ids": k.MCPServerIDs,
+				"storage_scope":  k.StorageScope,
+				"enabled":        k.Enabled,
+				"created_at":     k.CreatedAt,
+			}
+			if argBool(args, "reveal_key") {
+				out["key"] = k.Key
+			}
+			return out, nil
+		})
+}
+
+// ---------- 7. 密钥熔断 ----------
 
 func registerCooldownsTool(s *Server, d ReadDeps) {
 	s.Tools("list_key_cooldowns",
@@ -323,7 +433,7 @@ func registerCooldownsTool(s *Server, d ReadDeps) {
 		})
 }
 
-// ---------- 7. 解除熔断 ----------
+// ---------- 8. 解除熔断 ----------
 
 func registerResetCooldownTool(s *Server, d ReadDeps) {
 	s.Tools("reset_key_cooldown",
@@ -348,7 +458,7 @@ func registerResetCooldownTool(s *Server, d ReadDeps) {
 		})
 }
 
-// ---------- 8. 错误日志 ----------
+// ---------- 9. 错误日志 ----------
 
 func registerErrorLogsTool(s *Server, d ReadDeps) {
 	s.Tools("get_error_logs",
@@ -397,7 +507,7 @@ func registerErrorLogsTool(s *Server, d ReadDeps) {
 		})
 }
 
-// ---------- 9. 模型价格 ----------
+// ---------- 10. 模型价格 ----------
 func registerPriceTool(s *Server, d ReadDeps) {
 	s.Tools("get_price",
 		"查询某个模型在价格表里的计费规则：按 token 计费时给出各输入档位的输入/输出单价、缓存价与峰谷时段，生图模型给出每张单价。价格由用户手工维护，只按公开模型名匹配。",
@@ -435,7 +545,7 @@ func registerPriceTool(s *Server, d ReadDeps) {
 		})
 }
 
-// ---------- 10. 生图模型元数据 ----------
+// ---------- 11. 生图模型元数据 ----------
 
 func registerModelMetaTool(s *Server, d ReadDeps) {
 	s.Tools("get_model_meta",

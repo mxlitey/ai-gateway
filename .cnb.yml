@@ -1,0 +1,43 @@
+# 云原生构建配置
+# 文档：https://docs.cnb.cool/zh/
+#
+# 作用：构建并推送 ai-gateway 的多架构 Docker 镜像（linux/amd64 + linux/arm64）到 CNB 自带制品库。
+#
+# 触发规则：
+#   - push 到 main 分支      -> 构建镜像，打 :latest 和 :<VERSION>（VERSION 取自根目录 VERSION 文件）
+#   - push 标签（如 v2.0.1）  -> 构建镜像，用标签名去掉前导 v 做版本号
+#   - 其它分支 / PR           -> 不触发镜像构建（避免 Fork/PR 等不可信事件的推送权限受限）
+#
+# 说明：
+#   - 制品库登录用平台注入的 CNB_TOKEN，无需手动配置密钥。
+#   - Dockerfile 已用 $BUILDPLATFORM + TARGETARCH 做交叉编译，与 buildx 的 --platform 天然契合，
+#     多架构构建无需额外开启 QEMU（CNB 默认支持 buildx 多架构）。
+#   - .anchor_build 是 YAML 原生锚点，被 tag_push 通过 *anchor_build 复用，避免重复。
+#     版本号在 script 里动态计算：tag_push 用标签名，其余情况读 VERSION 文件。
+
+main:
+  push:
+    - &anchor_build
+      services:
+        - docker
+      env:
+        IMAGE: ${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}
+      stages:
+        - name: 登录 CNB 制品库
+          script: docker login -u ${CNB_TOKEN_USER_NAME} -p "${CNB_TOKEN}" ${CNB_DOCKER_REGISTRY}
+        - name: 构建并推送多架构镜像
+          script: |
+            if [ -n "${CNB_BRANCH_NAME}" ] && [ "${CNB_EVENT}" = "tag_push" ]; then
+              VERSION="${CNB_BRANCH_NAME#v}"
+            else
+              VERSION="$(cat VERSION | tr -d '[:space:]')"
+            fi
+            echo "构建版本: ${VERSION}"
+            docker buildx build \
+              --platform linux/amd64,linux/arm64 \
+              -t ${IMAGE}:latest \
+              -t ${IMAGE}:${VERSION} \
+              --push .
+
+  tag_push:
+    - *anchor_build

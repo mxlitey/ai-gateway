@@ -129,7 +129,16 @@ func scanChannel(sc scanner) (*model.Channel, error) {
 }
 
 // ListChannels 按展示顺序返回全部渠道。
+//
+// 这是最热的读路径：每个 /v1 请求（选路、模型列表）都要用，而渠道变更是低频操作。
+// 这里返回缓存的只读快照，调用方不得原地修改（避免并发读写同一份切片）。
+// 写渠道的方法会先 bumpChannelsGen 让缓存失效。
 func (s *Store) ListChannels() ([]model.Channel, error) {
+	if list, ok := s.cachedChannels(); ok {
+		return list, nil
+	}
+
+	gen := s.channelsGen()
 	rows, err := s.db.Query(`SELECT ` + channelCols + ` FROM channels ORDER BY sort_order ASC, created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -144,7 +153,52 @@ func (s *Store) ListChannels() ([]model.Channel, error) {
 		}
 		out = append(out, *c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return s.storeChannels(gen, out), nil
+}
+
+// channelsGen 读取当前渠道版本号。
+func (s *Store) channelsGen() uint64 {
+	s.channels.mu.RLock()
+	defer s.channels.mu.RUnlock()
+	return s.channels.gen
+}
+
+// bumpChannelsGen 让渠道快照失效。必须在写渠道之前调用：
+// 若写入完成后才自增，并发读可能把写入前的旧数据装进新版本号下。
+func (s *Store) bumpChannelsGen() {
+	s.channels.mu.Lock()
+	s.channels.gen++
+	s.channels.has = false
+	s.channels.list = nil
+	s.channels.mu.Unlock()
+}
+
+// cachedChannels 命中时返回快照副本视图。
+func (s *Store) cachedChannels() ([]model.Channel, bool) {
+	s.channels.mu.RLock()
+	defer s.channels.mu.RUnlock()
+	if !s.channels.has || s.channels.cachedGen != s.channels.gen {
+		return nil, false
+	}
+	return s.channels.list, true
+}
+
+// storeChannels 在版本号未变化时装入快照，并返回本次结果。
+// 版本号已变化说明期间发生过写入，不装缓存（本次结果可能是旧数据，
+// 但调用方仍需要一份数据，后续读会重新查询）。
+func (s *Store) storeChannels(gen uint64, list []model.Channel) []model.Channel {
+	s.channels.mu.Lock()
+	defer s.channels.mu.Unlock()
+	if s.channels.gen != gen {
+		return list
+	}
+	s.channels.list = list
+	s.channels.cachedGen = gen
+	s.channels.has = true
+	return list
 }
 
 // GetChannel 按 id 返回渠道，不存在时返回 (nil, nil)。
@@ -220,6 +274,7 @@ func (s *Store) CreateChannel(c *model.Channel) error {
 		return err
 	}
 	c.KeyStrategy = model.NormalizeKeyStrategy(c.KeyStrategy)
+	s.bumpChannelsGen()
 	_, err = s.db.Exec(
 		`INSERT INTO channels
 		 (id, name, base_url, path, keys, models, model_map, model_priority, disabled_models, headers, image_models, image_generation, param_map, static_params, drop_params, key_strategy, enabled, source, sort_order, created_at)
@@ -278,6 +333,7 @@ func (s *Store) UpdateChannel(c *model.Channel) error {
 		return err
 	}
 	c.KeyStrategy = model.NormalizeKeyStrategy(c.KeyStrategy)
+	s.bumpChannelsGen()
 	_, err = s.db.Exec(
 		`UPDATE channels SET
 		   name = ?, base_url = ?, path = ?, keys = ?, models = ?,
@@ -294,6 +350,7 @@ func (s *Store) UpdateChannel(c *model.Channel) error {
 
 // DeleteChannel 删除渠道。
 func (s *Store) DeleteChannel(id string) error {
+	s.bumpChannelsGen()
 	_, err := s.db.Exec(`DELETE FROM channels WHERE id = ?`, id)
 	return err
 }

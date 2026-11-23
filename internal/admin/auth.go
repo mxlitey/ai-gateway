@@ -9,10 +9,12 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/czg95/ai-gateway-v2/internal/store"
@@ -28,11 +30,23 @@ const (
 	sessionTTL = 24 * time.Hour
 	// rememberedTTL 「记住此设备」时的会话有效期（30 天）。
 	rememberedTTL = 30 * 24 * time.Hour
+
+	// loginFreeAttempts 允许的连续失败次数，未超过时不退避（正常人可能手滑一两次）。
+	loginFreeAttempts = 3
+	// loginBackoffBase 超过免费次数后的首次退避时长，此后每次翻倍。
+	loginBackoffBase = time.Second
+	// loginBackoffMax 退避时长上限。
+	loginBackoffMax = time.Minute
 )
+
+// ErrLoginThrottled 表示登录因连续失败被退避限制，需等待后重试。
+var ErrLoginThrottled = errors.New("登录失败次数过多，请稍后再试")
 
 // Service 管理端服务。
 type Service struct {
 	store *store.Store
+	// loginMu 串行化登录流程：失败计数读-改-写必须原子，否则并发爆破会绕过退避。
+	loginMu sync.Mutex
 }
 
 // New 创建管理端服务。
@@ -79,18 +93,16 @@ func (a *Service) setPassword(password string) error {
 	if err := a.store.SetSetting(store.SettingAdminPasswordHash, hash); err != nil {
 		return err
 	}
-	// 首次设置时生成会话签名密钥
-	if _, ok, err := a.store.GetSetting(store.SettingAdminSessionKey); err != nil {
+	// 每次设置密码都重新生成会话签名密钥：改密后旧 Token 立即失效。
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
 		return err
-	} else if !ok {
-		buf := make([]byte, 32)
-		if _, err := rand.Read(buf); err != nil {
-			return err
-		}
-		if err := a.store.SetSetting(store.SettingAdminSessionKey, hex.EncodeToString(buf)); err != nil {
-			return err
-		}
 	}
+	if err := a.store.SetSetting(store.SettingAdminSessionKey, hex.EncodeToString(buf)); err != nil {
+		return err
+	}
+	// 改密成功说明是合法管理员操作，顺带清空失败计数与锁定
+	a.resetLoginFailures()
 	return a.store.SetSetting(store.SettingInitialized, "1")
 }
 
@@ -100,14 +112,30 @@ func (a *Service) setPassword(password string) error {
 //
 // 仅接受管理员密码；客户端 API Key 不得用于登录管理面板。
 // remember 为 true 时会话有效期延长到 30 天（面板上的「记住此设备」），否则为 24 小时。
+//
+// 连续失败会触发指数退避：计数与解锁时间持久化在 settings 中，跨重启生效。
+// 由于网关通常挂在 CDN 后面，回源 IP 会变化，这里刻意不使用来源 IP / UA 作为维度，
+// 而是对「整个管理端」做全局限制。
 func (a *Service) Login(credential string, remember bool) (string, bool, error) {
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+
+	if remain := a.loginBlockRemaining(); remain > 0 {
+		return "", false, fmt.Errorf("%w（还需等待 %d 秒）", ErrLoginThrottled, int(remain.Seconds()+0.5))
+	}
+
 	encoded, ok, err := a.store.GetSetting(store.SettingAdminPasswordHash)
 	if err != nil {
 		return "", false, err
 	}
 	if !ok || !VerifyPassword(credential, encoded) {
+		a.recordLoginFailure()
 		return "", false, nil
 	}
+
+	// 登录成功：清空失败计数，避免一次误输影响后续登录
+	a.resetLoginFailuresLocked()
+
 	secret, err := a.sessionSecret()
 	if err != nil {
 		return "", false, err
@@ -121,6 +149,63 @@ func (a *Service) Login(credential string, remember bool) (string, bool, error) 
 		return "", false, err
 	}
 	return token, true, nil
+}
+
+// loginBlockRemaining 返回当前锁定剩余时长，0 表示可以尝试登录。
+func (a *Service) loginBlockRemaining() time.Duration {
+	v, ok, err := a.store.GetSetting(store.SettingAdminLoginBlockedUntil)
+	if err != nil || !ok || v == "" {
+		return 0
+	}
+	until, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return 0
+	}
+	remain := time.Until(time.UnixMilli(until))
+	if remain <= 0 {
+		return 0
+	}
+	return remain
+}
+
+// recordLoginFailure 累加失败次数，超过免费次数后写入指数退避的解锁时间。
+// 调用方必须持有 loginMu。
+func (a *Service) recordLoginFailure() {
+	failures := 0
+	if v, ok, err := a.store.GetSetting(store.SettingAdminLoginFailures); err == nil && ok {
+		if n, perr := strconv.Atoi(v); perr == nil {
+			failures = n
+		}
+	}
+	failures++
+	_ = a.store.SetSetting(store.SettingAdminLoginFailures, strconv.Itoa(failures))
+
+	if failures <= loginFreeAttempts {
+		return
+	}
+	delay := loginBackoffBase
+	// 第 4 次失败等 1s，第 5 次 2s，第 6 次 4s …… 封顶 loginBackoffMax
+	for i := loginFreeAttempts + 1; i < failures && delay < loginBackoffMax; i++ {
+		delay *= 2
+	}
+	if delay > loginBackoffMax {
+		delay = loginBackoffMax
+	}
+	until := time.Now().Add(delay).UnixMilli()
+	_ = a.store.SetSetting(store.SettingAdminLoginBlockedUntil, strconv.FormatInt(until, 10))
+}
+
+// resetLoginFailures 清空失败计数与锁定（自行加锁）。
+func (a *Service) resetLoginFailures() {
+	a.loginMu.Lock()
+	defer a.loginMu.Unlock()
+	a.resetLoginFailuresLocked()
+}
+
+// resetLoginFailuresLocked 清空失败计数与锁定。调用方必须持有 loginMu。
+func (a *Service) resetLoginFailuresLocked() {
+	_ = a.store.SetSetting(store.SettingAdminLoginFailures, "0")
+	_ = a.store.SetSetting(store.SettingAdminLoginBlockedUntil, "0")
 }
 
 // RequireAuth 校验管理端请求：仅接受管理员会话 Token。

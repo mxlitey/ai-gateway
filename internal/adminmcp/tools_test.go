@@ -338,7 +338,7 @@ func TestListAndGetKeysRevealSwitch(t *testing.T) {
 	// 上游渠道密钥同样支持切换
 	ch := &model.Channel{
 		ID: "ch-1", Name: "测试渠道", BaseURL: "https://example.com/v1",
-		Keys: []model.ChannelKey{{Key: "sk-upstream-secret", Enabled: true}},
+		Keys:   []model.ChannelKey{{Key: "sk-upstream-secret", Enabled: true}},
 		Models: []string{"m"}, Enabled: true,
 	}
 	if err := st.CreateChannel(ch); err != nil {

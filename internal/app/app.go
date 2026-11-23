@@ -1,4 +1,4 @@
-﻿// Package app 把网关的装配与生命周期封装成可反复启停的实例，
+// Package app 把网关的装配与生命周期封装成可反复启停的实例，
 // 供命令行 serve（含 Windows 服务）与桌面窗口共用。
 package app
 
@@ -270,18 +270,6 @@ func (a *App) Start() error {
 	host.StartAutoCheckin(ctx)
 
 	return nil
-}
-
-// loadRuntimeSettings 读取运行期设置；失败时回退为默认值。
-func (a *App) loadRuntimeSettings() store.RuntimeSettings {
-	if a.store == nil {
-		return store.DefaultRuntimeSettings()
-	}
-	rs, err := a.store.LoadRuntimeSettings()
-	if err != nil {
-		return store.DefaultRuntimeSettings()
-	}
-	return rs
 }
 
 // loadAdminMCPConfig 读取管理 MCP 的开关与两档令牌摘要。

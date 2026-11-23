@@ -753,7 +753,7 @@ export const api = {
     }),
 
   changePassword: (oldPassword: string, newPassword: string) =>
-    request<{ success: boolean }>('/admin/api/password', {
+    request<{ success: boolean; token?: string }>('/admin/api/password', {
       method: 'POST',
       ...json({ old_password: oldPassword, new_password: newPassword }),
     }),

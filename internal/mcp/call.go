@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -261,12 +260,6 @@ func (svc *Service) Probe(ctx context.Context, srv *model.MCPServer) error {
 	svc.setState(srv.ID, "ok", "")
 	_ = tools
 	return nil
-}
-
-// isRetryable 判断错误是否值得换下一个密钥。
-func isRetryable(err error) bool {
-	var ue *upstreamError
-	return errors.As(err, &ue) && ue.Retryable
 }
 
 // NormalizeAlias 把任意名称归一化成合法的工具命名空间前缀（供管理接口校验）。

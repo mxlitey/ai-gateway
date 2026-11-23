@@ -214,20 +214,20 @@ func (lm *localManager) ensureServer(mf localManifest, existing *model.MCPServer
 		lm.log.Warn("读取 MCP 排序失败", "err", err)
 	}
 	srv := &model.MCPServer{
-		ID:             id.UUID(),
-		Name:           name,
-		Alias:          alias,
-		Headers:        []model.Header{},
-		Keys:           []model.MCPKey{},
-		KeyStrategy:    model.KeyStrategyRotate,
-		DailyLimit:     -1,
-		ToolLimits:     map[string]int{},
-		BillableMode:   model.MCPBillableSuccess,
-		TimeoutMS:      localDefaultStartupMS,
-		Enabled:        true,
-		Source:         model.LocalSourcePrefix + mf.dir,
-		SortOrder:      order,
-		CreatedAt:      time.Now().UnixMilli(),
+		ID:           id.UUID(),
+		Name:         name,
+		Alias:        alias,
+		Headers:      []model.Header{},
+		Keys:         []model.MCPKey{},
+		KeyStrategy:  model.KeyStrategyRotate,
+		DailyLimit:   -1,
+		ToolLimits:   map[string]int{},
+		BillableMode: model.MCPBillableSuccess,
+		TimeoutMS:    localDefaultStartupMS,
+		Enabled:      true,
+		Source:       model.LocalSourcePrefix + mf.dir,
+		SortOrder:    order,
+		CreatedAt:    time.Now().UnixMilli(),
 	}
 	if err := lm.store.CreateMCPServer(srv); err != nil {
 		lm.log.Warn("登记本地 MCP 服务器失败", "server", name, "err", err)

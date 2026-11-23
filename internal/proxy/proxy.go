@@ -620,15 +620,17 @@ func (h *Handler) openaiUpstreamResponse(up *http.Response, t routing.Target, up
 
 	// 非流式：校验 chat/completions 的 200 响应体
 	if up.StatusCode == http.StatusOK && strings.Contains(upstreamPath, "/chat/completions") {
-		raw, err := io.ReadAll(up.Body)
+		raw, err := readAllLimited(up.Body, maxUpstreamResponseBytes)
 		_ = up.Body.Close()
-		if err == nil {
-			if msg := h.validateUpstreamResult(raw, t, t.PublicModel); msg != "" {
-				return nil, true, msg
-			}
-			rec.ObserveJSON(raw)
-			return bytesResponse(200, headers, raw), false, ""
+		if err != nil {
+			// 读取失败/超限说明上游这条响应不可用，交给故障转移换下一个目标
+			return nil, true, "read upstream body failed: " + err.Error()
 		}
+		if msg := h.validateUpstreamResult(raw, t, t.PublicModel); msg != "" {
+			return nil, true, msg
+		}
+		rec.ObserveJSON(raw)
+		return bytesResponse(200, headers, raw), false, ""
 	}
 
 	return &http.Response{StatusCode: up.StatusCode, Header: headers, Body: up.Body}, false, ""
@@ -788,6 +790,10 @@ func (h *Handler) logError(t routing.Target, publicModel string, status int, mes
 // 文件内容甚至截图一起发过来，32MB 在长会话 / 多模态场景下不够用。
 const maxRequestBody = 128 << 20
 
+// maxUpstreamResponseBytes 是单次非流式上游响应的最大读取字节数。
+// 不加限制时，异常上游（或同源大文件）可以把网关内存打满。
+const maxUpstreamResponseBytes = 64 << 20
+
 // decodeJSONObject 读取并解析请求体，支持 gzip 压缩的请求（部分客户端会压缩大请求体）。
 func decodeJSONObject(r *http.Request) (map[string]any, error) {
 	defer func() { _ = r.Body.Close() }()
@@ -868,6 +874,12 @@ func writeRawJSON(w http.ResponseWriter, status int, body []byte) {
 func bytesResponse(status int, header http.Header, body []byte) *http.Response {
 	h := http.Header{}
 	for k, vs := range header {
+		// 上游错误体可能被截断（见 readBodyLimited），原样透传 Content-Length /
+		// Content-Encoding 会让客户端长度校验失败或按错误编码解码，交给 Go 重新定帧。
+		switch strings.ToLower(k) {
+		case "content-length", "content-encoding":
+			continue
+		}
 		for _, v := range vs {
 			h.Add(k, v)
 		}
@@ -892,6 +904,9 @@ func writeResponse(w http.ResponseWriter, resp *http.Response) {
 		if isHopByHop(k) {
 			continue
 		}
+		// 响应头可能已被外层（withCORS）设置过，先删再加，避免同名多值
+		// （如 Access-Control-Allow-Origin 出现两个 "*"）。
+		dst.Del(k)
 		for _, v := range vs {
 			dst.Add(k, v)
 		}
@@ -916,10 +931,13 @@ func writeResponse(w http.ResponseWriter, resp *http.Response) {
 	}
 }
 
+// isHopByHop 判断响应头是否不应原样透传。
+// content-length 也一并排除：写回时正文可能被改写（流式修补、截断、observeBody），
+// 由 Go 重新计算长度或改用 chunked，避免声明长度与实际字节数不一致。
 func isHopByHop(name string) bool {
 	switch strings.ToLower(name) {
 	case "connection", "keep-alive", "proxy-connection", "transfer-encoding",
-		"te", "trailer", "upgrade":
+		"te", "trailer", "upgrade", "content-length":
 		return true
 	}
 	return false
@@ -939,6 +957,19 @@ func readBodyLimited(resp *http.Response, n int) string {
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, int64(n)))
 	_ = resp.Body.Close()
 	return string(b)
+}
+
+// readAllLimited 读取至多 limit 字节；超出上限返回错误而不是静默截断，
+// 避免把不完整的 JSON 当成正常响应继续处理。
+func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("响应体超过 %d MB 上限", limit>>20)
+	}
+	return b, nil
 }
 
 func rateDetail(last429 string) string {

@@ -218,7 +218,7 @@ func registerDiagnoseUpstreamTool(s *Server, d WriteDeps) {
 				"model":      map[string]any{"type": "string", "description": "公开模型名；留空时每个渠道都不会被探测（无法确定上游模型）"},
 				"key":        map[string]any{"type": "string", "description": "上游密钥明文，留空表示该渠道所有启用的密钥"},
 			},
-		}, false, func(args map[string]any) (any, error) {
+		}, true, func(args map[string]any) (any, error) {
 			channels, err := d.Store.ListChannels()
 			if err != nil {
 				return nil, err

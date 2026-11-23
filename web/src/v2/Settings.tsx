@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type PythonSettings, type RuntimeSettings, type StorageSettings } from '../lib/api'
+import { useAuth } from '../lib/auth'
 import { toast } from '../lib/toast'
 import {
   Badge,
@@ -15,6 +16,7 @@ import {
 
 export default function V2Settings() {
   const queryClient = useQueryClient()
+  const { signIn } = useAuth()
   const [oldPassword, setOldPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirm, setConfirm] = useState('')
@@ -121,7 +123,9 @@ export default function V2Settings() {
 
   const change = useMutation({
     mutationFn: () => api.changePassword(oldPassword, newPassword),
-    onSuccess: () => {
+    onSuccess: (res) => {
+      // 改密会轮换服务端会话密钥，旧 Token 已失效：保存新签发的 Token 保持当前会话
+      if (res.token) signIn(res.token)
       toast('ok', '密码已更新')
       setOldPassword('')
       setNewPassword('')

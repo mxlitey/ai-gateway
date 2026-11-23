@@ -3,7 +3,6 @@ package proxy
 import (
 	"bufio"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -114,11 +113,11 @@ func (h *Handler) claudeUpstreamResponse(up *http.Response, t routing.Target, mo
 		rec.MarkNonStream()
 	}
 
-	raw, err := io.ReadAll(up.Body)
+	raw, err := readAllLimited(up.Body, maxUpstreamResponseBytes)
 	_ = up.Body.Close()
 	if err != nil {
-		rec.Finish(http.StatusBadGateway, "read upstream body failed: "+err.Error())
-		return claudeErrorResponse(http.StatusBadGateway, "read upstream body failed: "+err.Error()), false, ""
+		// 读取失败/超限说明这条上游响应不可用，交给故障转移换下一个目标
+		return nil, true, "read upstream body failed: " + err.Error()
 	}
 
 	// 与真实转发同一标准：200 也可能是内容为错误的假成功

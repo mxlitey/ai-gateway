@@ -184,7 +184,7 @@ func escapePath(p string) string {
 	if p == "" {
 		return ""
 	}
-	segs := strings.Split(path.Clean("/"+p)[1:], "/")
+	segs := strings.Split(path.Clean("/" + p)[1:], "/")
 	for i, seg := range segs {
 		segs[i] = escape(seg)
 	}

@@ -32,8 +32,10 @@ services:
       # 监听地址与端口由镜像内置（0.0.0.0:8787），一般无需覆盖
       AIGW_HOST: "0.0.0.0"
       AIGW_PORT: "8787"
-      # 首次启动用它初始化管理员密码；初始化后改密请走面板
-      AIGW_ADMIN_PASSWORD: ${AIGW_ADMIN_PASSWORD:-change-me}
+      # 首次启动用它初始化管理员密码；初始化后改密请走面板。
+      # 必须显式提供，避免用默认弱口令直接暴露到公网：
+      #   AIGW_ADMIN_PASSWORD='你的强密码' docker compose up -d
+      AIGW_ADMIN_PASSWORD: ${AIGW_ADMIN_PASSWORD:?请先设置 AIGW_ADMIN_PASSWORD（至少 8 位）}
       # 日志级别：debug | info | warn | error（也可在面板「运行期设置」中热改）
       AIGW_LOG_LEVEL: ${AIGW_LOG_LEVEL:-info}
       # 对象存储（S3 兼容）不在环境变量里配置：启动后登录面板「设置 → 对象存储」

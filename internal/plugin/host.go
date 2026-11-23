@@ -633,13 +633,13 @@ func (h *Host) supervise(inst *instance) {
 
 		h.setStatus(inst, StatusStarting, "")
 		if err := h.spawn(inst); err != nil {
-			inst.failures++
+			failures := h.bumpFailures(inst)
 			h.setStatus(inst, StatusFailed, err.Error())
 			h.syncChannels(inst, false)
-			if inst.failures >= maxFailures {
+			if failures >= maxFailures {
 				return
 			}
-			if !h.sleepOrStop(inst, backoffs[minInt(inst.failures-1, len(backoffs)-1)]) {
+			if !h.sleepOrStop(inst, backoffs[minInt(failures-1, len(backoffs)-1)]) {
 				continue
 			}
 			continue
@@ -651,19 +651,19 @@ func (h *Host) supervise(inst *instance) {
 				h.finishStopped(inst)
 				return
 			}
-			inst.failures++
+			failures := h.bumpFailures(inst)
 			h.setStatus(inst, StatusUnhealthy, "启动超时，未通过探活")
 			h.syncChannels(inst, false)
-			if inst.failures >= maxFailures {
+			if failures >= maxFailures {
 				h.setStatus(inst, StatusFailed, "启动反复失败，已停止自动重启")
 				return
 			}
 			h.setStatus(inst, StatusRestarting, "")
-			h.sleepOrStop(inst, backoffs[minInt(inst.failures-1, len(backoffs)-1)])
+			h.sleepOrStop(inst, backoffs[minInt(failures-1, len(backoffs)-1)])
 			continue
 		}
 
-		inst.failures = 0
+		h.resetFailures(inst)
 		h.setStatus(inst, StatusRunning, "")
 		h.syncChannels(inst, true)
 
@@ -680,15 +680,15 @@ func (h *Host) supervise(inst *instance) {
 		}
 
 		h.stopProcess(inst)
-		inst.failures++
+		failures := h.bumpFailures(inst)
 		h.setStatus(inst, StatusUnhealthy, reason)
 		h.syncChannels(inst, false)
-		if inst.failures >= maxFailures {
+		if failures >= maxFailures {
 			h.setStatus(inst, StatusFailed, reason+"；已停止自动重启")
 			return
 		}
 		h.setStatus(inst, StatusRestarting, "")
-		h.sleepOrStop(inst, backoffs[minInt(inst.failures-1, len(backoffs)-1)])
+		h.sleepOrStop(inst, backoffs[minInt(failures-1, len(backoffs)-1)])
 	}
 }
 
@@ -780,12 +780,12 @@ func (h *Host) spawn(inst *instance) error {
 	}
 	childEnv = append(childEnv,
 		"AI_GATEWAY_PLUGIN_ID="+inst.manifest.ID,
-		"AI_GATEWAY_PLUGIN_PORT="+strconv.Itoa(inst.port),
+		"AI_GATEWAY_PLUGIN_PORT="+strconv.Itoa(vars.Port),
 		"AI_GATEWAY_PLUGIN_DIR="+inst.dir,
 		"AI_GATEWAY_PLUGIN_DATA="+vars.Data,
 		// 登录回调基址就是插件自己的回环端口（见 callback.go）；
 		// 登录时还会用请求头覆盖它，宿主换端口后无需重启插件
-		CallbackEnvVar+"="+callbackBaseFor(inst.port),
+		CallbackEnvVar+"="+callbackBaseFor(vars.Port),
 	)
 	cmd.Env = childEnv
 
@@ -914,7 +914,7 @@ func (h *Host) watch(inst *instance) string {
 
 // probe 探活：请求固定的 /health，状态码 <500 视为存活。
 func (h *Host) probe(inst *instance) bool {
-	addr := "127.0.0.1:" + strconv.Itoa(inst.port)
+	addr := "127.0.0.1:" + strconv.Itoa(h.portOf(inst))
 
 	ctx, cancel := context.WithTimeout(context.Background(), h.Policy().ProbeTimeout)
 	defer cancel()
@@ -1005,9 +1005,39 @@ func (h *Host) touch(inst *instance) {
 	h.mu.Unlock()
 }
 
+// portOf 读取插件当前端口。监管循环与 HTTP 处理器都会访问，必须加锁。
+func (h *Host) portOf(inst *instance) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return inst.port
+}
+
+// statusOf 读取插件当前状态。监管循环写入、HTTP 处理器读取，必须加锁。
+func (h *Host) statusOf(inst *instance) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return inst.status
+}
+
+// bumpFailures 累加连续失败次数并返回新值。
+// 监管循环不持锁运行，这里的读-改-写必须放进同一把锁。
+func (h *Host) bumpFailures(inst *instance) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	inst.failures++
+	return inst.failures
+}
+
+// resetFailures 清零连续失败次数。
+func (h *Host) resetFailures(inst *instance) {
+	h.mu.Lock()
+	inst.failures = 0
+	h.mu.Unlock()
+}
+
 func (h *Host) vars(inst *instance) substVars {
 	return substVars{
-		Port: inst.port,
+		Port: h.portOf(inst),
 		Data: h.cfg.PluginDataDir(inst.manifest.ID),
 	}
 }
@@ -1029,13 +1059,14 @@ func (a pluginAccount) alive() bool {
 
 // fetchAccounts 读取插件控制台声明的账号列表；ok=false 表示读不到（未声明控制台、未运行或请求失败）。
 func (h *Host) fetchAccounts(inst *instance) (accounts []pluginAccount, ok bool) {
-	if !inst.manifest.HasConsole() || inst.port == 0 {
+	port := h.portOf(inst)
+	if !inst.manifest.HasConsole() || port == 0 {
 		return nil, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	url := fmt.Sprintf("http://127.0.0.1:%d%s/accounts", inst.port, inst.manifest.ConsoleBasePath())
+	url := fmt.Sprintf("http://127.0.0.1:%d%s/accounts", port, inst.manifest.ConsoleBasePath())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, false
@@ -1178,14 +1209,15 @@ func (h *Host) checkinPlugin(inst *instance) {
 
 // checkinAccount 调用插件控制台的 POST /console/accounts/{id}/checkin，返回其 message。
 func (h *Host) checkinAccount(inst *instance, accountID string) (string, error) {
-	if !inst.manifest.HasConsole() || inst.port == 0 {
+	port := h.portOf(inst)
+	if !inst.manifest.HasConsole() || port == 0 {
 		return "", fmt.Errorf("插件未就绪")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), checkinTimeout)
 	defer cancel()
 
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s/accounts/%s/checkin",
-		inst.port, inst.manifest.ConsoleBasePath(), url.PathEscape(accountID))
+		port, inst.manifest.ConsoleBasePath(), url.PathEscape(accountID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 	if err != nil {
 		return "", err
@@ -1239,7 +1271,7 @@ func minInt(a, b int) int {
 func (h *Host) syncChannels(inst *instance, running bool) {
 	source := "plugin:" + inst.manifest.ID
 	name := inst.manifest.Name
-	baseURL := UpstreamBaseURL(inst.port)
+	baseURL := UpstreamBaseURL(h.portOf(inst))
 
 	channels, err := h.store.ListChannels()
 	if err != nil {
@@ -1247,10 +1279,12 @@ func (h *Host) syncChannels(inst *instance, running bool) {
 		return
 	}
 
+	// ListChannels 返回的是只读快照，需要改动时先复制一份
 	var found *model.Channel
 	for i := range channels {
 		if channels[i].Source == source {
-			found = &channels[i]
+			ch := channels[i]
+			found = &ch
 			break
 		}
 	}
@@ -1319,12 +1353,16 @@ func (h *Host) syncChannels(inst *instance, running bool) {
 func (h *Host) SyncChannels(pluginID string) error {
 	h.mu.Lock()
 	inst, ok := h.items[pluginID]
+	var status string
+	if ok {
+		status = inst.status
+	}
 	h.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("插件不存在: %s", pluginID)
 	}
-	if inst.status != StatusRunning {
-		return fmt.Errorf("插件当前状态为 %s，请先启动后再同步账号", inst.status)
+	if status != StatusRunning {
+		return fmt.Errorf("插件当前状态为 %s，请先启动后再同步账号", status)
 	}
 	h.syncChannels(inst, true)
 	return nil

@@ -536,8 +536,6 @@ func (h *Handler) ResumeImageJobs() {
 		case job.Status == store.ImageJobQueued:
 			slog.Info("[image] 重新执行排队中的生图作业", "job", job.ID)
 			go h.launchImageJob(job.ID)
-		case job.CancelRequested:
-			_ = h.store.FinishImageJob(job.ID, store.ImageJobCanceled, nil, "作业已取消", "canceled")
 		default:
 			_ = h.store.FinishImageJob(job.ID, store.ImageJobFailed, nil,
 				"网关重启导致同步生图作业中断，请重新提交", "gateway_restarted")

@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/czg95/ai-gateway-v2/internal/model"
 	_ "modernc.org/sqlite" // 纯 Go SQLite 驱动，注册名 "sqlite"
 )
 
@@ -20,6 +22,19 @@ var migrationsFS embed.FS
 // Store 数据库句柄。
 type Store struct {
 	db *sql.DB
+	// channels 是渠道清单的只读快照缓存：路由与模型列表在每个请求上都要读它，
+	// 而渠道变更是低频操作。gen 在每次写渠道前自增，读取方只有在 gen 未变化时
+	// 才把查到的结果装入缓存，避免写入中途读到的旧数据覆盖新快照。
+	channels channelCache
+}
+
+// channelCache 渠道清单快照。
+type channelCache struct {
+	mu        sync.RWMutex
+	list      []model.Channel
+	gen       uint64
+	cachedGen uint64
+	has       bool
 }
 
 // Open 打开（必要时创建）数据库并执行迁移。
@@ -156,6 +171,10 @@ const (
 	SettingImageUploadSecret = "image.upload_secret"
 	// SettingImageUploadRevoked 已吊销的上传令牌名单：{"<sid>": <过期时间 unix>}。
 	SettingImageUploadRevoked = "image.upload_revoked"
+	// SettingAdminLoginFailures 连续登录失败次数（用于退避，不区分来源 IP）。
+	SettingAdminLoginFailures = "admin.login_failures"
+	// SettingAdminLoginBlockedUntil 登录解锁时间点（unix 毫秒），0 表示未锁定。
+	SettingAdminLoginBlockedUntil = "admin.login_blocked_until"
 )
 
 // Python 插件运行时相关设置。

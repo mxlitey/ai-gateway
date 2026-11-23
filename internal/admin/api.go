@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -127,6 +128,10 @@ func (a *API) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 		token, ok, err := a.svc.Login(body.Password, body.Remember)
 		if err != nil {
+			if errors.Is(err, ErrLoginThrottled) {
+				jsonErr(w, http.StatusTooManyRequests, err.Error())
+				return
+			}
 			jsonErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -691,7 +696,14 @@ func (a *API) changePassword(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	jsonOK(w, map[string]any{"success": true})
+	// 改密会轮换会话签名密钥，旧 Token 全部失效。这里直接签发新 Token，
+	// 让当前正在改密的会话无缝继续，其余设备需重新登录。
+	token, ok, err := a.svc.Login(body.NewPassword, false)
+	if err != nil || !ok {
+		jsonOK(w, map[string]any{"success": true})
+		return
+	}
+	jsonOK(w, map[string]any{"success": true, "token": token})
 }
 
 // ---------- 错误日志 ----------

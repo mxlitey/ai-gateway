@@ -53,15 +53,6 @@ func (s *Store) LoadKeyCooldowns() ([]KeyCooldown, error) {
 	return out, rows.Err()
 }
 
-// PurgeExpiredKeyCooldowns 清理冷却已结束且无失败计数的记录，避免表无限增长。
-func (s *Store) PurgeExpiredKeyCooldowns(now int64) error {
-	_, err := s.db.Exec(
-		`DELETE FROM key_cooldowns WHERE cooldown_until > 0 AND cooldown_until <= ? AND fail_streak = 0`,
-		now,
-	)
-	return err
-}
-
 // KeyCooldownView 面板展示用的冷却条目：附带渠道名等冗余信息。
 type KeyCooldownView struct {
 	KeyCooldown

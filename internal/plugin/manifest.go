@@ -23,9 +23,9 @@ const (
 // 插件一律以 Python 解释器启动：entry 必须是插件目录内的 .py 脚本，
 // 同一份源码可在 Windows / macOS / Linux（含 Docker）通用（见 docs/plugin-spec.md §2）。
 type Manifest struct {
-	Name        string            `json:"name"`
-	Version     string            `json:"version"`
-	Description string            `json:"description"`
+	Name        string `json:"name"`
+	Version     string `json:"version"`
+	Description string `json:"description"`
 	// Entry 入口脚本，必须是插件目录内的 .py 文件（相对路径，不允许绝对路径或 .. 逃逸）。
 	Entry string            `json:"entry"`
 	Args  []string          `json:"args"`

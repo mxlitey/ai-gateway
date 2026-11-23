@@ -352,6 +352,28 @@ func TestListAndGetKeysRevealSwitch(t *testing.T) {
 	}
 }
 
+// TestListMCPServersRevealSwitch MCP 上游密钥默认脱敏，reveal_keys=true 才返回明文。
+func TestListMCPServersRevealSwitch(t *testing.T) {
+	srv, st := newTestServer(t)
+
+	secret := "upstream-mcp-token-plain"
+	if err := st.CreateMCPServer(&model.MCPServer{
+		ID:   "mcp-1",
+		Name: "测试 MCP",
+		URL:  "https://example.com/mcp",
+		Keys: []model.MCPKey{{Key: secret, Enabled: true, DailyLimit: -1}},
+	}); err != nil {
+		t.Fatalf("建 MCP 服务器失败: %v", err)
+	}
+
+	if text := toolText(srv.CallTool("list_mcp_servers", map[string]any{}, false)); contains(text, secret) {
+		t.Fatalf("默认不应返回明文: %s", text)
+	}
+	if text := toolText(srv.CallTool("list_mcp_servers", map[string]any{"reveal_keys": true}, false)); !contains(text, secret) {
+		t.Fatalf("reveal_keys=true 时应返回明文: %s", text)
+	}
+}
+
 // toolText 取出工具结果的文本内容。
 func toolText(res map[string]any) string {
 	items, ok := res["content"].([]map[string]any)

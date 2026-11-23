@@ -83,11 +83,12 @@ func registerListPluginsTool(s *Server, d WriteDeps) {
 
 func registerListMCPServersTool(s *Server, d WriteDeps) {
 	s.Tools("list_mcp_servers",
-		"列出所有 MCP 上游服务器：名称、别名、URL、启用状态、工具数、今日调用次数、最后探测状态与错误。密钥只返回脱敏值与每日上限，不含明文。",
+		"列出所有 MCP 上游服务器：名称、别名、URL、启用状态、工具数、今日调用次数、最后探测状态与错误。密钥默认只返回脱敏值与每日上限；确需核对或迁移密钥时传 reveal_keys=true 才返回明文（明文会进入对话记录）。",
 		map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"enabled_only": map[string]any{"type": "boolean", "description": "只看已启用的服务器"},
+				"reveal_keys":  map[string]any{"type": "boolean", "description": "是否返回密钥明文，默认 false 只给脱敏值；仅在确需逐字核对密钥时开启"},
 			},
 		}, false, func(args map[string]any) (any, error) {
 			servers, err := d.Store.ListMCPServers()
@@ -99,9 +100,11 @@ func registerListMCPServersTool(s *Server, d WriteDeps) {
 				counts = map[string]int{}
 			}
 			enabledOnly := argBool(args, "enabled_only")
+			reveal := argBool(args, "reveal_keys")
 
 			type keyView struct {
 				Hint       string `json:"hint"`
+				Key        string `json:"key,omitempty"`
 				Label      string `json:"label,omitempty"`
 				DailyLimit int    `json:"daily_limit"`
 			}
@@ -128,7 +131,11 @@ func registerListMCPServersTool(s *Server, d WriteDeps) {
 				}
 				keys := make([]keyView, 0, len(srv.Keys))
 				for _, k := range srv.Keys {
-					keys = append(keys, keyView{Hint: model.KeyHint(k.Key), Label: k.Label, DailyLimit: k.DailyLimit})
+					kv := keyView{Hint: model.KeyHint(k.Key), Label: k.Label, DailyLimit: k.DailyLimit}
+					if reveal {
+						kv.Key = k.Key
+					}
+					keys = append(keys, kv)
 				}
 				view := serverView{
 					ID:         srv.ID,
